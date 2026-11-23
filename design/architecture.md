@@ -1166,6 +1166,8 @@ Nothing is open. New questions go here as implementation finds them.
 
 ## 12. Build order (when the user says go)
 
+**Work is tracked as GitHub issues** on [jyurkiw/mudparty](https://github.com/jyurkiw/mudparty/issues) (user, 2026-11-23): milestone **MVP** is #1–#7 (*§12.1*), **Step 1** is #8–#14, and **Later** is #15–#24 (*§13*). Each issue links its design section and says what "done" means. Anything new goes in as an issue, and the lists here are kept in step with them.
+
 1. **Workspace and `mp-telnet`/`mp-text`/`mp-parse`, plus the log writers** (streams,
    rotation, zipping, redaction), tested on byte captures from a local silvermere (its
    testkit can drive one in-process). Logging comes first, so every later step is logged
@@ -1248,6 +1250,8 @@ non-MVP parts left out:
 ---
 
 ## 13. TODO (after step 1)
+
+Each item is an issue in the **Later** milestone (#15–#24).
 
 - **A log-file web interface**: browse, tail and filter each character's streams, and open
   snapshots, from the web page.
