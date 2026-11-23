@@ -176,8 +176,9 @@ takes it over through the normal login and takeover question (*§6.2*).
 **A limit that stays:** MudPlay doesn't know it changed character. Its profile, its own
 automation, its remote-command permissions and its room tracking all still belong to the
 character it logged in as. While switched, MudPlay's automation should be off, or its
-profile switched by hand. mudparty can't reach into MudPlay to fix this, so the switch
-notice says so.
+profile switched by hand. Stock MudPlay can't be told, so the switch notice says so. A
+MudPlay fork that can be told is on the TODO list (*§13*). The seat already ends telnet
+itself, which is what lets it talk GMCP to MudPlay even though silvermere refuses GMCP.
 
 ---
 
@@ -1204,6 +1205,24 @@ user's server.
   session back on reconnect without a second login. The lobby plays the login dialogue
   with silvermere's rendered text and checks the password against `secrets.yaml`. Design
   its details before building it.
+- **A MudPlay fork that knows about mudparty**, if it helps enough once `#switch` exists.
+  The user can fork `E:/Repos/MudPlay`. MudPlay already speaks GMCP, and each character's
+  services already reload on `ProfileService.ProfileLoaded` (the per-character services
+  are disposed before a swap), so an in-place profile swap fits its design. The pieces:
+  - **A GMCP channel between seat and MudPlay**, under its own `MudParty.*` package. The
+    seat agrees to GMCP only when `mudparty.toml` says the MudPlay on that port is the
+    fork, so stock MudPlay keeps today's behaviour.
+  - **`MudParty.Seat.Attached {character}`** from the seat after a switch. The fork loads
+    that character's profile in place, with no reconnect, and its automation, permissions
+    and room tracking follow. This removes the limit in *§2.1*.
+  - **`MudParty.Seat.Switch {character}`** from the fork, sent from a MudPlay menu or
+    hotkey, in place of typing `#switch`.
+  - **`MudParty.Seat.Resume {character}`** from the fork on reconnect, to take back a held
+    session. It could replace the seat lobby: the fork proves itself with a token from
+    `mudparty.toml` in place of replayed login screens.
+
+  Not needed for step 1. Decide whether to fork once `#switch` works with stock MudPlay
+  and the limits are felt in play.
 - **Pull more from `silvermere.db`.** Beyond the world tables imported now, read what the
   database knows that the game's commands don't show: each character's full record
   (stats, abilities, inventory and keys, spells and their durations, quest flags, bank),
