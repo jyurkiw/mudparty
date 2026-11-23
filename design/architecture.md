@@ -47,6 +47,7 @@ Conventions carried over from both projects:
 | Party rest | A resting bot sends **`@wait`** to the leader and **`@ok`** when done. |
 | Stealth casters | **In step 1.** Avenger and Assassin bots open with a spell backstab and read the fork's two lead-in lines. |
 | Web UI | **View plus controls**: toggles and a command box per bot, and for the main character through injection. |
+| Characters menu | **In the first web UI**: a sheet per character from `stat`, `spells`, `inventory`, `look <name>` and `look <item>` for each item carried or worn. Refreshed after login, after relevant changes and from a button. Shown as the game's text with a few parsed fields. For the main character it fills from what the user types, and its Refresh button injects (*§6.9*). |
 | Passwords | A **separate `secrets.yaml`**, git-ignored, in plain text. |
 | Staleness ("dirty") | All three kinds: **config changed**, **game data changed**, **party state too old**. |
 | Web login | **None in step 1.** The page is bound to loopback only. |
@@ -170,6 +171,7 @@ Client → server:
 | `hello` | connect | character name, client version, `pid`, interactive or headless |
 | `state` | on change, at most ~4 a second | vitals (HP/MP and their maxima), level, room (`map/room` and name), mode (idle / fighting / resting / waiting / logging in / offline), current target and tier, automation toggles, each with an `observed_at` time |
 | `event` | as it happens | kill, death, level, login result, telepath in/out, @ command handled, errors |
+| `sheet` | a sheet part was captured (*§6.9*) | the part, `captured_at`, the raw output (ANSI kept), parsed fields |
 | `ack_config` | after applying a config | the `config_rev` now in use |
 | `ack_gamedata` | after reopening game data | the `gamedata_rev` now in use |
 
@@ -520,6 +522,49 @@ rest:
   MudPlay shows as **queued** until it goes out.
 - A server panel: connected clients and running bots, the last config errors, the
   game-data rev.
+- A **Characters** menu, one entry per character (*§6.9*).
+
+### 6.9 The Characters menu: character sheets
+
+A sheet per character, main character included, opened from the **Characters** menu.
+
+**The parts**, each one a game command whose output is captured whole, from the command
+to the next prompt. The wire text is from silvermere's catalogue:
+
+| Part | Command | Starts with | Parsed fields |
+|---|---|---|---|
+| Status | `st` (STATUS) | `Name: <name>    Lives/CP:  <lives>/<cp>` (`st_name`), then `st_race`, `st_class`, `st_hits`, `st_mana` / `st_kai` / `st_traps`, `st_picklocks`, `st_str`, `st_int`, `st_wil` | name, lives, CP, race, exp, perception, class, level, stealth, HP/max, AC/DR, thievery, mana or kai/max, spellcasting, traps, picklocks, the six stats (with their `mark` for a modified stat) and tracking, martial arts and magic resistance, poisoned, rank, and the `spell cast upon you` list |
+| Spells | `spells` | `You have the following <what>:` (`spells_header`), the `Level <cost> Short Spell Name` columns, then one `spell_row` each; `You have no <what>.` when there are none | level, mana, short name and name per spell (`what` is spells, or the kai word for a Mystic) |
+| Inventory | `i` | `You are carrying <items>` (`inv_carrying`, wrapped across lines), `You have the following keys: <keys>.`, `Wealth: <copper> <name>`, `Encumbrance: <cur>/<max> - <level> [<pct>%]` | carried items, keys, wealth, encumbrance |
+| Appearance | `look <own name>` | `[ <first> <last>…` (`look_player_header`), the description (`look_player`), then `<pronoun> is equipped with:` and one row per item: `<item> (Readied)`, `<item> (Weapon Hand)` or `<item> (<slot>)` | description, and each equipped item with its slot |
+| Items | `look <item>` for each item worn or carried | `look_item` lines, the item's description | the description per item, kept under the item's name |
+
+- **The item list** for the Items part comes from the Inventory and Appearance parts, so it
+  runs after those two. Duplicates are looked at once. The name sent is the one the game
+  printed, and whether `look` takes it as printed, or needs a shorter word for some items,
+  is checked in the tests (*§10.4*), not assumed.
+- **Captured whenever it appears.** The parser knows each part by its first line, so a
+  sheet part is filled whenever its output arrives, whoever sent the command: a bot's
+  refresh, an `@do st`, or the user typing `st` in MudPlay (seen through the tap).
+- **Refresh:**
+  - **all parts after login** and from the sheet's **Refresh** button;
+  - **one part after a change**: Status after a level, a train or a stat change, Spells
+    after a spell is learned, Inventory and Items after a get, drop, buy, sell or give,
+    and Appearance and Items after an equip, wield or remove;
+  - **never in combat.** A refresh that falls due during a fight waits until the bot is
+    idle. Refresh commands go out through the normal pacing (*§6.1*). `look` adds no
+    action delay, but the Items part can be a long burst, so it is paced like MudPlay's
+    bulk sends: a few unanswered commands at a time.
+- **The main character:** the sheet fills only from commands the user types, until they
+  press **Refresh**. Refresh injects the commands through the proxy (*§2*), so their
+  output also scrolls past on the MudPlay screen. The button says so.
+- **Shown** as the game printed it: ANSI colours turned into HTML on the server, with HTML
+  escaped. The parsed fields go above it (level, exp, HP/MP max, stats, spell and item
+  lists, for sorting and for the party cards). Each part shows its age. A part whose
+  output didn't parse shows the text with a "not parsed" badge, and a `parse_miss`
+  record goes in the decision log (*§9.2*).
+- **Kept** in `mudparty.sqlite` (*§7.6*), so the sheets survive restarts and show as
+  "as of <time>" while a character is offline.
 
 ---
 
@@ -661,6 +706,11 @@ derived at import.
 CREATE TABLE sessions (id INTEGER PRIMARY KEY, character TEXT, started_at TEXT, ended_at TEXT, end_reason TEXT);
 CREATE TABLE events   (id INTEGER PRIMARY KEY, session_id INTEGER, at TEXT, kind TEXT, data TEXT); -- JSON
 CREATE TABLE vitals   (session_id INTEGER, at TEXT, hp INTEGER, hp_max INTEGER, mp INTEGER, mp_max INTEGER, map INTEGER, room INTEGER);
+CREATE TABLE sheet_parts (                      -- §6.9, the latest of each part
+  character TEXT, part TEXT,                    -- status | spells | inventory | appearance | item:<name>
+  captured_at TEXT, raw BLOB,                   -- the output as received, ANSI kept
+  parsed TEXT,                                  -- JSON of the parsed fields, NULL if it didn't parse
+  PRIMARY KEY (character, part));
 ```
 
 It holds kills, deaths, levels and logins for the page's history and for later exp/hour
@@ -944,6 +994,12 @@ and the UI feed:
     the realm). Aborting the server task shows the hang-up path.
 11. **Logging:** each scenario's logs are present, rolled and redacted, with no password
     bytes anywhere under the data root.
+12. **Character sheets:** a bot with a known kit (testkit helpers set its items, spells
+    and stats) is refreshed after login. Every part parses to the values the test set. Each
+    carried and worn item gets its own `look` description, which settles which item names
+    `look` accepts as printed. A `get`, then an `equip`, refreshes only the parts they
+    should. Commands the main character types through the proxy fill its sheet without
+    injection, and Refresh injects.
 
 These run on every `cargo test`. The testkit's stock world is downloaded and cached once,
 as in silvermere's own tests.
@@ -1030,7 +1086,8 @@ Nothing is open. New questions go here as implementation finds them.
 7. **The web page.**
 8. **Path translation** and its CLI.
 
-Each step ends with its tests from *§10*: unit, catalogue and replay tests, and from step 3
+**Test-first** (user, 2026-11-22): within each step, the failing test is written before
+the code wherever possible. Each step ends with its tests from *§10*: unit, catalogue and replay tests, and from step 3
 on the whole-system scenarios on an in-process silvermere. Then a manual run against the
 user's server.
 
@@ -1046,3 +1103,9 @@ user's server.
 - Live `/room` checks for path import ambiguity.
 - Other realms (stock boards, Paradigm) as realm profiles, and the `.mdb` game-data source.
 - A web login token, for opening the page beyond loopback.
+- **Pull more from `silvermere.db`.** Beyond the world tables imported now, read what the
+  database knows that the game's commands don't show: each character's full record
+  (stats, abilities, inventory and keys, spells and their durations, quest flags, bank),
+  item, monster and spell details for the sheets and the targeting rules, and live room
+  state. Open read-only. The database is only as fresh as silvermere's last save, so
+  anything read this way carries its own staleness, kept apart from the live sheets.
