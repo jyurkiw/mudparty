@@ -386,7 +386,6 @@ dialogue (`bin/silvermere/tests/login_e2e.rs`, `docs/auth.md`):
 |---|---|
 | `Username:` | the account name |
 | `Password:` | the password from `secrets.yaml` |
-| `(N)onstop, (Q)uit, or (C)ontinue?` (any time, as a pager) | Enter |
 | `Make your selection (X to exit):` | `M` |
 | `[MAJORMUD]:` | `E` |
 | the statline prompt | done: set the statline, then the party join (*§6.5*) |
