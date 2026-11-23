@@ -825,9 +825,12 @@ version = "0.1.0"
 dependencies = [
  "mp-text",
  "regex",
+ "serde",
+ "serde_json",
  "silvermere-auth",
  "silvermere-text",
  "silvermere-types",
+ "toml",
 ]
 
 [[package]]

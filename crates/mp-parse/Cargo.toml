@@ -10,6 +10,9 @@ repository.workspace = true
 [dependencies]
 mp-text = { path = "../mp-text" }
 regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 silvermere-text.workspace = true

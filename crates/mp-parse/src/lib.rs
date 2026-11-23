@@ -7,6 +7,6 @@ mod reader;
 mod statline;
 
 pub use event::{Event, PartyRow, Rank};
-pub use patterns::{classify, pattern_keys};
+pub use patterns::{PatternError, Patterns, classify, pattern_keys};
 pub use reader::{Item, Reader};
 pub use statline::{Rest, Statline, StatlineError, Vitals};

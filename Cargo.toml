@@ -19,7 +19,9 @@ all = { level = "warn", priority = -1 }
 [workspace.dependencies]
 base64 = "0.22.1"
 jiff = "0.2.38"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+toml = "1.1.8"
 tempfile = "3.27.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 regex = "1.13.1"

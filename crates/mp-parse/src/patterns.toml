@@ -1,0 +1,255 @@
+# The lines mudparty knows (design §10.2).
+#
+# Each [[pattern]] reads one shape of line, as plain text (ANSI removed), the whole line:
+#
+#   event   the mp_parse::Event variant it builds
+#   keys    the silvermere catalogue entries it reads: silvermere-text/messages/catalogue.toml,
+#           or `auth:` for silvermere-auth/messages/auth.toml. The catalogue test renders each
+#           one and checks this pattern reads it.
+#   re      the regex; each named group fills the event field of the same name
+#   numbers groups read as numbers
+#   split   groups split into a list, with the separator given
+#
+# The first matching entry wins, so a narrower shape goes before a wider one it also fits.
+
+# ----- login --------------------------------------------------------------------------
+
+[[pattern]]
+event = "UsernamePrompt"
+keys = ["auth:username_prompt"]
+re = '^Username: ?$'
+
+[[pattern]]
+event = "PasswordPrompt"
+keys = ["auth:password_prompt"]
+re = '^Password: ?$'
+
+[[pattern]]
+event = "InvalidCredentials"
+keys = ["auth:invalid_credentials"]
+re = '^Invalid Credentials$'
+
+[[pattern]]
+event = "AccountLocked"
+keys = ["auth:account_locked"]
+re = '^Too many failed logins: this account is locked for (?P<minutes>\d+) more minute\(s\)\.$'
+numbers = ["minutes"]
+
+[[pattern]]
+event = "DuplicateLogin"
+keys = ["auth:duplicate_login", "auth:takeover_prompt"]
+re = '^This account is already logged on\.$'
+
+[[pattern]]
+event = "TakeoverQuestion"
+keys = ["auth:takeover_question", "auth:takeover_prompt"]
+re = '^Disconnect the other connection and log in here\? \(Y/N\): ?$'
+
+[[pattern]]
+event = "TakeoverFailed"
+keys = ["auth:takeover_failed"]
+re = '^The other connection did not close in time\. Please try again in a minute\.$'
+
+[[pattern]]
+event = "TakenOver"
+keys = ["auth:taken_over"]
+re = '^This account has logged on from another connection\. Disconnecting\.$'
+
+[[pattern]]
+event = "NoPassword"
+keys = ["auth:no_password"]
+re = '^This account has no password yet\. Ask the sysop to set one\.$'
+
+[[pattern]]
+event = "MainMenu"
+keys = ["bbs_menu"]
+re = '^Make your selection \(X to exit\): ?$'
+
+[[pattern]]
+event = "MudMenu"
+keys = ["mud_menu_prompt"]
+re = '^\[MAJORMUD\]: ?$'
+
+# ----- combat -------------------------------------------------------------------------
+
+[[pattern]]
+event = "CombatEngaged"
+keys = ["combat_engaged", "combat_engaged_split"]
+re = '^\*Combat Engaged\*$'
+
+[[pattern]]
+event = "CombatOff"
+keys = ["combat_off"]
+re = '^\*Combat Off\*$'
+
+# Before the general `moves to attack` shape, which these two also fit.
+[[pattern]]
+event = "AttacksRoom"
+keys = ["cast_attacks_room"]
+re = '^(?P<who>\S+) moves to attack everyone in the room\.$'
+
+[[pattern]]
+event = "AttacksYou"
+keys = ["combat_moves_to_attack_you", "cast_moves_to_attack_you"]
+re = '^(?P<who>\S+) moves to attack you!$'
+
+[[pattern]]
+event = "MovesToAttack"
+keys = ["combat_moves_to_attack_mon", "cast_moves_to_attack", "combat_moves_to_attack_other"]
+re = '^(?P<who>\S+) moves to attack (?P<target>.+)[.!]$'
+
+[[pattern]]
+event = "MovesToCast"
+keys = ["cast_moves_to_cast"]
+re = '^(?P<who>\S+) moves to cast (?P<spell>.+) upon (?P<target>.+)\.$'
+
+[[pattern]]
+event = "SpellNoEffect"
+keys = ["cast_no_effect_on"]
+re = '^Your spell has no effect on (?P<target>.+)\.$'
+
+[[pattern]]
+event = "WeaponNoEffect"
+keys = ["combat_no_effect_weapon"]
+re = '^Your weapon has no effect against this monster!$'
+
+[[pattern]]
+event = "ExpGain"
+keys = ["exp_gain"]
+re = '^You gain (?P<exp>\d+) experience\.$'
+numbers = ["exp"]
+
+[[pattern]]
+event = "AlsoHere"
+keys = ["room_also_here"]
+re = '^Also here: (?P<names>.+)\.$'
+split = { names = ", " }
+
+# The fork's stealth casters (silvermere design/stealth-casters.md).
+[[pattern]]
+event = "StrikeFromShadows"
+keys = ["spell_backstab_lead_in"]
+re = '^You strike from the shadows with (?P<spell>.+)!$'
+
+[[pattern]]
+event = "StrikesFromShadows"
+keys = ["spell_backstab_lead_in_room"]
+re = '^(?P<who>\S+) strikes from the shadows with (?P<spell>.+)!$'
+
+[[pattern]]
+event = "SpottedCasting"
+keys = ["spell_backstab_spotted"]
+re = '^Your foe spots you as you begin to cast!$'
+
+# ----- talk and pacing ----------------------------------------------------------------
+
+[[pattern]]
+event = "Telepath"
+keys = ["telepath"]
+re = '^(?P<who>\S+) telepaths: (?P<text>.*)$'
+
+[[pattern]]
+event = "Gangpath"
+keys = ["gang_paths"]
+re = '^(?P<who>\S+) gangpaths: (?P<text>.*)$'
+
+[[pattern]]
+event = "TelepathSent"
+keys = ["telepath_sent"]
+re = '^--- Telepath Sent to (?P<who>.+) ---$'
+
+[[pattern]]
+event = "TelepathNotSent"
+keys = ["telepath_not_sent"]
+re = '^--- Telepath Not Sent ---$'
+
+[[pattern]]
+event = "TooFast"
+keys = ["too_fast"]
+re = '^You are typing too quickly - command ignored$'
+
+[[pattern]]
+event = "SlowDown"
+keys = ["slow_down"]
+re = "^Why don't you slow down for a few seconds\\?$"
+
+# ----- party --------------------------------------------------------------------------
+
+[[pattern]]
+event = "InvitedYouFollow"
+keys = ["invited_you_follow"]
+re = '^(?P<who>\S+) has invited you to follow \S+\.$'
+
+[[pattern]]
+event = "YouInvitedFollow"
+keys = ["you_invited_follow"]
+re = '^You have invited (?P<who>.+) to follow you\.$'
+
+[[pattern]]
+event = "NowFollowing"
+keys = ["now_following"]
+re = '^You are now following (?P<who>\S+)$'
+
+[[pattern]]
+event = "StartedFollow"
+keys = ["started_follow"]
+re = '^(?P<who>\S+) started to follow you\.$'
+
+[[pattern]]
+event = "NoLongerFollowing"
+keys = ["no_longer_following"]
+re = '^You are no longer following (?P<who>\S+)\.$'
+
+[[pattern]]
+event = "FollowerRemoved"
+keys = ["follower_removed"]
+re = '^(?P<who>\S+) has been removed from your followers\.$'
+
+[[pattern]]
+event = "InviteFirst"
+keys = ["invite_first"]
+re = '^You must be invited first!$'
+
+[[pattern]]
+event = "FollowNothing"
+keys = ["follow_nothing"]
+re = "^You don't see that anywhere!$"
+
+[[pattern]]
+event = "NotHere"
+keys = ["gang_not_here"]
+re = "^You don't see (?P<who>.+) here!$"
+
+[[pattern]]
+event = "CannotInvite"
+keys = ["gang_invite_forgotten"]
+re = '^You cannot invite (?P<who>.+)\.$'
+
+[[pattern]]
+event = "PartyHeader"
+keys = ["party_header"]
+re = '^The following people are in your travel party:$'
+
+[[pattern]]
+event = "PartyFollowing"
+keys = ["party_following"]
+re = '^You are following (?P<who>\S+)\.$'
+
+# `  %-30.30s %-12.12s` then ` [M:%3.3s%]` (K for kai) or nine spaces, ` [H:%3.3s%]`, P or a
+# space, R / M or a space, and the rank (silvermere display/party.rs). PartyRow's own
+# deserializers trim the padding and read the letters.
+[[pattern]]
+event = "PartyRow"
+keys = ["party_row"]
+re = '^  (?P<name>.{30}) (?P<class>.{12})(?: \[[MK]:(?P<mp_pct> *-?\d+)%\]| {9}) \[H:(?P<hp_pct> *-?\d+)%\](?P<poisoned>[P ])(?P<rest>[RM ]) - (?P<rank>Frontrank|Backrank|Midrank)$'
+numbers = ["mp_pct", "hp_pct"]
+
+[[pattern]]
+event = "PartyRowInvited"
+keys = ["party_row_invited"]
+re = '^  (?P<name>.{30}) (?P<class>.{12}) \[Invited\]$'
+
+[[pattern]]
+event = "PartyNone"
+keys = ["party_none"]
+re = '^You are not in a party at the present time\.$'
