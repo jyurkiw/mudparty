@@ -1,0 +1,22 @@
+[package]
+name = "mp-config"
+description = "mudparty's configuration: mudparty.toml, character YAML and secrets.yaml (design §7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mp-parse = { path = "../mp-parse" }
+serde.workspace = true
+serde_norway.workspace = true
+sha2.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "mp-silvermere"
+description = "Test support: a real silvermere, in-process, with a fixture world and characters (design §10.4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silvermere.workspace = true
+silvermere-auth.workspace = true
+silvermere-db.workspace = true
+silvermere-engine.workspace = true
+silvermere-types.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+mp-telnet = { path = "../mp-telnet" }
+mp-parse = { path = "../mp-parse" }
+
+[lints]
+workspace = true

@@ -55,7 +55,7 @@ Conventions carried over from both projects:
 | Injection while typing | **Queued** until the user's typed line has gone out and its prompt has come back. The page shows the command as queued. |
 | Low-HP escape | **Not in step 1.** |
 | Logging | **Everything, always**, with no levels: wire capture, transcript, decisions, events and server, rolled at 1 MB, the last 2 files plain and 3 zipped per stream (all settings in `mudparty.toml`). Snapshots from the web page and `#report`. Logs are read from disk; a web log viewer is on the TODO list (*§9*, *§13*). |
-| Testing | Unit tests; every parser pattern keyed to silvermere's `catalogue.toml`; replayed captures checked against decision snapshots; and **whole-system tests of the mudparty server against an in-process silvermere** (`silvermere-testkit`, a git dependency at a pinned commit). Path translation is tested on Winterhawk's `.mp` pack (*§10*). |
+| Testing | Unit tests; every parser pattern keyed to silvermere's `catalogue.toml`; replayed captures checked against decision snapshots; and **whole-system tests of the mudparty server against an in-process silvermere** (the `silvermere` package's `serve_in_process`, a git dependency at a pinned commit). Path translation is tested on Winterhawk's `.mp` pack (*§10*). |
 | Server config | **`mudparty.toml`** (TOML). Character, behaviour and path files are YAML. |
 | Server loss | Headless bots die with the server. An interactive client logs off cleanly once its fight ends (*§4.4*). |
 
@@ -235,9 +235,10 @@ With no server it exits with a message. If the server goes away mid-session, see
 | `mudparty-client` (bin) | Terminal I/O and the WebSocket around a bot runner. | |
 | `mudparty-server` (bin) | axum, proxy, hubs, the headless bots, file watching, the CLI subcommands (`import-gamedata`, `paths import/export`, `bot start/stop`). | |
 
-Stack: tokio, axum (HTTP and WebSocket), rusqlite (bundled SQLite), notify (file watching),
-clap, tracing, regex. YAML through a maintained serde YAML crate, picked at implementation
-time (`serde_yaml` is archived).
+Stack: tokio, axum (HTTP and WebSocket), rusqlite (bundled SQLite; 0.43 links the same
+`libsqlite3-sys` as silvermere's sqlx, so the two build together), notify (file watching),
+clap, tracing, regex. YAML through `serde_norway`, a maintained fork of the archived
+`serde_yaml` (chosen in MVP 3a).
 
 ---
 
@@ -1031,14 +1032,23 @@ All of it runs under `cargo test`. Four layers, from fast to whole-system.
 
 ### 10.4 Whole-system tests on an in-process silvermere
 
-`silvermere-testkit` is a dev-dependency from `jyurkiw/silvermere` at a pinned commit. Its
-`TestServer` runs a real silvermere inside the test on the imported stock world, with
-helpers to create characters, place them in rooms and read back their records.
-`start_manual` stops the real-time clock, and `tick` drives combat rounds by hand, so a
-5-second round takes no time. The arena practice dummy in room 1/206 (9999 HP, no exp)
-gives fights that don't end.
+The real game comes from the `silvermere` package itself, a dev-dependency from
+`jyurkiw/silvermere` at a pinned commit. (`silvermere-testkit`'s `TestServer` is only an
+echo server; found in MVP 3.) mudparty's test-support crate `mp-silvermere` wraps it:
 
-The **mudparty server itself is under test**: a test starts a silvermere `TestServer`,
+- `silvermere::serve_in_process` runs the whole server inside the test, on a temp SQLite
+  from `silvermere-db`'s `TestDb`, with the telnet port bound to `127.0.0.1:0`
+  (`Running::telnet_addr` says where);
+- it seeds a fixture world and characters with silvermere's public helpers
+  (`silvermere_engine::world::blank`, `clear_player`, `silvermere_auth::cli::create_with_cost`),
+  as silvermere's own `bin/silvermere/tests/common` does;
+- the manual clock is `cfg.game.sec_fast` set to a day, with `EngineInput::Tick` sent on
+  `Running::to_engine` to step rounds by hand, so a 5-second round takes no time;
+- the stock world (for the arena practice dummy in room 1/206: 9999 HP, no exp, fights
+  that don't end) is imported the way silvermere's `tests/common/stock.rs` does, from the
+  cached stock package. It comes in with combat (MVP 4).
+
+The **mudparty server itself is under test**: a test starts an in-process silvermere,
 then a mudparty server in the same process, pointed at it, with a temporary data root
 (`mudparty.toml`, `secrets.yaml`, character YAML, logs). It then plays parts against it:
 
@@ -1046,7 +1056,7 @@ then a mudparty server in the same process, pointed at it, with a temporary data
 |---|---|
 | Headless bots | the server's own bot tasks, started through the CLI or a UI `order` |
 | An interactive client | `mudparty-client`'s runner, driven from the test over the WebSocket |
-| MudPlay | a testkit `TelnetClient` connected to the **proxy** port, typing as the main character |
+| MudPlay | a telnet client (mudparty's own codec) connected to the **proxy** port, typing as the main character |
 | The browser | a WebSocket client on `/ws/ui` |
 
 Scenarios, each checked through silvermere's read-back records, mudparty's decision log
