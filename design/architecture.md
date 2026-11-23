@@ -34,6 +34,7 @@ Conventions carried over from both projects:
 | Realms | **silvermere only** in step 1: stock 1.11p text plus the fork's extensions (`/room`, fork classes and their combat lines). Other realms can come later, each as a realm profile. |
 | Game data | Imported from **silvermere's SQLite world tables** into mudparty's own SQLite file. |
 | Pass-through proxy | **Yes.** It runs **inside the server** and can **watch and inject** on the main character's link. |
+| Switch character | **`#switch <character>` in MudPlay, or a web button: TODO**, but the proxy is built for it from step 1. Every game link is a server-owned session; a MudPlay connection is a seat attached to one. The character left behind becomes a bot, an offline target is logged in, and a dropped MudPlay leaves its character playing as a bot (*§2.1*). |
 | Server dependence | **The server is required.** A client gets its config from the server and does not start without it. |
 | Headless bots | **Run inside the server** as tasks, not as separate processes. If the server dies they all go with it. |
 | Launching | **By hand.** Interactive clients are started by the user in their own terminals. A headless bot starts when the user presses Start on the web page (or `mudparty-server bot start <name>`), or at server start if its YAML says `autostart: true` (default off). |
@@ -69,8 +70,10 @@ byte both ways, IAC sequences included, is invisible to both ends:
   other option (`crates/silvermere-net/src/telnet/options.rs`).
 - MudPlay offers TERM-TYPE and GMCP besides. silvermere refuses them, and MudPlay falls
   back cleanly.
-- The proxy never answers a negotiation itself, so it never has to agree with either side.
-  Window-size reports (NAWS) pass through, which keeps silvermere's 80×24 default honest.
+- Window-size reports (NAWS) reach silvermere, which keeps its 80×24 default honest.
+- That would let the proxy pass negotiation through untouched. The design ends telnet at
+  the server on each side instead, with the same option set, so that MudPlay's link can
+  later move between characters (*§2.1*).
 
 The proxy gives us three things:
 
@@ -93,6 +96,88 @@ Costs, and how the design handles them:
 - **Injecting into a half-typed line would corrupt it.** MudPlay sends keystrokes as they
   are typed. The proxy injects only when the last client→server byte ended a line (CR or LF)
   and that line's prompt has come back. Otherwise it waits.
+
+### 2.1 Seats and sessions: built for `#switch`
+
+`#switch <character>` in MudPlay (or a button on the web page) is on the TODO list (*§13*).
+It moves MudPlay from one character to another without logging out. Step 1 doesn't ship
+it, but **step 1's proxy is built in the shape it needs**, so adding it later means a new
+command, not a rework. The user settled the behaviour on 2026-11-22.
+
+**Sessions.** Every game link belongs to a server-side **session**, one per character
+and the same object a headless bot runs in. A session holds the upstream telnet link,
+its parser and state, its engine, its logs, and a screen buffer (the last few hundred raw
+lines, for redrawing). It has one **driver** at a time:
+
+- `engine`: a headless bot, with automation per its YAML;
+- `seat`: MudPlay is attached and the user drives. The engine keeps parsing and stays
+  ready, but its automation is off, as for an interactive client's `#hold`.
+
+**Seats.** A **seat** is one MudPlay connection on the proxy port. It is attached to at
+most one session. In step 1 a seat attaches once, when MudPlay logs in, and detaches when
+MudPlay leaves. `#switch` will add a re-attach.
+
+So from step 1:
+
+- **The server ends telnet on both sides,** in place of passing negotiation bytes through.
+  Upstream, each session negotiates with silvermere as a bot does (agreeing to `ECHO`,
+  `SGA`, `BINARY`, sending NAWS). Downstream, the seat offers MudPlay the same set
+  silvermere does (`WILL ECHO`, `WILL SGA`, `WILL BINARY`, `DO NAWS`) and refuses the rest,
+  as silvermere would. MudPlay sees no difference, but one MudPlay link can then be moved
+  between upstream links that were each negotiated on their own. The seat's NAWS goes to
+  whichever session it is attached to. Game data bytes still pass through unchanged
+  (*§10.4*).
+- **MudPlay still logs in by itself.** A new seat gets a new session with no character
+  yet. Bytes pass through while MudPlay runs its own logon steps. The account name MudPlay
+  types (the line after `Username:`, which is not secret) names the character, through
+  each YAML's `login.account`. If none matches, the TOML's `main_character` does. The
+  password line is redacted in the logs (*§9.4*), as before.
+- **`#` lines are held at the seat.** MudPlay sends each key as it is typed, so a command
+  line would otherwise reach the game a letter at a time. When a line's first byte is `#`,
+  the seat holds it:
+  - it echoes each key back to MudPlay itself, since silvermere would have, and handles
+    backspace;
+  - on Enter, a known mudparty command is handled and never reaches the game, and any
+    other `#` line is sent on whole, as typed.
+
+  Step 1 knows `#help` and `#who` (the characters mudparty holds, and their drivers). The
+  same handlers as the interactive client's `#` commands serve them. Replies are written to
+  MudPlay as `*** mudparty: … ***` lines, followed by the game's prompt.
+- **Statline per driver.** A seated session runs the statline MudPlay expects (the main
+  character's `statline` template), and an engine-driven one runs the bot statline.
+  Switching driver sets the other one (*§6.1*).
+
+**How `#switch Ermias` will work** (TODO, as the user settled it):
+
+1. Check the target: it must have a character YAML, and must not be an interactive
+   client's character or already in another seat.
+2. **If Ermias isn't logged in, the server logs it in** with its YAML and secrets. MudPlay
+   is told `*** mudparty: logging in Ermias ***`.
+3. **The character left behind becomes a bot**: its driver goes to `engine`, running its
+   own YAML (combat, rest, follow). Bots that were following it keep following.
+4. Ermias's driver goes to `seat`. Its statline switches to MudPlay's template.
+5. MudPlay gets `*** mudparty: now playing Ermias ***` and the tail of Ermias's screen
+   buffer. The seat then sends a bare Enter upstream, and Ermias's prompt and room arrive
+   fresh. Full statline modes redraw the room on an empty line (*GAME_MECHANICS: Wire →
+   Statline & prompt shape*).
+6. The web page's **Play in MudPlay** button on a character's card does the same, for the
+   seat that is open.
+
+**When MudPlay drops** (user's choice): the seated character becomes a bot until MudPlay
+is back, rather than hanging up. To hand it back when MudPlay reconnects and logs in as
+that character, without a second login hitting silvermere's takeover question, the
+proposal is a **seat lobby**: the seat plays the login dialogue to MudPlay itself, with
+silvermere's own rendered text (`silvermere-text`'s `render_menu` and login greeting). It
+checks the password against `secrets.yaml`, then attaches the seat to the held session.
+That needs a `secrets.yaml` entry for the main character. The details are a TODO design
+item (*§13*). Until it exists, a drop makes the character a bot, and MudPlay's reconnect
+takes it over through the normal login and takeover question (*§6.2*).
+
+**A limit that stays:** MudPlay doesn't know it changed character. Its profile, its own
+automation, its remote-command permissions and its room tracking all still belong to the
+character it logged in as. While switched, MudPlay's automation should be off, or its
+profile switched by hand. mudparty can't reach into MudPlay to fix this, so the switch
+notice says so.
 
 ---
 
@@ -119,9 +204,9 @@ Costs, and how the design handles them:
 | What | How many | Job |
 |---|---|---|
 | `mudparty-server` | one process | Owns config (YAML) and game data (SQLite). Runs the party hub, the MudPlay proxy and the web UI, translates path files, and **hosts the headless bots**. |
-| Headless bot | a tokio task inside the server, one per character | Its own telnet link to silvermere: login, parsing, combat, resting, @ commands. No terminal. Started from the web page, the CLI or `autostart`. |
-| `mudparty-client` | one process per character you want a terminal for | The same engine as a headless bot, with the raw pass-through terminal on top (*§6.7*). |
-| MudPlay | one (the user) | The main character, through the proxy. |
+| Session | a tokio task inside the server, one per character in the game | Its own telnet link to silvermere: login, parsing, combat, resting, @ commands. Driven by its engine (a **headless bot**, with no terminal, started from the web page, the CLI or `autostart`) or by a MudPlay **seat** (*§2.1*). |
+| `mudparty-client` | one process per character you want a terminal for | The same engine as a headless bot, with the raw pass-through terminal on top (*§6.7*). It keeps its own link, so it can't be switched into. |
+| MudPlay | one (the user) | A seat on the proxy port, attached to the main character's session. |
 | Browser | any | The party page. |
 
 A headless bot and an interactive client run the same `mp-engine` code and speak the same
@@ -138,7 +223,7 @@ With no server it exits with a message. If the server goes away mid-session, see
 
 | Crate | Contents | Used by |
 |---|---|---|
-| `mp-telnet` | IAC codec, option state, NAWS, 0xFF escaping. A **pass-through mode** that decodes without ever answering, for the tap. | client, proxy |
+| `mp-telnet` | IAC codec, option state, NAWS, 0xFF escaping. A client side (sessions, the interactive client) and a server side (the seat facing MudPlay), offering silvermere's option set. | client, server |
 | `mp-text` | Line extraction from the byte stream: ANSI stripping that keeps the raw bytes, backspace folding (stock direction words carry a filler byte and a backspace), the `ESC[79D ESC[K` clear-line prefix, prompt recognition for lines that end without CR/LF. | client, server |
 | `mp-parse` | The realm profile: prompt/statline matcher, message catalogue (combat, rest, telepath, party, room display), classified events. silvermere is the only profile in step 1. | client, server |
 | `mp-data` | The game-data SQLite schema, read API, the importer from silvermere's DB. | client (read-only), server |
@@ -907,7 +992,8 @@ All of it runs under `cargo test`. Four layers, from fast to whole-system.
 
 ### 10.1 Unit tests
 
-- `mp-telnet`: negotiation, IAC escaping, NAWS. **Pass-through mode never writes a byte.**
+- `mp-telnet`: negotiation, IAC escaping, NAWS. The server side gives a client the same
+  answers silvermere's option table does.
 - `mp-text`: line splitting, backspace folding, prompts with no line end, text glued after
   a prompt, the clear-line prefix.
 - `mp-parse`: the statline matcher generated from each template, and event classification.
@@ -983,9 +1069,17 @@ and the UI feed:
    `@ok`, and stops at the targets. An attack during the rest ends it.
 7. **@ commands:** each step-1 command from an allowed sender gets the right reply on the
    channel it came in on. A sender who isn't allowed gets nothing (or the failure reply).
-8. **Proxy transparency:** the bytes the MudPlay stand-in receives equal what silvermere
-   sent, negotiation included, and the other way round. Injected commands wait for the end
-   of a half-typed line.
+8. **Proxy transparency and seats:**
+   - the game data bytes the MudPlay stand-in receives equal what silvermere sent, and the
+     other way round;
+   - the seat's negotiation leaves the stand-in in the same option state a direct
+     connection to silvermere would;
+   - injected commands wait for the end of a half-typed line;
+   - a typed `#who` is answered by mudparty and never reaches silvermere, while a typed
+     `#something-else` arrives at silvermere whole;
+   - the seated session is named from the typed account name;
+   - detaching the seat turns the session into a bot rather than hanging up. This is the
+     piece `#switch` will build on.
 9. **Staleness:** edit a character's YAML mid-fight. It applies at the safe point, the ack
    clears the page's pending badge, and a bad edit keeps the old config with an error on
    the page. Re-import game data and check the rev change. Stop a bot's feed and watch its
@@ -1082,7 +1176,8 @@ Nothing is open. New questions go here as implementation finds them.
    the orderly logoff on stop.
 4. **Combat and resting**, tiers and targeting, stealth opener.
 5. **@ commands and party join**, `@wait`/`@ok`, telepath pacing.
-6. **The proxy and the tap**, then injection.
+6. **The proxy as seats and sessions** (*§2.1*): the tap, `#` line holding with `#help`
+   and `#who`, then injection. `#switch` itself waits on the TODO list.
 7. **The web page.**
 8. **Path translation** and its CLI.
 
@@ -1103,6 +1198,12 @@ user's server.
 - Live `/room` checks for path import ambiguity.
 - Other realms (stock boards, Paradigm) as realm profiles, and the `.mdb` game-data source.
 - A web login token, for opening the page beyond loopback.
+- **`#switch <character>` and the web page's Play in MudPlay button** (*§2.1*): re-attach a
+  MudPlay seat to another session. The character left behind becomes a bot, and an offline
+  target is logged in first. Also the **seat lobby**: after a MudPlay drop, hand the held
+  session back on reconnect without a second login. The lobby plays the login dialogue
+  with silvermere's rendered text and checks the password against `secrets.yaml`. Design
+  its details before building it.
 - **Pull more from `silvermere.db`.** Beyond the world tables imported now, read what the
   database knows that the game's commands don't show: each character's full record
   (stats, abilities, inventory and keys, spells and their durations, quest flags, bank),
