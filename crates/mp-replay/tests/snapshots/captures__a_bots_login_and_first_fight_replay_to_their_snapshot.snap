@@ -1,0 +1,35 @@
+---
+source: crates/mp-replay/tests/captures.rs
+expression: "replay(&records).join(\"\\n\")"
+---
+EVENT UsernamePrompt
+> ermias [engine]
+TEXT ermias
+EVENT PasswordPrompt
+> [redacted password, 10 bytes] [engine]
+TEXT Please select one of the following:
+TEXT    M ... MajorMUD
+TEXT Main Menu
+EVENT MainMenu
+> M [engine]
+EVENT MudMenu
+> E [engine]
+TEXT E
+> set statline full custom [HP=%h/%H,MA=%m/%M]:%r [engine]
+TEXT [HP=120/MA=40]:set statline full custom [HP=%h/%H,MA=%m/%M]:%r
+PROMPT hp=120/120 mp=40/40
+EVENT MovesToAttack { who: "Raijin", target: "small kobold" }
+PROMPT hp=120/120 mp=40/40
+> mm small [engine]
+TEXT mm small
+EVENT CombatEngaged
+PROMPT hp=120/120 mp=37/40
+EVENT ExpGain { exp: 40 }
+EVENT CombatOff
+PROMPT hp=118/120 mp=37/40
+EVENT Telepath { who: "Raijin", text: "@health" }
+PROMPT hp=118/120 mp=37/40
+> /raijin HP=118/120,MA=37/40 [remote:Raijin]
+TEXT /raijin HP=118/120,MA=37/40
+PROMPT hp=118/120 mp=37/40
+EVENT TelepathSent { who: "Raijin" }

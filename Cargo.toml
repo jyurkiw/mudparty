@@ -19,6 +19,15 @@ all = { level = "warn", priority = -1 }
 [workspace.dependencies]
 base64 = "0.22.1"
 jiff = "0.2.38"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+toml = "1.1.8"
 tempfile = "3.27.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+regex = "1.13.1"
+insta = "1.49.0"
+# Pinned to jyurkiw/silvermere main (PR #13 merged). Move the pin deliberately: the
+# catalogue test (design §10.2) then shows what text changed.
+silvermere-text = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
+silvermere-types = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
+silvermere-auth = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
