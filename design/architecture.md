@@ -1187,6 +1187,64 @@ the code wherever possible. Each step ends with its tests from *§10*: unit, cat
 on the whole-system scenarios on an in-process silvermere. Then a manual run against the
 user's server.
 
+### 12.1 The MVP cut
+
+*Estimated 2026-11-22, from this design rather than measured. Agreed with the user to write in.*
+
+The MVP is the smallest server worth using. **Headless bots that log in, join the user's
+party, fight with spell tiers, rest with `@wait`/`@ok`, answer a few @ commands, log
+everything and show on a simple web page.** The user plays the main character in MudPlay
+connected straight to silvermere, with no proxy yet.
+
+| Piece | In the MVP | Rough size (Rust, excluding tests) |
+|---|---|---|
+| `mp-telnet` | client side only | ~400 lines |
+| `mp-text` | lines, ANSI, prompts, backspace folding, glued text | ~600 |
+| `mp-parse` | the bot statline, catalogue-keyed patterns for login, combat, party and telepaths | ~1,200 |
+| `mp-config` | `mudparty.toml`, character YAML, `secrets.yaml`, validation | ~500 |
+| `mp-data` | import of rooms, exits, spells and classes from `silvermere.db` | ~400 |
+| `mp-engine` | login (with takeover), combat tiers and targeting rules, melee fallback, rest, party join, pacing and telepath acks; `@health`, `@status`, `@where`, `@version`, `@auto-*`, `@stop`, `@do`, `@kill`, `@wait`/`@ok` | ~2,000 |
+| Server | sessions as headless bots, the hub, YAML watching and `config_changed`, the log streams with rotation and zipping, `bot start/stop`, orderly logoff | ~1,200 |
+| Web page | party cards: vitals, room, mode, target and tier, toggles, Start/Stop, a command box | ~300 Rust, ~400 HTML/JS |
+
+That totals **about 5,000–6,000 lines**, with about as much again in tests, in **6–8
+steps** of 600–1,000 lines each. The steps follow the build order above with the
+non-MVP parts left out:
+
+1. Workspace, `mp-telnet`, `mp-text`, the log writers.
+2. `mp-parse` and the catalogue test, the replay harness.
+3. `mp-config`, `mp-data` import, the server shell with sessions, a bot that logs in (the
+   first whole-system test).
+4. Combat: tiers, targeting, melee fallback.
+5. Resting, party join, telepath pacing.
+6. The step-1 @ commands.
+7. The web page.
+
+**Left for after the MVP**, which roughly doubles it to the full step 1 (about
+11,000–13,000 lines):
+
+- the interactive `mudparty-client`;
+- the proxy with seats, the tap, `#` lines and injection (~700);
+- character sheets;
+- the stealth opener;
+- game-data staleness;
+- path translation (~900);
+- snapshots.
+
+**Where the effort and the risk are:**
+
+1. **The parser.** It has to handle MajorMUD's text quirks: prompts with no line end, text
+   glued to a prompt, a backspace inside direction words, the clear-line prefix, the space
+   where `%r` sits. The catalogue-keyed patterns (*§10.2*) and replay snapshots
+   (*§10.3*) are the guard.
+2. **Combat details.** One spell per round, no casting at a corpse, "no effect" lines,
+   room spells. MudPlay's `GAME_MECHANICS.md` has the rules, so this is careful work, not
+   guesswork.
+3. **The first whole-system test.** `silvermere-testkit` pulls silvermere's dependency tree
+   into dev builds, so the first compile is slow. It needs the cached stock world, and
+   driving `TestServer` from outside silvermere's workspace may need a small adapter. It is
+   step 3, so it fails early if it's going to.
+
 ---
 
 ## 13. TODO (after step 1)
