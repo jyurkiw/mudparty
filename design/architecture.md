@@ -682,11 +682,11 @@ logoff_timeout = "30s"                 # per bot, on an orderly server stop
 
 [game]                                 # the silvermere server
 host = "127.0.0.1"
-port = 23
+port = 2323                            # where the user's silvermere listens (also 8080, 8088)
 
-[listen]
+[listen]                               # must not clash with silvermere's 2323, 8080, 8088
 client_hub = "127.0.0.1:7171"          # /ws/client, /ws/ui and the web page
-proxy      = "127.0.0.1:2323"          # MudPlay connects here
+proxy      = "127.0.0.1:2424"          # MudPlay connects here
 
 [gamedata]
 silvermere_db = "E:/silvermere-data/silvermere.db"
