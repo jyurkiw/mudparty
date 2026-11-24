@@ -368,6 +368,12 @@ behind.
   prompt gives current and maximum HP and MP. The prompt matcher is generated from the same
   template, as MudPlay does it. Three unmatched prompts in a row mean the statline is sent
   again.
+  - **The statline sticks to the character** (found in MVP 3b): silvermere saves it with
+    the character, so a character a bot has played comes back with the bot statline on its
+    next login. A session therefore reads its own statline as well as silvermere's default
+    prompts (`[HP=n/MA=n]:`, `[HP=n/KAI=n]:`, `[HP=n]:`) while it logs in. For a character
+    the user later plays in MudPlay, MudPlay sets its own statline on logon, so this costs
+    nothing there.
 - **The main character's statline belongs to MudPlay.** The tap reads it with a template
   set in the main character's YAML (default: MudPlay's default shape). The proxy never
   changes the user's statline.

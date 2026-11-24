@@ -209,6 +209,20 @@ fn cases() -> Vec<Case> {
             Msg::SpellBackstabSpotted,
             vec![E::SpottedCasting],
         ),
+        // leaving the realm
+        msg("exit_meditate", Msg::ExitMeditate, vec![E::ExitStarted]),
+        msg(
+            "exit_interrupted",
+            Msg::ExitInterrupted,
+            vec![E::ExitInterrupted],
+        ),
+        msg("exit_waiting", Msg::ExitWaiting, vec![E::ExitWaiting]),
+        msg("exit_wounded", Msg::ExitWounded, vec![E::MortallyWounded]),
+        msg(
+            "mortally_wounded",
+            Msg::MortallyWounded,
+            vec![E::MortallyWounded],
+        ),
         // telepaths and pacing
         msg(
             "telepath",

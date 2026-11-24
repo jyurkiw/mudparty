@@ -17,6 +17,13 @@ pub enum Item {
     Text(String),
 }
 
+/// An item with the plain text it was read from, for the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Traced {
+    pub item: Item,
+    pub plain: String,
+}
+
 /// Reads a session's game bytes (telnet already removed).
 ///
 /// A prompt has no line end, so it is reported as soon as it is whole, and once only: the
@@ -26,7 +33,8 @@ pub enum Item {
 #[derive(Debug, Clone)]
 pub struct Reader {
     lines: Extractor,
-    statline: Option<Statline>,
+    /// The prompt shapes to read, tried in order.
+    statlines: Vec<Statline>,
     /// How much of the unfinished line's plain text has been reported already.
     reported: usize,
 }
@@ -34,20 +42,39 @@ pub struct Reader {
 impl Reader {
     /// A reader for a session whose prompt is `statline`, or `None` before it is known.
     pub fn new(statline: Option<Statline>) -> Self {
+        Self::with_statlines(statline.into_iter().collect())
+    }
+
+    /// A reader that knows several prompt shapes, as a session does before it has set its
+    /// own statline (`Statline::silvermere_defaults`).
+    pub fn with_statlines(statlines: Vec<Statline>) -> Self {
         Self {
             lines: Extractor::new(),
-            statline,
+            statlines,
             reported: 0,
         }
     }
 
-    /// Starts reading prompts with `statline`, as after a bot sets its own.
+    /// Reads prompts with `statline` alone from now on, as after a bot sets its own.
     pub fn set_statline(&mut self, statline: Statline) {
-        self.statline = Some(statline);
+        self.statlines = vec![statline];
+    }
+
+    /// A prompt at the start of `text`, by the first shape that reads it.
+    fn read_prompt(&self, text: &str) -> Option<(Vitals, usize)> {
+        self.statlines.iter().find_map(|s| s.read(text))
     }
 
     /// Feeds `bytes`, returning what they complete, in order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Item> {
+        self.feed_traced(bytes)
+            .into_iter()
+            .map(|t| t.item)
+            .collect()
+    }
+
+    /// [`Reader::feed`], with the plain text each item was read from.
+    pub fn feed_traced(&mut self, bytes: &[u8]) -> Vec<Traced> {
         let mut out = Vec::new();
         for line in self.lines.feed(bytes) {
             let rest = unreported(&line, self.reported).to_owned();
@@ -57,7 +84,10 @@ impl Reader {
         if let Some(p) = self.lines.pending() {
             let candidate = unreported(&p, self.reported);
             if let Some(item) = self.whole_prompt(candidate) {
-                out.push(item);
+                out.push(Traced {
+                    item,
+                    plain: candidate.to_owned(),
+                });
                 self.reported = p.plain.len();
             }
         }
@@ -69,7 +99,7 @@ impl Reader {
         if text.trim().is_empty() {
             return None;
         }
-        if let Some((v, end)) = self.statline.as_ref().and_then(|s| s.read(text))
+        if let Some((v, end)) = self.read_prompt(text)
             && end == text.len()
         {
             return Some(Item::Prompt(v));
@@ -78,18 +108,25 @@ impl Reader {
     }
 
     /// A finished line's text: a prompt and what follows it, or one line.
-    fn read_text(&self, text: &str, out: &mut Vec<Item>) {
+    fn read_text(&self, text: &str, out: &mut Vec<Traced>) {
         let mut rest = text;
-        if let Some((v, end)) = self.statline.as_ref().and_then(|s| s.read(text)) {
-            out.push(Item::Prompt(v));
+        if let Some((v, end)) = self.read_prompt(text) {
+            out.push(Traced {
+                item: Item::Prompt(v),
+                plain: text[..end].to_owned(),
+            });
             rest = &text[end..];
         }
         if rest.trim().is_empty() {
             return;
         }
-        out.push(match classify(rest) {
+        let item = match classify(rest) {
             Some(e) => Item::Event(e),
             None => Item::Text(rest.to_owned()),
+        };
+        out.push(Traced {
+            item,
+            plain: rest.to_owned(),
         });
     }
 }

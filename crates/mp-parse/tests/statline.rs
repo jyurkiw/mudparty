@@ -158,3 +158,86 @@ fn a_template_that_breaks_the_line_is_refused() {
 fn a_template_with_no_hit_points_is_refused() {
     assert!(Statline::compile("[MA=%m]:").is_err());
 }
+
+/// The prompt silvermere sends in its default (Full) mode.
+fn rendered_default(c: &Char, magery: Option<Magery>, palette: u8) -> String {
+    let palette = Palette::new(palette).unwrap();
+    let ctx = StatlineCtx {
+        hp: c.hp,
+        maxhp: c.maxhp,
+        mana: c.mana,
+        maxmana: c.maxmana,
+        exp: 0,
+        exp_needed: Some(0),
+        wealth_copper: 0,
+        first_name: "Aldric",
+        evil_warn: false,
+        resting: c.resting,
+        meditating: c.meditating,
+        pronoun_possessive: "his",
+        pronoun_object: "him",
+        title: None,
+        palette,
+    };
+    let input = PromptInput {
+        hp: c.hp,
+        maxhp: c.maxhp,
+        mana: c.mana,
+        maxmana: c.maxmana,
+        magery,
+        resting: c.resting,
+        meditating: c.meditating,
+        mode: StatlineMode::Full,
+        template: None,
+        palette,
+        sysop_debug: None,
+    };
+    let bytes = render_prompt(&input, &ctx);
+    let mut x = mp_text::Extractor::new();
+    assert!(x.feed(&bytes).is_empty());
+    x.pending().expect("the prompt is pending").plain
+}
+
+fn read_any(plain: &str) -> Option<(Vitals, usize)> {
+    Statline::silvermere_defaults()
+        .iter()
+        .find_map(|s| s.read(plain))
+}
+
+#[test]
+fn silvermere_default_prompts_are_read_for_every_kind_of_class() {
+    for palette in 0..4 {
+        // A mana class: `[HP=87/MA=12]:`
+        let (v, _) = read_any(&rendered_default(
+            &standing(87, 12),
+            Some(Magery::Mage),
+            palette,
+        ))
+        .unwrap();
+        assert_eq!((v.hp, v.mp, v.max_hp), (87, Some(12), None));
+        // A kai class: `[HP=87/KAI=12]:`
+        let (v, _) = read_any(&rendered_default(
+            &standing(87, 12),
+            Some(Magery::Kai),
+            palette,
+        ))
+        .unwrap();
+        assert_eq!((v.hp, v.mp), (87, Some(12)));
+        // No mana: `[HP=35]:`
+        let mut c = standing(35, 0);
+        c.maxmana = 0;
+        let (v, _) = read_any(&rendered_default(&c, None, palette)).unwrap();
+        assert_eq!((v.hp, v.mp), (35, None));
+    }
+}
+
+#[test]
+fn silvermere_default_prompts_carry_the_rest_mark() {
+    let mut c = standing(50, 10);
+    c.resting = true;
+    let (v, _) = read_any(&rendered_default(&c, Some(Magery::Mage), 0)).unwrap();
+    assert_eq!(v.rest, Rest::Resting);
+    c.maxmana = 0;
+    let (v, _) = read_any(&rendered_default(&c, None, 0)).unwrap();
+    assert_eq!(v.rest, Rest::Resting);
+}

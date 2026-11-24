@@ -142,6 +142,17 @@ pub enum Event {
     /// The fork's spell backstab, stealth lost: `Your foe spots you as you begin to cast!`
     SpottedCasting,
 
+    // ----- leaving the realm
+    /// `You will exit after a period of silent meditation.` (`quit` or `x`).
+    ExitStarted,
+    /// `Your meditation has been interrupted - you may not exit now!`: an attack (or
+    /// `break`) called the exit off.
+    ExitInterrupted,
+    /// `You may not perform any commands while waiting to exit!`
+    ExitWaiting,
+    /// At 0 HP or below: `x` and `quit` are both refused.
+    MortallyWounded,
+
     // ----- talk and pacing
     Telepath {
         who: String,

@@ -141,6 +141,29 @@ event = "SpottedCasting"
 keys = ["spell_backstab_spotted"]
 re = '^Your foe spots you as you begin to cast!$'
 
+# ----- leaving the realm --------------------------------------------------------------
+
+# The line is followed by the wait's row of dots, which carries no event.
+[[pattern]]
+event = "ExitStarted"
+keys = ["exit_meditate"]
+re = '^You will exit after a period of silent meditation\.$'
+
+[[pattern]]
+event = "ExitInterrupted"
+keys = ["exit_interrupted"]
+re = '^\.*Your meditation has been interrupted - you may not exit now!$'
+
+[[pattern]]
+event = "ExitWaiting"
+keys = ["exit_waiting"]
+re = '^\.*You may not perform any commands while waiting to exit!$'
+
+[[pattern]]
+event = "MortallyWounded"
+keys = ["exit_wounded", "mortally_wounded"]
+re = '^You may not (?:exit MajorMud|do that) while you are mortally wounded!$'
+
 # ----- talk and pacing ----------------------------------------------------------------
 
 [[pattern]]

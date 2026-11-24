@@ -14,12 +14,10 @@ silvermere-auth.workspace = true
 silvermere-db.workspace = true
 silvermere-engine.workspace = true
 silvermere-types.workspace = true
-anyhow.workspace = true
-tokio.workspace = true
-
-[dev-dependencies]
 mp-telnet = { path = "../mp-telnet" }
 mp-parse = { path = "../mp-parse" }
+anyhow.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
