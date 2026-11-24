@@ -7,9 +7,11 @@
 
 mod client;
 mod relay;
+mod stock;
 
 pub use client::{RawClient, WAIT};
 pub use relay::Relay;
+pub use stock::{ARENA, StockChar, StockSilvermere, stock_template};
 
 use std::net::SocketAddr;
 

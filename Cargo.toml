@@ -39,4 +39,6 @@ silvermere-types = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd
 silvermere = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
 silvermere-db = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
 silvermere-engine = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
+silvermere-import = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
+silvermere-testkit = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
 silvermere-auth = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }
