@@ -1,0 +1,23 @@
+[package]
+name = "mp-data"
+description = "mudparty's game data: imported from silvermere's database into gamedata.sqlite (design §7.5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+silvermere-db.workspace = true
+silvermere-engine.workspace = true
+silvermere-types.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
