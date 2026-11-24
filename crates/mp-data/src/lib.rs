@@ -118,17 +118,63 @@ pub struct Room {
     pub mm_hash: String,
 }
 
+/// One exit of a room, as silvermere stores it.
+///
+/// # `par1`..`par4`: legacy fields, kept exactly as they are
+///
+/// Every exit in a MajorMUD room record carries four parameter slots (`exitpar1s` to
+/// `exitpar4s`), and silvermere keeps them as `par1` to `par4` in its `room_exits` table.
+/// The slots have no fixed meaning: what each one holds depends on `exit_type`. That is
+/// awkward, but it is the original game's design, and silvermere and MajorMUD's data
+/// depend on it. mudparty copies the four values unchanged and decodes them only where it
+/// needs to, so the data stays compatible with both. Don't reshape or reinterpret them in
+/// the import.
+///
+/// How silvermere reads them (`ExitParams` in silvermere-types `src/records/room.rs`,
+/// the source of truth if this table ever disagrees):
+///
+/// | `exit_type` (code) | `par1` | `par2` | `par3` | `par4` |
+/// |---|---|---|---|---|
+/// | Door (7), Gate (11) | lock state | bash/pick bonus | steps it stays open | key item |
+/// | Key (2) | key item | lock state | pick bonus | steps it stays open |
+/// | Toll (4) | gold | | | |
+/// | Item (3) | item needed | refusal message | message | |
+/// | Hidden (6) | `EXF_` flags (searched, blocked, …) | blocks | "opened" message | name message |
+/// | Map Change (8) | the map it leads into | | | |
+/// | Trap (9) | damage | trap state | message | disarm-failed message |
+/// | Text (10) | the words to type (message) | | message | |
+/// | Remote Action (12) | the words (message) | code | message | item |
+/// | Level (15), Alignment (20) | minimum | maximum | | |
+/// | Class (13), Race (14) | the only class/race allowed | the one barred | | |
+/// | Timed (16) | message | steps | open/closed state | |
+/// | Cast (22) | spell | after | message | look message |
+/// | Ability (23) | ability | minimum | maximum | refusal message |
+/// | Spell Trap (24) | spell | trap state | disarmed message | message |
+/// | Normal (0), Spell (1), Ticket (17), User Count (18), Block Guard (19), Delay (21) | unused | | | |
+///
+/// "Message" means a message number in the game's message table, and "item" an item
+/// number. Today mudparty reads only Map Change's `par1`, to set `to_map`. The rest wait
+/// for the features that need them (doors, keys, tolls and level ranges when walking
+/// paths).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomExit {
     /// 0..9: N S E W NE NW SE SW U D.
     pub dir: u8,
+    /// The map the exit leads into: the room's own map, or a Map Change's `par1`.
     pub to_map: i64,
+    /// The room it leads to, on `to_map`; 0 for none.
     pub to_room: i64,
+    /// silvermere's `EXIT_` code; it says what `par1`..`par4` mean (see the table above).
     pub exit_type: i64,
+    /// The first parameter; meaning by `exit_type`, in the table above.
     pub par1: i64,
+    /// The second parameter; meaning by `exit_type`, in the table above.
     pub par2: i64,
+    /// The third parameter; meaning by `exit_type`, in the table above.
     pub par3: i64,
+    /// The fourth parameter; meaning by `exit_type`, in the table above.
     pub par4: i64,
+    /// How `Obvious exits:` prints it, worked out by mudparty at import.
     pub shows_as: ShowsAs,
 }
 
