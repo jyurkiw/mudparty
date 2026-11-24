@@ -102,6 +102,7 @@ pub struct ImportReport {
     pub exits: usize,
     pub spells: usize,
     pub classes: usize,
+    pub monsters: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +224,8 @@ CREATE INDEX spells_short ON spells (short COLLATE NOCASE);
 CREATE TABLE classes (
   number INTEGER PRIMARY KEY, name TEXT NOT NULL, magery INTEGER NOT NULL,
   magelvl INTEGER NOT NULL);
+-- Monster names, to tell the room's monsters from its players.
+CREATE TABLE monsters (number INTEGER PRIMARY KEY, name TEXT NOT NULL);
 ";
 
 /// Imports `silvermere_db` into `out`, replacing it whole: the new file is written beside
@@ -351,6 +354,15 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
         .collect::<Result<_, _>>()
         .map_err(&e)?
     };
+    let monsters: Vec<(i64, String)> = {
+        let mut q = src
+            .prepare("SELECT number, name FROM monsters ORDER BY number")
+            .map_err(&e)?;
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(&e)?
+            .collect::<Result<_, _>>()
+            .map_err(&e)?
+    };
     drop(src);
 
     // The revision is over the content, in key order, so the same world always gives the
@@ -367,6 +379,9 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
     }
     for c in &classes {
         h.update(format!("{c:?}\n"));
+    }
+    for m in &monsters {
+        h.update(format!("{m:?}\n"));
     }
     let rev: String = h
         .finalize()
@@ -463,6 +478,13 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
         )
         .map_err(&o)?;
     }
+    for (number, name) in &monsters {
+        txn.execute(
+            "INSERT INTO monsters VALUES (?1, ?2)",
+            params![number, name],
+        )
+        .map_err(&o)?;
+    }
     txn.commit().map_err(&o)?;
     drop(w);
     std::fs::rename(&tmp, out).map_err(|x| DataError {
@@ -475,6 +497,7 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
         exits: exit_count,
         spells: spells.len(),
         classes: classes.len(),
+        monsters: monsters.len(),
     })
 }
 
@@ -598,6 +621,19 @@ impl GameData {
             )
             .optional()
             .map_err(err(&self.path))
+    }
+
+    /// Every monster name, once each, sorted.
+    pub fn monster_names(&self) -> Result<Vec<String>, DataError> {
+        let e = err(&self.path);
+        let mut q = self
+            .conn
+            .prepare("SELECT DISTINCT name FROM monsters WHERE name <> '' ORDER BY name")
+            .map_err(&e)?;
+        q.query_map([], |r| r.get(0))
+            .map_err(&e)?
+            .collect::<Result<_, _>>()
+            .map_err(&e)
     }
 
     /// A class by name, case-blind.

@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
+use crate::combat::{Combat, CombatSettings};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
 
 /// What a session needs to run.
@@ -37,6 +38,8 @@ pub struct SessionSpec {
     pub reconnect_delays: Vec<Duration>,
     /// Where the logs go (`<logs>/<name>/`), or none.
     pub logs: Option<PathBuf>,
+    /// How to fight, or `None` for a bot that doesn't (design §6.4).
+    pub combat: Option<CombatSettings>,
 }
 
 /// What the owner can ask of a session.
@@ -46,6 +49,8 @@ pub enum Command {
     Logoff,
     /// The character's config changed: a new statline and revision.
     Config { statline: String, rev: String },
+    /// Attack this monster first, until it dies (`@kill`, the web page's kill box).
+    Kill { target: String },
 }
 
 /// What a session is doing.
@@ -85,6 +90,8 @@ pub enum Report {
     ConfigApplied {
         rev: String,
     },
+    /// A line the session sent to the game (never a password).
+    Sent(String),
 }
 
 /// A running session.
@@ -169,6 +176,9 @@ impl Runner {
                 let _ = l.transcript_sent(line, &Source::Engine);
             }
         }
+        if !secret {
+            self.report(Report::Sent(line.to_owned()));
+        }
         let mut out = Vec::with_capacity(bytes.len());
         mp_telnet::escape(&bytes, &mut out);
         stream.write_all(&out).await
@@ -220,6 +230,8 @@ impl Runner {
         }
         let mut reader = Reader::with_statlines(shapes);
         let mut login = Login::new(self.spec.login.clone(), Instant::now());
+        // A new link is a new view of the room: the roster starts again.
+        let mut combat = self.spec.combat.clone().map(Combat::new);
         let mut in_game = false;
         let mut last_vitals: Option<Vitals> = None;
         // While logging off: when to give up, and how many `quit`s were sent.
@@ -248,6 +260,13 @@ impl Runner {
                             let _ = l.transcript_line(&t.plain);
                         }
                         if !in_game {
+                            // The room shown on the way in is the first roster; the
+                            // engine decides nothing until the bot is in the game.
+                            if let Some(c) = &mut combat
+                                && !matches!(t.item, Item::Prompt(_))
+                            {
+                                c.on_item(&t.item, Instant::now());
+                            }
                             for action in login.on_item(&t.item, Instant::now()) {
                                 self.decision("login_step", json!({"read": t.plain, "action": format!("{action:?}").replace(&self.spec.login.password, "********")}));
                                 match action {
@@ -301,9 +320,35 @@ impl Runner {
                             }
                             _ => {}
                         }
+                        if let Some(c) = &mut combat
+                            && logging_off.is_none()
+                        {
+                            let commands = c.on_item(&t.item, Instant::now());
+                            let target = c.target().map(str::to_owned);
+                            for cmd in commands {
+                                self.decision("attack", json!({"command": cmd, "target": target}));
+                                if self.send(&mut stream, &cmd, false).await.is_err() {
+                                    return LinkEnd::Lost { was_in_game: true };
+                                }
+                            }
+                        }
                     }
                 }
                 cmd = cmds.recv() => match cmd {
+                    Some(Command::Kill { target }) => {
+                        self.decision("kill_order", json!({"target": target}));
+                        if let Some(c) = &mut combat {
+                            c.order_kill(&target);
+                            if in_game && logging_off.is_none() {
+                                for cmd in c.act(Instant::now()) {
+                                    self.decision("attack", json!({"command": cmd, "target": target}));
+                                    if self.send(&mut stream, &cmd, false).await.is_err() {
+                                        return LinkEnd::Lost { was_in_game: true };
+                                    }
+                                }
+                            }
+                        }
+                    }
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
                     Some(Command::Logoff) => {
@@ -414,6 +459,10 @@ async fn run(
                             r.spec.statline = statline;
                             r.spec.config_rev = rev.clone();
                             r.report(Report::ConfigApplied { rev });
+                        }
+                        // No link, so no room to fight in: an order from now is dropped.
+                        Some(Command::Kill { target }) => {
+                            r.decision("kill_order_dropped", json!({"target": target, "why": "reconnecting"}));
                         }
                     }
                 }

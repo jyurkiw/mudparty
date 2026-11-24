@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 mp-config = { path = "../mp-config" }
+mp-data = { path = "../mp-data" }
 mp-engine = { path = "../mp-engine" }
 mp-log = { path = "../mp-log" }
 anyhow.workspace = true

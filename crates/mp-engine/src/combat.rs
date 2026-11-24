@@ -25,9 +25,6 @@ use std::time::{Duration, Instant};
 use mp_config::{Melee, RoomTier, Rule, Tier};
 use mp_parse::{Event, Item};
 
-/// A combat round (design §6.4; MudPlay GAME_MECHANICS "Combat round (5s)").
-const ROUND: Duration = Duration::from_secs(5);
-
 /// What the engine needs to fight.
 #[derive(Debug, Clone)]
 pub struct CombatSettings {
@@ -45,6 +42,9 @@ pub struct CombatSettings {
     pub monsters: Vec<String>,
     /// How old the leader's target may be and still be assisted (design §5.3).
     pub leader_target_stale: Duration,
+    /// A combat round: 5 s on a stock game (MudPlay GAME_MECHANICS "Combat round (5s)").
+    /// At most one change of attack is sent in a round.
+    pub round: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +133,11 @@ impl Combat {
     /// `@kill <name>`: this monster first, until it dies.
     pub fn order_kill(&mut self, name: &str) {
         self.kill_order = Some(name.to_owned());
+    }
+
+    /// Decides now, from the last prompt's MP, as after a kill order.
+    pub fn act(&mut self, now: Instant) -> Vec<String> {
+        self.decide(now)
     }
 
     /// `name` attacked the bot (for `fight_back`). Only a monster counts.
@@ -315,7 +320,7 @@ impl Combat {
         if self.current.is_some()
             && self
                 .last_change
-                .is_some_and(|at| now.duration_since(at) < ROUND)
+                .is_some_and(|at| now.duration_since(at) < self.set.round)
         {
             return Vec::new();
         }

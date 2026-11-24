@@ -8,7 +8,7 @@ use mp_data::{GameData, ShowsAs, import};
 use silvermere_db::TestDb;
 use silvermere_engine::world::blank;
 use silvermere_types::enums::{ExitType, Magery};
-use silvermere_types::ids::{ClassNo, RoomId, RoomKey};
+use silvermere_types::ids::{ClassNo, MonsterNo, RoomId, RoomKey};
 use silvermere_types::records::Exit;
 
 // Exit slots, silvermere's DIR_ order.
@@ -50,6 +50,11 @@ async fn silvermere_db() -> (TestDb, PathBuf) {
         let mut r = blank::clear_room(RoomKey::new(key.0, key.1));
         r.name = name.into();
         db.rooms().insert(&r).await.unwrap();
+    }
+    for (n, name) in [(1, "practice dummy"), (2, "kobold"), (3, "orc shaman")] {
+        let mut m = blank::clear_known_monster(MonsterNo(n));
+        m.name = name.into();
+        db.monsters().insert(&m).await.unwrap();
     }
     let mut c = blank::clear_class(ClassNo(7));
     c.name = "Assassin".into();
@@ -171,8 +176,14 @@ async fn the_import_replaces_the_old_file_whole() {
     std::fs::write(out(dir.path()), b"an old file").unwrap();
     let report = import(&src, &out(dir.path())).unwrap();
     assert_eq!(
-        (report.rooms, report.exits, report.spells, report.classes),
-        (5, 5, 1, 1)
+        (
+            report.rooms,
+            report.exits,
+            report.spells,
+            report.classes,
+            report.monsters
+        ),
+        (5, 5, 1, 1, 3)
     );
     let names: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -210,4 +221,16 @@ fn exit_types_show_as_obvious_exits_print_them() {
     ] {
         assert_eq!(shows_as(i64::from(t.code())), ShowsAs::Plain, "{t:?}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn monster_names_are_imported_for_telling_monsters_from_players() {
+    let (_t, src) = silvermere_db().await;
+    let dir = tempfile::tempdir().unwrap();
+    import(&src, &out(dir.path())).unwrap();
+    let gd = GameData::open(&out(dir.path())).unwrap();
+    assert_eq!(
+        gd.monster_names().unwrap(),
+        ["kobold", "orc shaman", "practice dummy"]
+    );
 }
