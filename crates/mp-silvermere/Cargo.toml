@@ -14,6 +14,10 @@ silvermere-auth.workspace = true
 silvermere-db.workspace = true
 silvermere-engine.workspace = true
 silvermere-types.workspace = true
+silvermere-import.workspace = true
+silvermere-testkit.workspace = true
+silvermere-text.workspace = true
+regex.workspace = true
 mp-telnet = { path = "../mp-telnet" }
 mp-parse = { path = "../mp-parse" }
 anyhow.workspace = true

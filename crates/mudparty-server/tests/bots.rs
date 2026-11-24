@@ -279,3 +279,41 @@ fn offline_is_recognised() {
         report: Report::State(SessionState::Offline(Offline::LoggedOff)),
     }));
 }
+
+// An editor (or `fs::write`) empties a file before writing it, and Linux's watcher reports
+// the half-written moment too. Only the finished edit counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_caught_half_written_is_not_reported() {
+    let sm = Silvermere::start(&players(&["Aldric"])).await.unwrap();
+    let dir = root(&sm, &["Aldric"], false);
+    let server = start(dir.path()).await;
+    let mut rx = server.subscribe();
+    server.start_bot("Aldric").unwrap();
+    until(&mut rx, state("Aldric", SessionState::InGame)).await;
+    let path = dir.path().join("characters/Aldric.yaml");
+    fs::write(&path, "schema: 1\nna").unwrap();
+    fs::write(&path, character("Aldric", "[%h/%H HP]:%r", false)).unwrap();
+    let e = until(&mut rx, |e| {
+        matches!(
+            e,
+            BotEvent::ConfigError { .. }
+                | BotEvent::Session {
+                    report: Report::ConfigApplied { .. },
+                    ..
+                }
+        )
+    })
+    .await;
+    assert!(
+        matches!(
+            e,
+            BotEvent::Session {
+                report: Report::ConfigApplied { .. },
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    server.shutdown().await;
+    sm.stop().await.unwrap();
+}

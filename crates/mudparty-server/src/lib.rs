@@ -24,6 +24,8 @@ use tokio::sync::{broadcast, mpsc};
 const RECONNECT: [u64; 4] = [5, 10, 30, 60];
 /// How long a login step waits for the game.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an edited character file must be quiet before it is read.
+const SETTLE: Duration = Duration::from_millis(300);
 
 /// Something a bot did, for anyone watching.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,9 +294,24 @@ impl Server {
         *self.watcher.lock().expect("watcher lock") = Some(watcher);
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
-            while let Some(path) = rx.recv().await {
+            // An editor, or `fs::write`, empties a file before writing it, and Linux's
+            // watcher reports that half-written moment too. So changes are gathered until a
+            // file has been quiet for `SETTLE`, and each changed file is read once, whole.
+            while let Some(first) = rx.recv().await {
+                let mut changed = std::collections::BTreeSet::from([first]);
+                loop {
+                    match tokio::time::timeout(SETTLE, rx.recv()).await {
+                        Ok(Some(p)) => {
+                            changed.insert(p);
+                        }
+                        Ok(None) => return,
+                        Err(_) => break,
+                    }
+                }
                 let Some(me) = me.upgrade() else { break };
-                me.reload(&path);
+                for path in changed {
+                    me.reload(&path);
+                }
             }
         });
         Ok(())
