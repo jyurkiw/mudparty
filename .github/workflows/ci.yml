@@ -1,0 +1,59 @@
+# Formatting, lints and the tests, on every push and pull request (issue #26).
+#
+# The toolchain is the one in rust-toolchain.toml (rustup installs it on first use). The
+# whole-system tests run a real silvermere in-process on its stock world: silvermere's test
+# kit downloads the stock package once (sha256-checked) into SILVERMERE_STOCK_CACHE, which is
+# cached here so it is fetched only on a cache miss.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show
+      - run: cargo fmt --all -- --check
+
+  test:
+    name: clippy and tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      SILVERMERE_STOCK_CACHE: ${{ github.workspace }}/.stock-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache silvermere's stock package
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.stock-cache
+          # The package is pinned by its sha256 in silvermere, so one key serves every run.
+          key: silvermere-stock-${{ runner.os }}-1.11p-v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: build
+        run: cargo build --workspace
+      - name: tests
+        run: cargo test --workspace
