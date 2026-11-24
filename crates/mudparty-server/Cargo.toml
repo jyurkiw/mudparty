@@ -1,0 +1,25 @@
+[package]
+name = "mudparty-server"
+description = "The mudparty server: headless bots, config, logs (design §3)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mp-config = { path = "../mp-config" }
+mp-engine = { path = "../mp-engine" }
+mp-log = { path = "../mp-log" }
+anyhow.workspace = true
+notify.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+mp-silvermere = { path = "../mp-silvermere" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

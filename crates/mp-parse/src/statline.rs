@@ -106,6 +106,17 @@ impl Statline {
         Ok(Self { re })
     }
 
+    /// The prompts silvermere prints in its default modes (On and Full), which a character
+    /// shows before it sets a statline of its own (silvermere-text `prompt.rs`): HP and
+    /// mana with the rest mark after the brackets, the same with `KAI` for a kai class, and
+    /// HP alone with the mark inside them.
+    pub fn silvermere_defaults() -> Vec<Statline> {
+        ["[HP=%h/MA=%m]:%r", "[HP=%h/KAI=%m]:%r", "[HP=%h%r]:"]
+            .into_iter()
+            .map(|t| Self::compile(t).expect("the default shapes compile"))
+            .collect()
+    }
+
     /// Reads a prompt at the start of `plain`: its vitals and the byte offset where it ends.
     pub fn read(&self, plain: &str) -> Option<(Vitals, usize)> {
         let caps = self.re.captures(plain)?;

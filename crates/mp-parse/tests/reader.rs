@@ -135,3 +135,52 @@ fn a_fight_reads_in_order() {
         ]
     );
 }
+
+#[test]
+fn a_reader_with_several_statlines_reads_any_of_them() {
+    let mut r = Reader::with_statlines(Statline::silvermere_defaults());
+    let items = r.feed(b"\x1b[79D\x1b[K\x1b[0;37m[HP=35]:");
+    assert!(
+        matches!(items.as_slice(), [Item::Prompt(v)] if v.hp == 35),
+        "{items:?}"
+    );
+    let items = r.feed(b"\x1b[79D\x1b[K\x1b[0;37m[HP=40/MA=9]:");
+    assert!(
+        matches!(items.as_slice(), [Item::Prompt(v)] if v.mp == Some(9)),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn setting_the_statline_replaces_the_defaults() {
+    let mut r = Reader::with_statlines(Statline::silvermere_defaults());
+    r.set_statline(Statline::compile(BOT).unwrap());
+    let mut b = b"\x1b[79D\x1b[K[HP=35]:".to_vec();
+    b.extend_from_slice(b"\r\n");
+    assert_eq!(r.feed(&b), [Item::Text("[HP=35]:".into())]);
+}
+
+#[test]
+fn a_traced_feed_gives_each_item_with_its_text() {
+    let mut r = reader();
+    let mut b = prompt(32, 27);
+    b.extend_from_slice(b"\x1b[0;37m--- Telepath Sent to Raijin ---\r\nnorth\r\n");
+    let got: Vec<(Item, String)> = r
+        .feed_traced(&b)
+        .into_iter()
+        .map(|t| (t.item, t.plain))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (vitals(32, 27), "[HP=32/120,MA=27/40]:".to_owned()),
+            (
+                Item::Event(Event::TelepathSent {
+                    who: "Raijin".into()
+                }),
+                "--- Telepath Sent to Raijin ---".to_owned()
+            ),
+            (Item::Text("north".into()), "north".to_owned()),
+        ]
+    );
+}

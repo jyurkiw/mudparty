@@ -5,6 +5,12 @@
 //! four special rooms of the default config on map 1, blank records for two items, two
 //! monsters, one class and one race, built from the engine's zeroed records.
 
+mod client;
+mod relay;
+
+pub use client::{RawClient, WAIT};
+pub use relay::Relay;
+
 use std::net::SocketAddr;
 
 use silvermere::config::Config;
