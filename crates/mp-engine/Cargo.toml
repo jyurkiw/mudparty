@@ -18,6 +18,7 @@ tokio.workspace = true
 
 
 [dev-dependencies]
+regex.workspace = true
 silvermere-text.workspace = true
 mp-silvermere = { path = "../mp-silvermere" }
 tempfile.workspace = true

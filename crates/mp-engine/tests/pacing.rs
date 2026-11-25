@@ -14,6 +14,7 @@ fn set() -> PacingSettings {
         max_unanswered: 2,
         prompt_timeout: Duration::from_secs(3),
         telepath_tries: 3,
+        telepath_retry: Duration::from_secs(3),
     }
 }
 
@@ -115,7 +116,8 @@ fn a_telepath_not_sent_is_tried_three_times_then_given_up() {
     for _ in 0..3 {
         sent.extend(p.ready(at));
         let gave_up = p.on_item(&Item::Event(Event::TelepathNotSent), ms(at, 10));
-        at = ms(at, 100);
+        // The receiver's pages come back each 3 s cycle, so a retry waits for the next.
+        at = ms(at, 3100);
         if !gave_up.is_empty() {
             assert_eq!(gave_up, vec![("Raijin".to_owned(), "@wait".to_owned())]);
             assert_eq!(sent, vec!["/Raijin @wait"; 3]);
@@ -145,7 +147,26 @@ fn acks_pair_with_telepaths_in_the_order_they_went() {
     p.on_item(&Item::Event(Event::TelepathNotSent), ms(t, 130));
     p.on_item(&prompt(), ms(t, 140));
     p.on_item(&prompt(), ms(t, 150));
-    assert_eq!(p.ready(ms(t, 200)), vec!["/Bob @ok"]);
+    assert_eq!(p.ready(ms(t, 3200)), vec!["/Bob @ok"]);
+}
+
+#[test]
+fn a_telepath_not_sent_waits_out_the_page_cycle_without_holding_other_lines() {
+    let t = Instant::now();
+    let mut p = Pacer::new(set());
+    p.telepath("Raijin", "@wait");
+    p.push("look");
+    assert_eq!(p.ready(t), vec!["/Raijin @wait"]);
+    p.on_item(&Item::Event(Event::TelepathNotSent), ms(t, 10));
+    p.on_item(&prompt(), ms(t, 20));
+    assert_eq!(p.ready(ms(t, 100)), vec!["look"], "other lines go on");
+    p.on_item(&prompt(), ms(t, 120));
+    assert!(
+        p.ready(ms(t, 1000)).is_empty(),
+        "the receiver has no pages yet"
+    );
+    assert_eq!(p.next_at(), Some(ms(t, 3010)));
+    assert_eq!(p.ready(ms(t, 3010)), vec!["/Raijin @wait"]);
 }
 
 #[test]

@@ -389,6 +389,11 @@ behind.
     Login lines and `quit` skip the pacer. A telepath is `/<name> <text>`. A telepath to
     someone not in the game gets `Cannot find user!` and no acknowledgement, so it is given
     up at once and the acknowledgements stay paired.
+  - **Pages (found in MVP 6a, silvermere `comms/allowance.rs`):** a character receives at
+    most `maxpages` + 1 telepaths (default 3, so 4) in each 3 s medium cycle. A telepath
+    sent again inside the same cycle fails again. So one that wasn't sent waits 3 s
+    before its next try, and the lines behind it go on meanwhile. This also caps how fast
+    a player can command one bot by telepath.
 
 ### 6.2 Auto login
 
@@ -444,6 +449,43 @@ dialogue (`bin/silvermere/tests/login_e2e.rs`, `docs/auth.md`):
 
 The same handlers serve `order` messages from the server and `#` commands typed at an
 interactive client, so there is one code path for every source.
+
+**As built (MVP 6a, `mp-engine/src/remote.rs`):**
+- The command is the first word, case-blind, less one trailing `!`. An `@word` that isn't
+  a command is chat and gets nothing, whoever sent it.
+- A refusal (the generic `command invalid or not allowed`, or a handler's own reason) is
+  sent only with `warn_denied`. Hard blocks stay silent whatever the setting: anything
+  with `reroll` in it (part of a word too), and `@do` with `suicide`. `@help` is a query
+  and is not blocked.
+- Replies are `{…}` in plain ASCII, spelled as MudPlay's `WireText.Ascii` does. `@help`'s
+  list comes in parts of at most 200 characters.
+- The replies built, each MudPlay's text:
+  - `@health`: `HP=43/43,MA=15/34` and `, Resting` or `, Meditating`, with no MA part for
+    a class without mana. Before the first prompt it refuses with
+    `HP unknown - no prompt observed yet`.
+  - `@version`: `mudparty <version>`.
+  - `@auto-…`: `@auto-rest: on`. A bare toggle flips it, and anything but `on`/`off` gets
+    `?`.
+  - `@do`: `ok`.
+  - `@stop`: `movement paused`, or `already @stopped`.
+  - `@rego`: `resuming`, or `nothing to resume`. **`@rego` is added** to lift `@stop`,
+    as in MudPlay.
+- `@kill`, `@wait`, `@ok`, `@invite` and `@join` reply nothing when they work.
+  - `@invite` and `@join` are refused with `I'm following <leader>; denied.`. A `@join`
+    from the leader already followed is taken all the same.
+  - `@join` starts the §6.5 join with that leader.
+- The switches stay set across reconnects:
+  - `@auto-combat off`, `@auto-all off` and `@stop` keep the combat engine reading the
+    room, but it decides nothing.
+  - `@auto-nuke off` makes it melee.
+  - A `@wait` hold picks no new fight. The fight going on goes on, and so does a kill
+    order.
+  - Rest follows `@auto-rest`, `@auto-all` and `@stop` the same way.
+  - Combat and rest are built from the YAML even when `automation` starts them off, so a
+    toggle can turn them on.
+  - Every change reaches the server as `Report::Automation`.
+- **Still to come (MVP 6b):** `@where`, `@status` and `@exp`. They need room tracking and
+  the `exp` screen.
 
 ### 6.4 Combat
 

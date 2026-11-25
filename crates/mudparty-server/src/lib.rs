@@ -14,8 +14,8 @@ use anyhow::Context;
 use mp_config::{CharacterConfig, PartyRole, Secrets, ServerConfig, load_character, load_server};
 use mp_data::GameData;
 use mp_engine::{
-    CombatSettings, Command, LoginSettings, Offline, PartySettings, Report, RestSettings,
-    SessionHandle, SessionSpec, SessionState, spawn,
+    CombatSettings, Command, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
+    RestSettings, SessionHandle, SessionSpec, SessionState, spawn,
 };
 use mp_log::{RollConfig, ServerLog, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -197,10 +197,9 @@ impl Server {
 
     /// How a bot fights, from its file and the game data; `None` when its file turns combat
     /// off or there is no game data.
+    /// How the bot fights. Built whether or not `automation.combat` starts it on, so
+    /// `@auto-combat on` has something to switch on.
     fn combat_for(&self, c: &CharacterConfig) -> Option<CombatSettings> {
-        if !c.automation.combat {
-            return None;
-        }
         let gd = self.gamedata.lock().expect("gamedata lock");
         let Some(gd) = gd.as_ref() else {
             self.record(
@@ -295,6 +294,14 @@ impl Server {
             pacing: Default::default(),
             party: party_for(&c),
             rest: rest_for(&c),
+            remote: Some(RemoteSettings {
+                name: c.name.clone(),
+                allow: c.remote.allow.clone(),
+                channels: c.remote.channels.clone(),
+                warn_denied: c.remote.warn_denied,
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+            }),
+            automation: c.automation,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn(spec, tx);
@@ -455,11 +462,9 @@ fn party_for(c: &CharacterConfig) -> Option<PartySettings> {
     })
 }
 
-/// When the bot rests, if `automation.rest` is on.
+/// When the bot rests. Built whether or not `automation.rest` starts it on, so
+/// `@auto-rest on` has something to switch on.
 fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
-    if !c.automation.rest {
-        return None;
-    }
     let tell = c.rest.tell_leader.then(|| c.party.leader.clone()).flatten();
     Some(RestSettings {
         start_when_any: c.rest.start_when_any,

@@ -1437,6 +1437,7 @@ dependencies = [
  "mp-parse",
  "mp-silvermere",
  "mp-telnet",
+ "regex",
  "serde_json",
  "silvermere-text",
  "tempfile",

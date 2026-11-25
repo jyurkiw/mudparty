@@ -13,6 +13,10 @@
 //! - A telepath is `/<name> <text>`. The game answers each one, in order, with
 //!   `--- Telepath Sent to <Name> ---` or `--- Telepath Not Sent ---` (out of pages,
 //!   blocked, or forgotten; it doesn't say which).
+//! - **Pages:** a character receives at most `pagemax` + 1 telepaths (`SET MAXPAGES`,
+//!   default 3) in each 3 s medium cycle, and silvermere's `cycles::medium` gives them back
+//!   (`comms/allowance.rs`). A telepath sent again inside the same cycle fails again, so
+//!   one not sent waits a cycle before its next try, and lines behind it go on meanwhile.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -39,6 +43,8 @@ pub struct PacingSettings {
     pub prompt_timeout: Duration,
     /// How many times a telepath is sent before it is given up.
     pub telepath_tries: u32,
+    /// How long a telepath not sent waits before it is tried again: the game's page cycle.
+    pub telepath_retry: Duration,
 }
 
 impl Default for PacingSettings {
@@ -49,6 +55,7 @@ impl Default for PacingSettings {
             max_unanswered: 3,
             prompt_timeout: Duration::from_secs(3),
             telepath_tries: 3,
+            telepath_retry: Duration::from_secs(3),
         }
     }
 }
@@ -84,6 +91,8 @@ pub struct Pacer {
     last: Option<Out>,
     /// Telepaths sent and not yet answered, oldest first.
     acks: VecDeque<Out>,
+    /// Telepaths not sent, each with when it may be tried again, soonest first.
+    retries: VecDeque<(Instant, Out)>,
 }
 
 impl Pacer {
@@ -96,6 +105,7 @@ impl Pacer {
             last_prompt: None,
             last: None,
             acks: VecDeque::new(),
+            retries: VecDeque::new(),
         }
     }
 
@@ -120,7 +130,7 @@ impl Pacer {
 
     /// Whether nothing is waiting to go.
     pub fn is_idle(&self) -> bool {
-        self.queue.is_empty()
+        self.queue.is_empty() && self.retries.is_empty()
     }
 
     fn floor_for(&self, o: &Out) -> Duration {
@@ -133,13 +143,20 @@ impl Pacer {
     /// When the next line may go, if one is waiting. While the prompt gate is shut that is
     /// when it would time out; a prompt before then opens it sooner.
     pub fn next_at(&self) -> Option<Instant> {
-        let next = self.queue.front()?;
-        let floor = self.last_send.map(|at| at + self.floor_for(next));
         let gate = (self.unanswered >= self.set.max_unanswered)
             .then(|| self.last_prompt.max(self.last_send))
             .flatten()
             .map(|at| at + self.set.prompt_timeout);
-        Some(floor.max(gate).unwrap_or_else(Instant::now))
+        let when = |o: &Out, due: Option<Instant>| {
+            let floor = self.last_send.map(|at| at + self.floor_for(o));
+            floor.max(gate).max(due).unwrap_or_else(Instant::now)
+        };
+        let queued = self.queue.front().map(|o| when(o, None));
+        let retry = self.retries.front().map(|(at, o)| when(o, Some(*at)));
+        match (queued, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn gate_open(&mut self, now: Instant) -> bool {
@@ -156,8 +173,15 @@ impl Pacer {
 
     /// The lines that may go now; at most one, so the floor holds between them.
     pub fn ready(&mut self, now: Instant) -> Vec<String> {
-        let Some(next) = self.queue.front() else {
-            return Vec::new();
+        // A retry whose cycle has passed goes before the queue: it was sent first.
+        let due = self.retries.front().is_some_and(|(at, _)| *at <= now);
+        let next = if due {
+            &self.retries.front().expect("a retry is due").1
+        } else {
+            match self.queue.front() {
+                Some(o) => o,
+                None => return Vec::new(),
+            }
         };
         if self
             .last_send
@@ -168,7 +192,11 @@ impl Pacer {
         if !self.gate_open(now) {
             return Vec::new();
         }
-        let mut out = self.queue.pop_front().expect("a line is waiting");
+        let mut out = if due {
+            self.retries.pop_front().expect("a retry is due").1
+        } else {
+            self.queue.pop_front().expect("a line is waiting")
+        };
         if let Out::Telepath { tries, .. } = &mut out {
             *tries += 1;
             self.acks.push_back(out.clone());
@@ -214,7 +242,9 @@ impl Pacer {
                     if tries >= self.set.telepath_tries {
                         return vec![(who, text)];
                     }
-                    self.queue.push_front(Out::Telepath { who, text, tries });
+                    let at = now + self.set.telepath_retry;
+                    self.retries
+                        .push_back((at, Out::Telepath { who, text, tries }));
                 }
             }
             _ => {}

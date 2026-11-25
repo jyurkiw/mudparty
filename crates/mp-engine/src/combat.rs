@@ -106,6 +106,10 @@ pub struct Combat {
     useless: HashSet<(String, String)>,
     last_change: Option<Instant>,
     mp: i32,
+    /// `@auto-nuke`: attack spells may be cast.
+    nuke: bool,
+    /// A `@wait` hold: no new fight is picked, though one going on goes on.
+    hold: bool,
 }
 
 impl Combat {
@@ -122,7 +126,19 @@ impl Combat {
             useless: HashSet::new(),
             last_change: None,
             mp: 0,
+            nuke: true,
+            hold: false,
         }
+    }
+
+    /// `@auto-nuke on|off`: with it off, the bot melees whatever its MP.
+    pub fn set_nuke(&mut self, on: bool) {
+        self.nuke = on;
+    }
+
+    /// Holds (or frees) the picking of new fights, for a `@wait`.
+    pub fn set_hold(&mut self, hold: bool) {
+        self.hold = hold;
     }
 
     /// The monster being fought.
@@ -273,7 +289,13 @@ impl Combat {
     /// The attack for `target` at the current MP: a room tier with enough enemies here, else
     /// the first single-target tier that fits, else melee, else none.
     fn choose(&self, target: &str) -> Option<Attack> {
-        for t in &self.set.room_tiers {
+        let room_tiers = if self.nuke {
+            &self.set.room_tiers[..]
+        } else {
+            &[]
+        };
+        let tiers = if self.nuke { &self.set.tiers[..] } else { &[] };
+        for t in room_tiers {
             let a = Attack::Room(t.spell.clone());
             if self.roster.len() >= t.min_enemies as usize
                 && self.affordable(&t.spell, t.min_mp)
@@ -282,7 +304,7 @@ impl Combat {
                 return Some(a);
             }
         }
-        for t in &self.set.tiers {
+        for t in tiers {
             let a = Attack::Spell(t.spell.clone());
             if self.affordable(&t.spell, t.min_mp) && self.works(&a, target) {
                 return Some(a);
@@ -302,6 +324,7 @@ impl Combat {
         let target = match (ordered, keep) {
             (Some(o), _) => Some(o),
             (None, Some(k)) => Some(k),
+            (None, None) if self.hold => None,
             (None, None) => self.pick(now),
         };
         if target != self.target {
