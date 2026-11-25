@@ -165,7 +165,9 @@ fn poison_puts_resting_off() {
     let t = Instant::now();
     let mut r = Rester::new(settings());
     r.on_item(&prompt(10, 0, Rest::Standing), t, false);
+    assert!(!r.poisoned(t));
     r.on_item(&Item::Event(Event::TooSick), t, false);
+    assert!(r.poisoned(t), "for @status");
     let soon = t + Duration::from_secs(10);
     assert!(
         r.on_item(&prompt(10, 0, Rest::Standing), soon, false)

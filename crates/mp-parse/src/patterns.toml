@@ -303,3 +303,20 @@ re = '^Meditation will not help at this time\.$'
 event = "PoisonTick"
 keys = ["poison_tick"]
 re = '^You feel ill\.$'
+
+# ----- where and how far --------------------------------------------------------------
+
+# `/room` answers with the bare key through the fork's text line; a `/room <dir>` with no
+# exit that way says `*no room found*`, which this doesn't read.
+[[pattern]]
+event = "RoomKey"
+keys = ["fork_text"]
+re = '^(?P<map>\d+)/(?P<room>\d+)$'
+numbers = ["map", "room"]
+
+# exp, left and need are `%lu`, or `%lu%09lu` past a billion: digits either way.
+[[pattern]]
+event = "ExpLine"
+keys = ["exp_line"]
+re = '^Exp: (?P<exp>\d+) Level: (?P<level>\d+) Exp needed for next level: (?P<left>\d+) \((?P<need>\d+)\) \[(?P<pct>\d+)%\]$'
+numbers = ["exp", "level", "left", "need", "pct"]

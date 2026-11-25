@@ -216,6 +216,23 @@ pub enum Event {
     },
     PartyNone,
 
+    // ----- where and how far
+    /// `/room`'s answer, `1/206` (a silvermere fork command).
+    RoomKey {
+        map: u32,
+        room: u32,
+    },
+    /// The `exp` command's line.
+    ExpLine {
+        exp: i64,
+        level: u32,
+        /// Experience still needed for the next level.
+        left: i64,
+        /// The next level's total.
+        need: i64,
+        pct: u32,
+    },
+
     // ----- resting
     /// `You are now resting.` or `You are now meditating.`
     RestStarted,

@@ -365,6 +365,29 @@ fn cases() -> Vec<Case> {
             }],
         ),
         msg("party_none", Msg::PartyNone, vec![E::PartyNone]),
+        // where and how far
+        msg(
+            "fork_text",
+            Msg::ForkText { text: s("1/206") },
+            vec![E::RoomKey { map: 1, room: 206 }],
+        ),
+        msg(
+            "exp_line",
+            Msg::ExpLine {
+                exp: s("346"),
+                level: s("1"),
+                left: s("1304"),
+                need: s("1650"),
+                pct: s("21"),
+            },
+            vec![E::ExpLine {
+                exp: 346,
+                level: 1,
+                left: 1304,
+                need: 1650,
+                pct: 21,
+            }],
+        ),
         // resting
         msg("rest_start", Msg::RestStart, vec![E::RestStarted]),
         msg("meditate_start", Msg::MeditateStart, vec![E::RestStarted]),

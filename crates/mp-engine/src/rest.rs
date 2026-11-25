@@ -85,6 +85,11 @@ impl Rester {
         self.resting
     }
 
+    /// Whether the bot showed signs of poison lately (for `@status`).
+    pub fn poisoned(&self, now: Instant) -> bool {
+        self.sick_until.is_some_and(|at| now < at)
+    }
+
     fn can_rest(&self, now: Instant, fighting: bool) -> bool {
         !fighting
             && !self.engaged

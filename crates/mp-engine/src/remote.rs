@@ -81,6 +81,179 @@ pub enum Effect {
     Ok(String),
     /// `@join`: join this leader's party.
     Join(String),
+    /// A query the game must be asked first (`/room`, `exp`); the session answers `to`
+    /// when the game has.
+    Ask {
+        query: Query,
+        channel: Channel,
+        to: String,
+    },
+}
+
+/// A query answered once the game has said something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Query {
+    /// `@where`: after `/room`.
+    Where,
+    /// `@status`: after `/room`.
+    Status,
+    /// `@exp`: after `exp`.
+    Exp,
+}
+
+/// A room as the game data has it, for `@where` and `@status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomInfo {
+    pub name: String,
+    /// The exits that show as obvious, by silvermere direction number (0 north … 9
+    /// down). Hidden and text exits are left out, so nothing secret leaks.
+    pub exits: Vec<u8>,
+}
+
+/// Looks rooms up in the game data.
+pub trait RoomBook: Send + Sync + std::fmt::Debug {
+    fn room(&self, map: u32, room: u32) -> Option<RoomInfo>;
+}
+
+const DIRECTIONS: [&str; 10] = [
+    "north",
+    "south",
+    "east",
+    "west",
+    "northeast",
+    "northwest",
+    "southeast",
+    "southwest",
+    "up",
+    "down",
+];
+
+/// MudPlay's `FormatRoom`: the name (`???` when it has none) and the key.
+fn room_text((map, room): (u32, u32), info: &RoomInfo) -> String {
+    let name = if info.name.is_empty() {
+        "???"
+    } else {
+        &info.name
+    };
+    format!("{name} (map {map}, room {room})")
+}
+
+/// `@where`'s answer: MudPlay's `ReplyWhere`, read back by its `WhereReplyParser`.
+pub fn where_reply(key: (u32, u32), info: Option<&RoomInfo>) -> String {
+    let Some(info) = info else {
+        return format!("map {}, room {} (not in map data)", key.0, key.1);
+    };
+    let mut dirs = info.exits.clone();
+    dirs.sort_unstable();
+    dirs.dedup();
+    let exits: Vec<&str> = dirs
+        .iter()
+        .filter_map(|d| DIRECTIONS.get(*d as usize).copied())
+        .collect();
+    let exits = if exits.is_empty() {
+        "none".to_owned()
+    } else {
+        exits.join(", ")
+    };
+    format!("{}; exits: {exits}", room_text(key, info))
+}
+
+/// `@status`'s answer: MudPlay's `OnStatus`, with no walking yet to report.
+pub fn status_reply(
+    activity: &str,
+    room: Option<((u32, u32), Option<&RoomInfo>)>,
+    ailments: &[&str],
+) -> String {
+    let room = match room {
+        Some((key, Some(info))) => room_text(key, info),
+        Some((key, None)) => format!("map {}, room {}", key.0, key.1),
+        None => "location unknown".to_owned(),
+    };
+    let ailments = if ailments.is_empty() {
+        "no ailments".to_owned()
+    } else {
+        format!("ailments: {}", ailments.join(", "))
+    };
+    format!("{activity}; {room}; {ailments}")
+}
+
+/// What the game's `exp` line said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpKnown {
+    pub level: u32,
+    /// Experience still needed for the next level.
+    pub left: i64,
+}
+
+/// `12345` as `12,345` (.NET's `N0`).
+fn grouped(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+/// MudPlay's `FormatExpRate`: exact below 100k, then `853 k`, then `1.1 m`.
+fn rate_text(rate: f64) -> String {
+    if rate < 100_000.0 {
+        grouped(rate.round() as i64)
+    } else if rate < 1_000_000.0 {
+        format!("{} k", (rate / 1000.0) as i64)
+    } else {
+        let m = format!("{:.1}", rate / 1_000_000.0);
+        format!("{} m", m.trim_end_matches(".0"))
+    }
+}
+
+/// MudPlay's `FormatTimeToLevel`.
+fn time_text(secs: f64) -> String {
+    let s = secs as u64;
+    let (d, h, m, sec) = (s / 86_400, s / 3600 % 24, s / 60 % 60, s % 60);
+    if secs > 365.0 * 86_400.0 {
+        "Over 1 year".to_owned()
+    } else if secs >= 25.0 * 3600.0 {
+        format!("{d}d {h}h {m}m")
+    } else if secs >= 90.0 * 60.0 {
+        format!("{}h {m}m", s / 3600)
+    } else if secs >= 600.0 {
+        format!("{}m", s / 60)
+    } else if secs >= 60.0 {
+        format!("{}m {sec}s", s / 60)
+    } else {
+        format!("{sec}s")
+    }
+}
+
+/// `@exp`'s answer: MudPlay's MegaMUD-style progress line. `made` is this session's
+/// experience and `rate` its experience an hour.
+pub fn exp_reply(made: i64, rate: f64, known: Option<ExpKnown>) -> String {
+    let made = format!("Made: {}", grouped(made));
+    let rate_part = if rate > 0.0 {
+        format!("Rate: {}/hr", rate_text(rate))
+    } else {
+        "Rate: unknown".to_owned()
+    };
+    let Some(k) = known else {
+        return format!("{made}  {rate_part} (type exp for needed + time to level)");
+    };
+    let needed = format!("Needed: {} (L{})", grouped(k.left), k.level + 1);
+    if rate <= 0.0 {
+        return format!("{made}  {needed}  Rate: unknown");
+    }
+    let will = if k.left <= 0 {
+        "Will level in: ready to level".to_owned()
+    } else {
+        format!(
+            "Will level in: {}",
+            time_text(k.left as f64 / rate * 3600.0)
+        )
+    };
+    format!("{made}  {needed}  {rate_part}  {will}")
 }
 
 impl Effect {
@@ -136,6 +309,17 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "HP / MA and resting-or-meditating state",
     ),
     ("@version", "@version", "the app name + version"),
+    (
+        "@status",
+        "@status",
+        "what you're doing (fighting/resting), your room, and any ailments",
+    ),
+    ("@where", "@where", "room name, map/room, and exits"),
+    (
+        "@exp",
+        "@exp",
+        "session exp made, exp needed for the next level, exp/hour rate, and time-to-level",
+    ),
     (
         "@help",
         "@help [command]",
@@ -394,6 +578,15 @@ impl Remote {
             "@stop" => vec![Effect::Stop(true), self.reply(req, "movement paused")],
             "@rego" if !view.stopped => self.refuse(req, Some("nothing to resume")),
             "@rego" => vec![Effect::Stop(false), self.reply(req, "resuming")],
+            "@where" | "@status" | "@exp" => vec![Effect::Ask {
+                query: match req.command.as_str() {
+                    "@where" => Query::Where,
+                    "@status" => Query::Status,
+                    _ => Query::Exp,
+                },
+                channel: req.channel,
+                to: req.sender.to_owned(),
+            }],
             "@do" if req.args.is_empty() => Vec::new(),
             "@do" => vec![Effect::Send(req.args.join(" ")), self.reply(req, "ok")],
             "@kill" if req.args.is_empty() => self.refuse(req, None),
