@@ -388,3 +388,46 @@ fn items_are_read_the_same_way_whatever_their_source() {
     let items = r.feed(&render(&Msg::CombatEngaged, Palette::new(0).unwrap()).bytes);
     assert_eq!(items, [Item::Event(mp_parse::Event::CombatEngaged)]);
 }
+
+#[test]
+fn with_nuking_off_the_bot_melees_whatever_its_mp() {
+    let mut f = Fight::new(settings());
+    f.combat.set_nuke(false);
+    f.here("Raijin, practice dummy")
+        .leader_attacks("practice dummy")
+        .prompt(80);
+    assert_eq!(f.take_sent(), ["a practice dummy"]);
+    f.combat.set_nuke(true);
+    f.wait(5).prompt(80);
+    assert_eq!(f.take_sent(), ["lbol practice dummy"], "nuking again");
+}
+
+#[test]
+fn a_hold_picks_no_new_fight_but_keeps_the_one_going_and_kill_orders() {
+    let mut f = Fight::new(settings());
+    f.combat.set_hold(true);
+    f.here("Raijin, practice dummy")
+        .leader_attacks("practice dummy")
+        .prompt(80);
+    assert!(f.take_sent().is_empty(), "no new fight while held");
+    f.combat.set_hold(false);
+    f.prompt(80);
+    assert_eq!(f.take_sent(), ["lbol practice dummy"]);
+    f.combat.set_hold(true);
+    f.wait(5).prompt(50);
+    assert_eq!(
+        f.take_sent(),
+        ["mmis practice dummy"],
+        "the fight going on goes on"
+    );
+    let mut f = Fight::new(settings());
+    f.combat.set_hold(true);
+    f.here("Raijin, practice dummy");
+    f.combat.order_kill("practice dummy");
+    f.prompt(80);
+    assert_eq!(
+        f.take_sent(),
+        ["lbol practice dummy"],
+        "a kill order is the leader's say"
+    );
+}

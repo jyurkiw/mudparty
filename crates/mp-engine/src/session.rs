@@ -5,9 +5,11 @@
 //! doing with [`Report`]s. The same runner serves a headless bot in the server and, later,
 //! the interactive client.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use mp_config::Automation;
 use mp_log::{CharacterLogs, Header, RollConfig, Source, SystemClock};
 use mp_parse::{Event, Item, Reader, Statline, Vitals};
 use mp_telnet::ClientCodec;
@@ -22,6 +24,7 @@ use crate::combat::{Combat, CombatSettings};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
 use crate::pacing::{Action, Pacer, PacingSettings};
 use crate::party::{PartyJoin, PartySettings, PartyState};
+use crate::remote::{AutoSwitch, BotView, Effect, Remote, RemoteSettings};
 use crate::rest::{RestSettings, Rester};
 
 /// What a session needs to run.
@@ -49,6 +52,55 @@ pub struct SessionSpec {
     pub party: Option<PartySettings>,
     /// When to rest, or `None` for a bot that doesn't (design §6.6).
     pub rest: Option<RestSettings>,
+    /// Who may send @ commands, or `None` to read none (design §6.3).
+    pub remote: Option<RemoteSettings>,
+    /// Which engines start switched on; `@auto-…` changes them.
+    pub automation: Automation,
+}
+
+/// The switches @ commands set (design §6.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoState {
+    pub combat: bool,
+    pub nuke: bool,
+    pub rest: bool,
+    /// `@auto-all off`.
+    pub all_off: bool,
+    /// `@stop`, until `@rego`.
+    pub stopped: bool,
+    /// Who has sent `@wait` and not yet `@ok`.
+    pub held_by: Vec<String>,
+}
+
+impl AutoState {
+    fn new(a: Automation) -> Self {
+        Self {
+            combat: a.combat,
+            nuke: a.nuke,
+            rest: a.rest,
+            all_off: false,
+            stopped: false,
+            held_by: Vec::new(),
+        }
+    }
+
+    /// Whether the combat engine may act.
+    pub fn fights(&self) -> bool {
+        self.combat && !self.all_off && !self.stopped
+    }
+
+    /// Whether the rest engine may act.
+    pub fn rests(&self) -> bool {
+        self.rest && !self.all_off && !self.stopped
+    }
+
+    fn automation(&self) -> Automation {
+        Automation {
+            combat: self.combat,
+            nuke: self.nuke,
+            rest: self.rest,
+        }
+    }
 }
 
 /// What the owner can ask of a session.
@@ -105,6 +157,8 @@ pub enum Report {
     Party(PartyState),
     /// The bot started (`true`) or finished (`false`) a rest.
     Resting(bool),
+    /// An @ command changed a switch.
+    Automation(AutoState),
 }
 
 /// A running session.
@@ -146,6 +200,8 @@ enum LinkEnd {
 
 struct Runner {
     spec: SessionSpec,
+    /// Kept across reconnects: a switch a player set stays set.
+    auto: AutoState,
     reports: mpsc::UnboundedSender<Report>,
     logs: Option<CharacterLogs>,
 }
@@ -195,6 +251,72 @@ impl Runner {
         let mut out = Vec::with_capacity(bytes.len());
         mp_telnet::escape(&bytes, &mut out);
         stream.write_all(&out).await
+    }
+
+    /// Carries out what an @ command asked for.
+    fn apply(
+        &mut self,
+        e: Effect,
+        pacer: &mut Pacer,
+        combat: &mut Option<Combat>,
+        party: &mut Option<PartyJoin>,
+        now: Instant,
+    ) {
+        if let Some(a) = e.action() {
+            self.queue(pacer, "remote", vec![a]);
+        }
+        let before = self.auto.clone();
+        match e {
+            Effect::Reply { .. } | Effect::Send(_) => {}
+            Effect::Kill(target) => {
+                self.decision("kill_order", json!({"target": target}));
+                if let Some(c) = combat {
+                    c.order_kill(&target);
+                    if self.auto.fights() {
+                        for cmd in c.act(now) {
+                            self.decision("attack", json!({"command": cmd, "target": target}));
+                            pacer.push(cmd);
+                        }
+                    }
+                }
+            }
+            Effect::SetAuto(which, on) => match which {
+                AutoSwitch::Combat => self.auto.combat = on,
+                AutoSwitch::Nuke => self.auto.nuke = on,
+                AutoSwitch::Rest => self.auto.rest = on,
+            },
+            Effect::AllOff(off) => self.auto.all_off = off,
+            Effect::Stop(stop) => self.auto.stopped = stop,
+            Effect::Wait(who) => {
+                let mut held: BTreeSet<String> = self.auto.held_by.drain(..).collect();
+                held.insert(who);
+                self.auto.held_by = held.into_iter().collect();
+            }
+            Effect::Ok(who) => self.auto.held_by.retain(|h| !h.eq_ignore_ascii_case(&who)),
+            Effect::Join(leader) => {
+                let retry = self
+                    .spec
+                    .party
+                    .as_ref()
+                    .map_or(Duration::from_secs(30), |p| p.retry);
+                let mut p = PartyJoin::new(PartySettings {
+                    name: self.spec.name.clone(),
+                    leader,
+                    retry,
+                });
+                let acts = p.start(now);
+                self.queue(pacer, "party", acts);
+                *party = Some(p);
+            }
+        }
+        if self.auto != before {
+            if let Some(c) = combat {
+                c.set_nuke(self.auto.nuke);
+                c.set_hold(!self.auto.held_by.is_empty());
+            }
+            self.event("automation", json!({"state": format!("{:?}", self.auto)}));
+            self.report(Report::Automation(self.auto.clone()));
+        }
     }
 
     /// Queues what an engine wants sent.
@@ -293,6 +415,11 @@ impl Runner {
         let mut login = Login::new(self.spec.login.clone(), Instant::now());
         // A new link is a new view of the room: the roster starts again.
         let mut combat = self.spec.combat.clone().map(Combat::new);
+        if let Some(c) = &mut combat {
+            c.set_nuke(self.auto.nuke);
+            c.set_hold(!self.auto.held_by.is_empty());
+        }
+        let remote = self.spec.remote.clone().map(Remote::new);
         let mut party = self.spec.party.clone().map(PartyJoin::new);
         let mut rester = self.spec.rest.clone().map(Rester::new);
         let mut pacer = Pacer::new(self.spec.pacing.clone());
@@ -397,7 +524,32 @@ impl Runner {
                         for (to, text) in pacer.on_item(&t.item, now) {
                             self.decision("telepath_given_up", json!({"to": to, "text": text}));
                         }
-                        if let Some(c) = &mut combat {
+                        if let Some(rm) = &remote {
+                            let view = BotView {
+                                vitals: last_vitals,
+                                automation: self.auto.automation(),
+                                all_off: self.auto.all_off,
+                                stopped: self.auto.stopped,
+                                following: party
+                                    .as_ref()
+                                    .filter(|p| p.state() == PartyState::Following)
+                                    .map(|p| p.leader().to_owned()),
+                            };
+                            let effects = rm.on_item(&t.item, &view);
+                            if !effects.is_empty() {
+                                self.decision("remote", json!({"read": t.plain, "effects": format!("{effects:?}")}));
+                            }
+                            for e in effects {
+                                self.apply(e, &mut pacer, &mut combat, &mut party, now);
+                            }
+                        }
+                        // An engine that is switched off still reads the room, so it is up to
+                        // date when it's switched on; it just decides nothing, and it decides
+                        // only on prompts.
+                        let prompt = matches!(t.item, Item::Prompt(_));
+                        if let Some(c) = &mut combat
+                            && (self.auto.fights() || !prompt)
+                        {
                             let commands = c.on_item(&t.item, now);
                             let target = c.target().map(str::to_owned);
                             for cmd in commands {
@@ -409,7 +561,9 @@ impl Runner {
                             let acts = p.on_item(&t.item, now);
                             self.queue(&mut pacer, "party", acts);
                         }
-                        if let Some(r) = &mut rester {
+                        if let Some(r) = &mut rester
+                            && (self.auto.rests() || !prompt)
+                        {
                             let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
                             let acts = r.on_item(&t.item, now, fighting);
                             self.queue(&mut pacer, "rest", acts);
@@ -425,7 +579,7 @@ impl Runner {
                         self.decision("kill_order", json!({"target": target}));
                         if let Some(c) = &mut combat {
                             c.order_kill(&target);
-                            if in_game && logging_off.is_none() {
+                            if in_game && logging_off.is_none() && self.auto.fights() {
                                 for cmd in c.act(Instant::now()) {
                                     self.decision("attack", json!({"command": cmd, "target": target}));
                                     pacer.push(cmd);
@@ -520,6 +674,7 @@ async fn run(
         CharacterLogs::open(root, header, RollConfig::default(), Box::new(SystemClock)).ok()
     });
     let mut r = Runner {
+        auto: AutoState::new(spec.automation),
         spec,
         reports,
         logs,

@@ -54,6 +54,8 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         pacing: Default::default(),
         party: None,
         rest: None,
+        remote: None,
+        automation: Default::default(),
     }
 }
 
