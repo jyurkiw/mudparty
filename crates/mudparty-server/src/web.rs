@@ -5,7 +5,8 @@
 //!   running bots, on connecting and then on each change, at most four a second;
 //! - page → server `order`: `{ "name": <character>, "order": <what>, ... }`, where `order`
 //!   is `start`, `stop`, `toggle` (`switch`, `on`), `command` (`text`), `kill` (`target`),
-//!   `wait`, `ok` or `join` (`leader`). See [`Order`];
+//!   `wait`, `ok` or `join` (`leader`). See [`Order`]. For a character played in MudPlay,
+//!   `command` injects, as `inject` (`text`) does;
 //! - server → page `result`: the answer to each order, `ok` and a `message`.
 //!
 //! There is no login, so the page is served on loopback only.
@@ -121,8 +122,11 @@ fn handle(server: &Arc<Server>, text: &str) -> Value {
     }
     match msg.remove("type").as_ref().and_then(Value::as_str) {
         Some("order") => {}
-        // Typing for the main character goes through the proxy, which comes later.
-        Some("inject") => return result(&name, Err("no proxy yet to inject through".into())),
+        // Typing for a character played in MudPlay.
+        Some("inject") => {
+            let text = msg.get("text").and_then(Value::as_str).unwrap_or_default();
+            return result(&name, server.inject(&name, text));
+        }
         other => return result(&name, Err(format!("unknown message type {other:?}"))),
     }
     match serde_json::from_value::<Order>(Value::Object(msg)) {

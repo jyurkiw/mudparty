@@ -76,6 +76,14 @@ impl RawClient {
         Ok(())
     }
 
+    /// Sends bytes as typed, with no line end added: as MudPlay sends keys one at a time.
+    pub async fn type_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let mut out = Vec::new();
+        mp_telnet::escape(bytes, &mut out);
+        self.stream.write_all(&out).await?;
+        Ok(())
+    }
+
     /// Reads until an item satisfies `stop`, sending what `answer` returns for each item on
     /// the way. Fails if the game closes the link or says nothing for [`WAIT`].
     pub async fn answer_until(
