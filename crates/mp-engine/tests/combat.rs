@@ -44,6 +44,7 @@ fn settings() -> CombatSettings {
             s("giant rat"),
         ],
         leader_target_stale: Duration::from_secs(6),
+        round: Duration::from_secs(5),
     }
 }
 

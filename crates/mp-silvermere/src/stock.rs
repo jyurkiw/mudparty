@@ -313,6 +313,12 @@ impl StockSilvermere {
         self.running.telnet_addr
     }
 
+    /// The world's database file (silvermere's `silvermere.db` for this test), for
+    /// mudparty's game-data import.
+    pub fn db_path(&self) -> PathBuf {
+        self.dir.join("test.db")
+    }
+
     /// Runs `n` fast cycles (a combat round is several) and waits until they are done.
     pub async fn tick(&self, n: u32) {
         for _ in 0..n {

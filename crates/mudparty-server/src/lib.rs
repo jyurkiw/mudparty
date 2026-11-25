@@ -11,9 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
-use mp_config::{Secrets, ServerConfig, load_character, load_server};
+use mp_config::{CharacterConfig, Secrets, ServerConfig, load_character, load_server};
+use mp_data::GameData;
 use mp_engine::{
-    Command, LoginSettings, Offline, Report, SessionHandle, SessionSpec, SessionState, spawn,
+    CombatSettings, Command, LoginSettings, Offline, Report, SessionHandle, SessionSpec,
+    SessionState, spawn,
 };
 use mp_log::{RollConfig, ServerLog, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -22,6 +24,8 @@ use tokio::sync::{broadcast, mpsc};
 
 /// Waits before each reconnect of a lost link; the last one repeats (design §6.2).
 const RECONNECT: [u64; 4] = [5, 10, 30, 60];
+/// A combat round on a stock game (design §6.4).
+const ROUND: Duration = Duration::from_secs(5);
 /// How long a login step waits for the game.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an edited character file must be quiet before it is read.
@@ -83,6 +87,8 @@ pub struct Server {
     events: broadcast::Sender<BotEvent>,
     log: Mutex<ServerLog>,
     watcher: Mutex<Option<RecommendedWatcher>>,
+    /// `gamedata/gamedata.sqlite`, when there is one.
+    gamedata: Mutex<Option<GameData>>,
     runs: AtomicU64,
 }
 
@@ -120,9 +126,11 @@ impl Server {
             events,
             log: Mutex::new(log),
             watcher: Mutex::new(None),
+            gamedata: Mutex::new(None),
             runs: AtomicU64::new(0),
         });
         server.record("start", json!({"root": root.display().to_string()}));
+        server.open_gamedata();
         server.watch(&characters)?;
         let mut names: Vec<String> = std::fs::read_dir(&characters)?
             .filter_map(|e| e.ok())
@@ -146,6 +154,81 @@ impl Server {
             }
         }
         Ok(server)
+    }
+
+    /// Opens `gamedata/gamedata.sqlite`, importing it first from `silvermere.db` when it is
+    /// missing (design §7.5). Without either, bots still log in, but don't fight: the engine
+    /// needs the game's monster names to tell monsters from players.
+    fn open_gamedata(&self) {
+        let path = self.root.join("gamedata").join("gamedata.sqlite");
+        if !path.exists() {
+            let source = self.root.join(&self.config.gamedata.silvermere_db);
+            if !source.exists() {
+                self.record(
+                    "gamedata_missing",
+                    json!({"silvermere_db": source.display().to_string()}),
+                );
+                return;
+            }
+            let imported = std::fs::create_dir_all(path.parent().expect("a folder"))
+                .map_err(|e| e.to_string())
+                .and_then(|()| mp_data::import(&source, &path).map_err(|e| e.to_string()));
+            match imported {
+                Ok(r) => self.record(
+                    "gamedata_imported",
+                    json!({"rev": r.rev, "rooms": r.rooms, "spells": r.spells, "monsters": r.monsters}),
+                ),
+                Err(e) => {
+                    self.record("gamedata_import_failed", json!({"error": e}));
+                    return;
+                }
+            }
+        }
+        match GameData::open(&path) {
+            Ok(gd) => *self.gamedata.lock().expect("gamedata lock") = Some(gd),
+            Err(e) => self.record("gamedata_open_failed", json!({"error": e.to_string()})),
+        }
+    }
+
+    /// How a bot fights, from its file and the game data; `None` when its file turns combat
+    /// off or there is no game data.
+    fn combat_for(&self, c: &CharacterConfig) -> Option<CombatSettings> {
+        if !c.automation.combat {
+            return None;
+        }
+        let gd = self.gamedata.lock().expect("gamedata lock");
+        let Some(gd) = gd.as_ref() else {
+            self.record(
+                "combat_off",
+                json!({"character": c.name, "why": "no game data"}),
+            );
+            return None;
+        };
+        let monsters = gd.monster_names().unwrap_or_default();
+        let spells = c
+            .combat
+            .tiers
+            .iter()
+            .map(|t| t.spell.as_str())
+            .chain(c.combat.room_tiers.iter().map(|t| t.spell.as_str()));
+        let spell_costs = spells
+            .filter_map(|short| {
+                let s = gd.spell_by_short(short).ok()??;
+                Some((short.to_owned(), s.mana as i32))
+            })
+            .collect();
+        Some(CombatSettings {
+            name: c.name.clone(),
+            leader: c.party.leader.clone(),
+            targeting: c.combat.targeting.clone(),
+            tiers: c.combat.tiers.clone(),
+            room_tiers: c.combat.room_tiers.clone(),
+            melee: c.combat.melee.clone(),
+            spell_costs,
+            monsters,
+            leader_target_stale: self.config.stale.target,
+            round: ROUND,
+        })
     }
 
     /// Everything bots do, from now on.
@@ -203,6 +286,7 @@ impl Server {
             logoff_timeout: self.config.logoff_timeout,
             reconnect_delays: RECONNECT.iter().map(|s| Duration::from_secs(*s)).collect(),
             logs: Some(self.root.join("logs")),
+            combat: self.combat_for(&c),
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn(spec, tx);
