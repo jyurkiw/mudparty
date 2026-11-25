@@ -9,7 +9,7 @@
 //! through unchanged both ways, and the engines read what the game says (the tap) but
 //! decide nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -145,6 +145,9 @@ pub enum Command {
     /// An order from the web page, carried out as the @ command that does the same
     /// (design §6.8): a toggle, `wait`/`ok`, a line typed for the game.
     Do(Effect),
+    /// A line to send as a seated character (design §2, injection). It waits until the
+    /// user has no half-typed line and the last line's prompt has come back.
+    Inject(String),
 }
 
 /// What a session is doing.
@@ -207,6 +210,8 @@ pub enum Report {
         map: u32,
         room: u32,
     },
+    /// Injected lines still waiting to go, oldest first.
+    Queued(Vec<String>),
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -286,6 +291,14 @@ pub fn spawn_seated(
     let (cmds, rx) = mpsc::unbounded_channel();
     let task = tokio::spawn(run_from(spec, rx, reports, Some(upstream), Some(seat)));
     SessionHandle { cmds, task }
+}
+
+/// Lines injected into a seated session, waiting for their moment.
+#[derive(Debug, Default)]
+struct Injector {
+    queue: VecDeque<String>,
+    /// A line went to the game (typed or injected) and its prompt hasn't come back yet.
+    awaiting_prompt: bool,
 }
 
 /// What the seat is in the middle of typing, for the logs.
@@ -375,8 +388,9 @@ impl Runner {
     }
 
     /// Logs what the seat typed: the raw bytes on the wire stream, each finished line on the
-    /// transcript. A line typed at the password prompt is kept by its length only.
-    fn typed(&mut self, typing: &mut Typing, bytes: &[u8]) {
+    /// transcript. A line typed at the password prompt is kept by its length only. Returns
+    /// whether a line was finished.
+    fn typed(&mut self, typing: &mut Typing, bytes: &[u8]) -> bool {
         let secret = typing.secret;
         let mut lines = Vec::new();
         for &b in bytes {
@@ -398,7 +412,10 @@ impl Runner {
                 }
             }
         }
-        let Some(l) = &mut self.logs else { return };
+        let finished = !lines.is_empty();
+        let Some(l) = &mut self.logs else {
+            return finished;
+        };
         if secret {
             let _ = l.wire_out_redacted(bytes, "password", &Source::User);
         } else {
@@ -411,6 +428,35 @@ impl Runner {
                 let _ = l.transcript_sent(&String::from_utf8_lossy(&line), &Source::User);
             }
         }
+        finished
+    }
+
+    /// Sends the next injected line, if this is its moment: the user has no half-typed
+    /// line, and the last line's prompt has come back.
+    async fn inject_next(
+        &mut self,
+        stream: &mut TcpStream,
+        inject: &mut Injector,
+        typing: &Typing,
+    ) -> std::io::Result<()> {
+        if inject.awaiting_prompt || !typing.line.is_empty() {
+            return Ok(());
+        }
+        let Some(line) = inject.queue.pop_front() else {
+            return Ok(());
+        };
+        inject.awaiting_prompt = true;
+        let bytes = format!("{line}\r\n").into_bytes();
+        if let Some(l) = &mut self.logs {
+            let _ = l.wire_out(&bytes, &Source::Inject);
+            let _ = l.transcript_sent(&line, &Source::Inject);
+        }
+        self.decision("injected", json!({"line": line}));
+        self.report(Report::Sent(line));
+        self.report(Report::Queued(inject.queue.iter().cloned().collect()));
+        let mut out = Vec::with_capacity(bytes.len());
+        mp_telnet::escape(&bytes, &mut out);
+        stream.write_all(&out).await
     }
 
     /// Carries out what an @ command asked for.
@@ -677,6 +723,7 @@ impl Runner {
             json!({"game": self.spec.game, "seat": seat.is_some()}),
         );
         let mut typing = Typing::default();
+        let mut inject = Injector::default();
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -817,6 +864,9 @@ impl Runner {
                         if logging_off.is_some() {
                             continue;
                         }
+                        if matches!(t.item, Item::Prompt(_)) {
+                            inject.awaiting_prompt = false;
+                        }
                         let now = Instant::now();
                         for (to, text) in pacer.on_item(&t.item, now) {
                             self.decision("telepath_given_up", json!({"to": to, "text": text}));
@@ -887,13 +937,21 @@ impl Runner {
                         }
                         self.watch_states(&party, &rester, &combat, &mut seen);
                     }
+                    if in_game
+                        && logging_off.is_none()
+                        && self.inject_next(&mut stream, &mut inject, &typing).await.is_err()
+                    {
+                        return LinkEnd::Lost { was_in_game: true };
+                    }
                     if self.drain(&mut stream, &mut pacer).await.is_err() {
                         return LinkEnd::Lost { was_in_game: in_game };
                     }
                 }
                 input = from_seat(seat) => match input.flatten() {
                     Some(SeatInput::Data(bytes)) => {
-                        self.typed(&mut typing, &bytes);
+                        if self.typed(&mut typing, &bytes) {
+                            inject.awaiting_prompt = true;
+                        }
                         let mut out = Vec::with_capacity(bytes.len());
                         mp_telnet::escape(&bytes, &mut out);
                         if stream.write_all(&out).await.is_err() {
@@ -939,6 +997,20 @@ impl Runner {
                     }
                     Some(Command::Do(e)) => {
                         self.decision("order_dropped", json!({"effect": format!("{e:?}"), "why": "not in the game"}));
+                    }
+                    Some(Command::Inject(line)) if seat.is_some() => {
+                        self.decision("inject_queued", json!({"line": line}));
+                        inject.queue.push_back(line);
+                        self.report(Report::Queued(inject.queue.iter().cloned().collect()));
+                        if in_game
+                            && logging_off.is_none()
+                            && self.inject_next(&mut stream, &mut inject, &typing).await.is_err()
+                        {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
+                    }
+                    Some(Command::Inject(line)) => {
+                        self.decision("inject_dropped", json!({"line": line, "why": "no seat"}));
                     }
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
@@ -1122,6 +1194,9 @@ async fn run_from(
                         }
                         Some(Command::Do(e)) => {
                             r.decision("order_dropped", json!({"effect": format!("{e:?}"), "why": "reconnecting"}));
+                        }
+                        Some(Command::Inject(line)) => {
+                            r.decision("inject_dropped", json!({"line": line, "why": "reconnecting"}));
                         }
                     }
                 }

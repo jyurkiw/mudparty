@@ -360,6 +360,7 @@ impl Server {
             Order::Command { text } if text.trim().is_empty() => {
                 return Err("an empty command".into());
             }
+            Order::Command { text } if self.seated(name) => return self.inject(name, &text),
             Order::Command { text } => Command::Do(Effect::Send(text)),
             Order::Kill { target } => Command::Kill { target },
             Order::Wait => Command::Do(Effect::Wait(WEB.into())),
@@ -431,6 +432,49 @@ impl Server {
         drop(bots);
         self.record("bot_start", json!({"character": name}));
         Ok(())
+    }
+
+    /// Sends `text` as a seated character (design §2): it waits until the user has no
+    /// half-typed line in MudPlay and the last line's prompt is back.
+    pub fn inject(&self, name: &str, text: &str) -> Result<String, String> {
+        if text.trim().is_empty() {
+            return Err("an empty command".into());
+        }
+        let bots = self.bots.lock().expect("bots lock");
+        match bots.get(name) {
+            Some(b) if b.seated => {
+                b.handle.send(Command::Inject(text.to_owned()));
+                drop(bots);
+                self.record("inject", json!({"character": name, "line": text}));
+                Ok(format!("queued for {name}"))
+            }
+            _ => Err(format!("{name} isn't being played in MudPlay")),
+        }
+    }
+
+    /// Whether `name`'s session is driven by a MudPlay seat and in the game.
+    pub(crate) fn seat_in_game(&self, name: &str) -> bool {
+        self.seated(name)
+            && self
+                .cards
+                .lock()
+                .expect("cards lock")
+                .get(name)
+                .is_some_and(|c| matches!(c.mode, "idle" | "fighting" | "resting" | "waiting"))
+    }
+
+    /// `#who`'s answer: each character mudparty holds, and who drives it.
+    pub(crate) fn who(&self) -> String {
+        let bots = self.bots.lock().expect("bots lock");
+        let list: Vec<String> = bots
+            .iter()
+            .map(|(n, b)| format!("{n} ({})", if b.seated { "MudPlay" } else { "bot" }))
+            .collect();
+        if list.is_empty() {
+            "no characters".into()
+        } else {
+            list.join(", ")
+        }
     }
 
     /// Whether `name`'s session is driven by a MudPlay seat.

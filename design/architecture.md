@@ -167,6 +167,20 @@ So from step 1:
   reconnects by itself. A bot already playing the character is left for the game's
   takeover question, which MudPlay answers.
 
+**As built (MVP 9b):**
+- `#` lines are held by the seat (`proxy.rs` `HashLines`), only once the session is in
+  the game, so a password starting with `#` is never echoed. The seat echoes each key and
+  handles backspace. On Enter, `#help` and `#who` are answered with
+  `*** mudparty: … ***` lines, then the game's last unfinished line (its prompt) is drawn
+  again from what the seat last carried. Nothing goes to the game. Any other `#` line has
+  the seat's echo taken back with backspaces and goes to the game whole, so the game
+  echoes it once.
+- Injection (`Command::Inject`, `Server::inject`, the page's `inject` message, or the
+  `command` order for a seated character) queues in the session. A line goes only when
+  the user has no half-typed line and the last line sent, typed or injected, has had its
+  prompt back. Each goes alone and waits for its own prompt. The queue is reported
+  (`Report::Queued`) and shown on the card. It is logged as `src: inject`.
+
 **How `#switch Ermias` will work** (TODO, as the user settled it):
 
 1. Check the target: it must have a character YAML, and must not be an interactive

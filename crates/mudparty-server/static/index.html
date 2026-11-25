@@ -123,8 +123,12 @@ function card(m) {
   if (a.stopped) badges.push(el("div", { class: "note" }, "stopped (@stop)"));
 
   const seated = m.driver === "seat";
-  const controls = seated ? [el("div", { class: "note" },
-    "Playing in MudPlay now. Typing for it from here comes next.")] : m.bot ? [
+  const controls = seated ? [
+    el("div", { class: "note" },
+      "Playing in MudPlay. A line sent from here waits for any line you're typing there."),
+    box("command for the game", "Send", (t) => order(m.name, { order: "command", text: t }), !inGame),
+    m.queued.length ? el("div", { class: "note" }, "queued: " + m.queued.join(" · ")) : null,
+  ] : m.bot ? [
     el("div", { class: "row" },
       el("button", { disabled: m.running, onclick: () => order(m.name, { order: "start" }) }, "Start"),
       el("button", { disabled: !m.running, onclick: () => order(m.name, { order: "stop" }) }, "Stop"),

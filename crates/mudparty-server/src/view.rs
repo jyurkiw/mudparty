@@ -41,6 +41,9 @@ pub struct Card {
     pub config_error: Option<String>,
     /// The last few things it did, oldest first. A line sent to the game starts `> `.
     pub events: VecDeque<String>,
+    /// Lines typed on the page for a seated character, waiting for the user's line in
+    /// MudPlay to finish.
+    pub queued: Vec<String>,
     #[serde(skip)]
     state: Option<SessionState>,
     #[serde(skip)]
@@ -120,6 +123,7 @@ impl Card {
             offline: None,
             config_error: None,
             events: VecDeque::new(),
+            queued: Vec::new(),
             state: None,
             resting: false,
         };
@@ -149,6 +153,7 @@ impl Card {
         self.party = None;
         self.offline = None;
         self.resting = false;
+        self.queued.clear();
         self.automation = automation.into();
         self.event(
             if seated {
@@ -180,6 +185,7 @@ impl Card {
                     SessionState::Offline(off) => {
                         self.running = false;
                         self.driver = None;
+                        self.queued.clear();
                         self.target = None;
                         self.tier = None;
                         self.resting = false;
@@ -214,6 +220,7 @@ impl Card {
                 self.target = target.clone();
                 self.tier = tier.clone();
             }
+            Report::Queued(q) => self.queued = q.clone(),
             Report::Room { map, room } => {
                 self.room = Some(CardRoom {
                     map: *map,

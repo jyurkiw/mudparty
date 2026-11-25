@@ -260,6 +260,15 @@ name you type says which character this is: the one whose file has that `login.a
 else `main_character`. Its card on the page then follows your HP, MP and room as you play,
 and its logs record the session, your password left out.
 
+In MudPlay, a line starting with `#` is for mudparty: `#help` lists the commands, and
+`#who` says which characters mudparty is playing and whether MudPlay or a bot drives each.
+mudparty answers them itself, and they never reach the game. Any other `#` line goes to
+the game as typed.
+
+The character's card on the page has a command line too. What you send there goes to the
+game as that character, but never into the middle of a line you're typing in MudPlay: it
+waits, shown as queued, until your line has gone and its prompt has come back.
+
 If a bot is already playing that character, the game asks MudPlay whether to take the
 character over, as it would without the proxy. When MudPlay disconnects, the proxy drops
 the character's link too.
