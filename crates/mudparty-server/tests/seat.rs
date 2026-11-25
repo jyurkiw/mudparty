@@ -334,3 +334,117 @@ async fn a_seat_that_leaves_stays_online_until_hp_runs_low() {
     again.shutdown().await;
     sm.stop().await.unwrap();
 }
+
+const ERMIAS_JOINS: &str = "schema: 1
+name: Ermias
+login:
+  account: Ermias
+party:
+  leader: Raijin
+  invite_by_injection: true
+automation:
+  combat: false
+  rest: false
+";
+
+/// A data root with Raijin as the main character and Ermias joining him by injection.
+fn joining_root(port: u16) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("mudparty.toml"),
+        format!(
+            "schema = 1\nmain_character = \"Raijin\"\nlogoff_timeout = \"5s\"\n[game]\nhost = \"127.0.0.1\"\nport = {port}\n[gamedata]\nsilvermere_db = \"none.db\"\n"
+        ),
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("characters")).unwrap();
+    fs::write(dir.path().join("characters/Raijin.yaml"), RAIJIN).unwrap();
+    fs::write(dir.path().join("characters/Ermias.yaml"), ERMIAS_JOINS).unwrap();
+    fs::write(
+        dir.path().join("secrets.yaml"),
+        "accounts:\n  Ermias: \"ermias1\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_is_invited_through_the_leaders_seat() {
+    let sm = StockSilvermere::start(
+        &[
+            StockChar::new("Raijin", "Warrior"),
+            StockChar::new("Ermias", "Mage"),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    let dir = joining_root(sm.telnet_addr().port());
+    let server = Server::start(dir.path()).await.unwrap();
+    let addr = proxy::serve(server.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let mut rx = server.subscribe();
+    let mut mudplay = RawClient::log_in(addr, "Raijin", "raijin1").await.unwrap();
+    until(&mut rx, "Raijin", |r| {
+        *r == Report::State(SessionState::InGame)
+    })
+    .await;
+
+    // The bot asks to join; the server types the invitation as Raijin, and the bot follows.
+    server.start_bot("Ermias").unwrap();
+    until(&mut rx, "Ermias", |r| {
+        *r == Report::Party(mp_engine::PartyState::Following)
+    })
+    .await;
+    mudplay
+        .read_until(
+            |i| matches!(i, Item::Event(mp_parse::Event::StartedFollow { who }) if who == "Ermias"),
+        )
+        .await
+        .unwrap();
+
+    server.shutdown().await;
+    let raijin = outgoing(dir.path(), "Raijin");
+    assert!(
+        raijin
+            .iter()
+            .any(|(s, b)| s == "inject" && b == "invite Ermias\r\n"),
+        "{raijin:?}"
+    );
+    let ermias = outgoing(dir.path(), "Ermias");
+    assert!(
+        !ermias.iter().any(|(_, b)| b.contains("@invite")),
+        "the bot telepathed after all: {ermias:?}"
+    );
+    sm.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_seated_leader_the_bot_telepaths_as_before() {
+    let sm = StockSilvermere::start(
+        &[
+            StockChar::new("Raijin", "Warrior"),
+            StockChar::new("Ermias", "Mage"),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    let dir = joining_root(sm.telnet_addr().port());
+    let server = Server::start(dir.path()).await.unwrap();
+    let mut rx = server.subscribe();
+    // Raijin plays straight to silvermere, not through the proxy.
+    let _raijin = RawClient::log_in(sm.telnet_addr(), "Raijin", "raijin1")
+        .await
+        .unwrap();
+    server.start_bot("Ermias").unwrap();
+    until(
+        &mut rx,
+        "Ermias",
+        |r| matches!(r, Report::Sent(l) if l == "/Raijin @invite"),
+    )
+    .await;
+    server.shutdown().await;
+    sm.stop().await.unwrap();
+}

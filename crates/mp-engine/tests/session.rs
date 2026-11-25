@@ -40,6 +40,7 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         automation: Default::default(),
         rooms: None,
         hang_up_below: None,
+        inviter: None,
     }
 }
 

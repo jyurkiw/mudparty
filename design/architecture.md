@@ -694,6 +694,11 @@ clear-line prefix and a colour):
      own row is what ends the answer.
    - An `@invite` that goes unanswered, or a bot left away from its leader, checks `par`
      again after 30 s.
+   **As built (#48):** the session asks its `Inviter` before it telepaths `@invite`. The
+   server's says yes when the leader has a seated session in the game, and injects
+   `invite <bot>` there (queued behind the user's half-typed line like any injection).
+   Otherwise the bot telepaths. The rest of the join is unchanged: the bot still sees the
+   invitation and sends `follow <leader>`.
 5. From then on the game moves the bot with the leader
    (` -- Following your Party leader <dir> --`). The bot tracks its room from room
    displays and `/room`.
