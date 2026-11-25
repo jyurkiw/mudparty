@@ -66,6 +66,16 @@ fn json_line(t: &str, seq: u64, kind: &str, fields: Value) -> Vec<u8> {
     line
 }
 
+/// How each of a character's streams rolls (design §9.3: `[logging]` and its per-stream
+/// tables).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamRolls {
+    pub wire: RollConfig,
+    pub transcript: RollConfig,
+    pub decisions: RollConfig,
+    pub events: RollConfig,
+}
+
 /// A character's wire capture, transcript, decisions and events, in `<root>/<character>/`.
 pub struct CharacterLogs {
     wire: RollingFile,
@@ -81,7 +91,7 @@ impl CharacterLogs {
     pub fn open(
         root: &Path,
         header: Header,
-        cfg: RollConfig,
+        rolls: StreamRolls,
         clock: Box<dyn Clock>,
     ) -> io::Result<Self> {
         let dir = root.join(&header.character);
@@ -100,15 +110,21 @@ impl CharacterLogs {
             "realm": header.realm,
         });
         let jsonl = |seq: u64| json_line(&t, seq, "header", fields.clone());
-        let wire = RollingFile::open(&dir, "wire", "jsonl", cfg, jsonl(next()))?;
-        let decisions = RollingFile::open(&dir, "decisions", "jsonl", cfg, jsonl(next()))?;
-        let events = RollingFile::open(&dir, "events", "jsonl", cfg, jsonl(next()))?;
+        let wire = RollingFile::open(&dir, "wire", "jsonl", rolls.wire, jsonl(next()))?;
+        let decisions =
+            RollingFile::open(&dir, "decisions", "jsonl", rolls.decisions, jsonl(next()))?;
+        let events = RollingFile::open(&dir, "events", "jsonl", rolls.events, jsonl(next()))?;
         let text_header = format!(
             "{t}  # mudparty {VERSION} session {} {} config {} gamedata {} realm {}\n",
             header.session, header.character, header.config_rev, header.gamedata_rev, header.realm
         );
-        let transcript =
-            RollingFile::open(&dir, "transcript", "log", cfg, text_header.into_bytes())?;
+        let transcript = RollingFile::open(
+            &dir,
+            "transcript",
+            "log",
+            rolls.transcript,
+            text_header.into_bytes(),
+        )?;
         Ok(Self {
             wire,
             transcript,

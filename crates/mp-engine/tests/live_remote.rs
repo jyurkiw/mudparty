@@ -49,6 +49,7 @@ fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
         logoff_timeout: Duration::from_secs(20),
         reconnect_delays: vec![Duration::from_millis(200)],
         logs: None,
+        log_rolls: Default::default(),
         combat: Some(CombatSettings {
             name: s("Ermias"),
             leader: None,

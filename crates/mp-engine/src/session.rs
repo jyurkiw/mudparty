@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mp_config::Automation;
-use mp_log::{CharacterLogs, Header, RollConfig, Source, SystemClock};
+use mp_log::{CharacterLogs, Header, Source, StreamRolls, SystemClock};
 use mp_parse::{Event, Item, Reader, Statline, Vitals};
 use mp_telnet::ClientCodec;
 use serde_json::json;
@@ -48,6 +48,8 @@ pub struct SessionSpec {
     pub reconnect_delays: Vec<Duration>,
     /// Where the logs go (`<logs>/<name>/`), or none.
     pub logs: Option<PathBuf>,
+    /// How each log stream rolls (`[logging]` in `mudparty.toml`).
+    pub log_rolls: StreamRolls,
     /// How to fight, or `None` for a bot that doesn't (design §6.4).
     pub combat: Option<CombatSettings>,
     /// How fast lines go to the game once in it (design §6.1).
@@ -872,7 +874,7 @@ async fn run(
             gamedata_rev: String::new(),
             realm: "silvermere".into(),
         };
-        CharacterLogs::open(root, header, RollConfig::default(), Box::new(SystemClock)).ok()
+        CharacterLogs::open(root, header, spec.log_rolls, Box::new(SystemClock)).ok()
     });
     let mut r = Runner {
         auto: AutoState::new(spec.automation),

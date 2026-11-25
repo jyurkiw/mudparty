@@ -1,0 +1,271 @@
+# mudparty
+
+A party client and server for MajorMUD on [silvermere](https://github.com/jyurkiw/silvermere).
+You play your main character in MudPlay. mudparty runs the rest of the party as headless
+bots, each with its own link to the game. The bots log in, join your party, fight with spell
+tiers, rest and tell you to wait, and answer MegaMud-style @ commands. A web page shows
+the whole party and lets you order the bots around.
+
+The design is in [design/architecture.md](design/architecture.md), and progress is tracked
+in this repository's issues.
+
+## Status
+
+The MVP is done: headless bots, combat, resting, party join, @ commands, logs and the web
+page. Still to come: the interactive terminal client, the MudPlay proxy, character sheets
+and path translation. Settings for those already read in `mudparty.toml` (below), but
+nothing uses them yet.
+
+## Building
+
+You need Rust. [rust-toolchain.toml](rust-toolchain.toml) pins the version silvermere
+builds with (1.100.0), and `rustup` fetches it for you.
+
+```powershell
+cargo build --release
+```
+
+The server is `target/release/mudparty-server`.
+
+## The data root
+
+The server keeps everything in one folder, the *data root*:
+
+```
+<data root>/
+  mudparty.toml          the server's config (below)
+  secrets.yaml           account passwords
+  characters/
+    <Name>.yaml          one file per character, named after it
+  gamedata/
+    gamedata.sqlite      imported from silvermere's database on first start
+  logs/
+    server.jsonl         what the server did
+    <Name>/              each bot's wire, transcript, decisions and events
+```
+
+You write `mudparty.toml`, `secrets.yaml` and the character files. The server makes the
+rest.
+
+## `mudparty.toml`
+
+The server's config is TOML. The server reads it once at start, so restart the server
+after changing it. A setting the server doesn't know is an error, not ignored, so a typo
+can't pass unnoticed.
+
+### The smallest file that works
+
+Three things are required: the schema, where the game is, and where silvermere's
+database is.
+
+```toml
+schema = 1
+
+[game]
+host = "127.0.0.1"
+port = 2323
+
+[gamedata]
+silvermere_db = "E:/silvermere-data/silvermere.db"
+```
+
+Everything else has a default.
+
+### Every setting
+
+This file sets everything. All but the first three values are the defaults, so a line you
+leave out means what it says here.
+
+```toml
+schema = 1                        # required; this mudparty reads schema 1
+main_character = "Raijin"         # the character you play in MudPlay
+logoff_timeout = "30s"            # how long each bot gets to log off when the server stops
+
+[game]                            # required: the silvermere server
+host = "127.0.0.1"
+port = 2323
+
+[listen]
+client_hub = "127.0.0.1:7171"     # the web page and its feed
+proxy = "127.0.0.1:2424"          # where MudPlay will connect (not used yet)
+
+[gamedata]                        # required
+silvermere_db = "E:/silvermere-data/silvermere.db"
+
+[stale]
+vitals = "15s"                    # not used yet
+room = "30s"                      # not used yet
+target = "6s"                     # how old the leader's target may be and still be assisted
+
+[logging]
+file_size = "1MB"                 # roll a log file at this size
+plain_files = 2                   # the live file and the one before it
+zip_archives = 3                  # older files, zipped; the oldest is deleted
+```
+
+### The settings, one by one
+
+**Top level**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `schema` | required | The file format. Must be `1`. |
+| `main_character` | none | The character you play yourself in MudPlay. Its card comes first on the web page and says it is played in MudPlay. Give it a character file too (with no `login`, so it never runs as a bot). |
+| `logoff_timeout` | `"30s"` | When the server stops, each bot breaks off, sends `quit` and waits for the realm exit. After this long it drops the link instead. The game won't let a character quit mid-fight, so a bot that is fighting may need all of it. |
+
+**`[game]`**: the silvermere server the bots connect to. Required.
+
+| Setting | Meaning |
+|---|---|
+| `host` | Its address, such as `"127.0.0.1"` or a host name. |
+| `port` | Its telnet port: silvermere's default is `2323`. |
+
+**`[listen]`**: where mudparty listens.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `client_hub` | `"127.0.0.1:7171"` | The web page, at `http://<client_hub>/`. The page has no login, so this must be a loopback address (`127.0.0.1` or `[::1]`); the server won't start otherwise. |
+| `proxy` | `"127.0.0.1:2424"` | Where MudPlay will connect once the proxy exists. Not used yet. |
+
+The two must use different ports. Neither may use a port silvermere already listens on:
+`2323`, `8080` and `8088` on a default silvermere.
+
+**`[gamedata]`**: required.
+
+| Setting | Meaning |
+|---|---|
+| `silvermere_db` | silvermere's SQLite database. A relative path is read from the data root. |
+
+On first start the server imports rooms, exits, spells, classes and monsters from it into
+`gamedata/gamedata.sqlite`, and reads only that copy afterwards. To import again after the
+world changes, stop the server, delete `gamedata/gamedata.sqlite` and start it again.
+Without game data, bots still log in but don't fight: a bot needs the game's monster names
+to tell a monster from a player.
+
+**`[stale]`**: when party information counts as too old to act on. Each is a duration.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `target` | `"6s"` | A bot with `assist_leader` attacks what the leader last attacked, but only if the leader did so this recently. |
+| `vitals` | `"15s"` | Not used yet. |
+| `room` | `"30s"` | Not used yet. |
+
+**`[logging]`**: how log files roll.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `file_size` | `"1MB"` | A file rolls before a record would take it past this size. |
+| `plain_files` | `2` | Plain files kept, the live one included. At least `1`. |
+| `zip_archives` | `3` | Rolled files kept zipped after those. The oldest is deleted. |
+
+Each log stream can override any of the three in its own table. `[logging.server]` is
+the server's own log, `logs/server.jsonl`. Every bot has four streams in `logs/<Name>/`:
+`[logging.wire]` (the raw bytes, both ways), `[logging.transcript]` (the game's text as a
+player would read it), `[logging.decisions]` (what the bot decided and why) and
+`[logging.events]` (connecting, logging in, the party, rests, switches, going
+offline). For example, to keep more of the server log and less of the bulky wire capture:
+
+```toml
+schema = 1
+
+[game]
+host = "127.0.0.1"
+port = 2323
+
+[gamedata]
+silvermere_db = "silvermere.db"
+
+[logging.server]
+file_size = "4MB"
+zip_archives = 10
+
+[logging.wire]
+zip_archives = 1
+```
+
+**Values**
+
+- A **duration** is a number and a unit, in quotes: `"250ms"`, `"30s"`, `"5m"` or `"1h"`.
+- A **size** is `"512KB"` or `"1MB"` (powers of 1024), or a plain number of bytes.
+- A **path** may use forward slashes on Windows too: `"E:/silvermere-data/silvermere.db"`.
+
+## `secrets.yaml`
+
+Each account's password, by account name. It is kept apart so you can share the rest of
+the data root without it, and the server never writes a password to a log.
+
+```yaml
+accounts:
+  Ermias: "Ermias's password"
+  Kaelen: "Kaelen's password"
+```
+
+## Character files
+
+One YAML file per character in `characters/`, named after it (`characters/Ermias.yaml`).
+A file with a `login` can run as a bot. A short one:
+
+```yaml
+schema: 1
+name: Ermias
+class: Mage
+autostart: true
+login:
+  account: Ermias
+party:
+  leader: Raijin
+remote:
+  allow: [Raijin]
+combat:
+  targeting:
+    - assist_leader: true
+    - fight_back: true
+  tiers:
+    - spell: mmis
+      min_mp: 3
+  melee: a
+rest:
+  start_when_any: { hp: 50%, mp: 20% }
+```
+
+The main character's file needs only a name:
+
+```yaml
+schema: 1
+name: Raijin
+class: Warrior
+```
+
+Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists every
+setting. The server watches `characters/`, and a running bot picks up an edited file
+without restarting.
+
+## Running
+
+```powershell
+mudparty-server --root E:/mudparty-data
+```
+
+`--root` defaults to the current folder. The server starts every bot whose file says
+`autostart: true` and prints the web page's address. Ctrl-C logs every bot off cleanly
+before it exits.
+
+On the page, each character has a card showing HP and MP, room, what it's doing and
+against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the
+combat, nuke, rest and all switches, a kill box, and a command line to the game.
+
+In the game, a player on a bot's `remote.allow` list can command it by telepath or
+gangpath: `/Ermias @help` lists the commands.
+
+## Testing
+
+```powershell
+cargo test --workspace
+```
+
+The whole-system tests run a real silvermere in-process from its stock world. The first
+build takes a while, because it builds silvermere too.
+
+## License
+
+MIT
