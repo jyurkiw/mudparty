@@ -314,6 +314,13 @@ keys = ["fork_text"]
 re = '^(?P<map>\d+)/(?P<room>\d+)$'
 numbers = ["map", "room"]
 
+# The row's value starts after exactly nine spaces, so a template that starts with a space
+# keeps it.
+[[pattern]]
+event = "ProfileStatline"
+keys = ["profile_statline"]
+re = '^Statusline: {9}(?P<mode>.+)$'
+
 # exp, left and need are `%lu`, or `%lu%09lu` past a billion: digits either way.
 [[pattern]]
 event = "ExpLine"

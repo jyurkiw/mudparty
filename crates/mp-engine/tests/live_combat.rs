@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use mp_config::{Melee, Rule, Tier};
 use mp_engine::{
-    CombatSettings, Command, LoginSettings, Report, SessionHandle, SessionSpec, SessionState, spawn,
+    CombatSettings, Command, LoginSettings, Report, SessionHandle, SessionSpec, spawn,
 };
 use mp_silvermere::{RawClient, StockChar, StockSilvermere, WAIT};
 use tokio::sync::mpsc;
@@ -60,6 +60,8 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         rooms: None,
         hang_up_below: None,
         inviter: None,
+        statline_store: None,
+        statline_restore: true,
     }
 }
 
@@ -121,7 +123,9 @@ async fn in_game(rx: &mut mpsc::UnboundedReceiver<Report>) {
             .await
             .expect("in the game in time")
             .expect("reports");
-        if r == Report::State(SessionState::InGame) {
+        // In the game, with the bot's own statline set (#34 sets it once PROFILE answers),
+        // so the engine reads MP.
+        if matches!(r, Report::Vitals(v) if v.max_hp.is_some()) {
             return;
         }
     }

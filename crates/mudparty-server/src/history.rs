@@ -2,10 +2,14 @@
 //! character was last known to be, and why that was recorded: when MudPlay drops and the
 //! character is left in the game unattended, and when it hangs up or goes offline after.
 //! That is where to look for a downed or nearly dead character to rescue.
+//!
+//! It also keeps each character's own statline while a bot has its own set (#34), so it
+//! survives a crash and is put back on the next clean logoff.
 
 use std::path::Path;
 use std::sync::Mutex;
 
+use mp_engine::StatlineStore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
@@ -26,6 +30,12 @@ pub struct Position {
 
 pub struct History(Mutex<Connection>);
 
+impl std::fmt::Debug for History {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("History")
+    }
+}
+
 impl History {
     /// Opens (or makes) the file.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
@@ -42,7 +52,12 @@ impl History {
                 hp INTEGER,
                 max_hp INTEGER
             );
-            CREATE INDEX IF NOT EXISTS positions_by_character ON positions (character, id);",
+            CREATE INDEX IF NOT EXISTS positions_by_character ON positions (character, id);
+            CREATE TABLE IF NOT EXISTS statlines (
+                character TEXT PRIMARY KEY,
+                original TEXT NOT NULL,
+                saved_at TEXT NOT NULL
+            );",
         )?;
         Ok(Self(Mutex::new(db)))
     }
@@ -90,5 +105,60 @@ impl History {
             .optional()
             .ok()
             .flatten()
+    }
+}
+
+impl StatlineStore for History {
+    fn saved(&self, name: &str) -> Option<String> {
+        self.0
+            .lock()
+            .expect("history lock")
+            .query_row(
+                "SELECT original FROM statlines WHERE character = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    // A failed write can't be reported from here; the session logs what it saved.
+    fn save(&self, name: &str, original: &str) {
+        let _ = self.0.lock().expect("history lock").execute(
+            "INSERT INTO statlines (character, original, saved_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (character) DO UPDATE SET original = ?2, saved_at = ?3",
+            params![name, original, jiff::Timestamp::now().to_string()],
+        );
+    }
+
+    fn clear(&self, name: &str) {
+        let _ = self
+            .0
+            .lock()
+            .expect("history lock")
+            .execute("DELETE FROM statlines WHERE character = ?1", [name]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mp_engine::StatlineStore;
+
+    use super::History;
+
+    #[test]
+    fn a_saved_statline_outlives_the_server_until_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mudparty.sqlite");
+        let h = History::open(&path).unwrap();
+        assert_eq!(h.saved("Ermias"), None);
+        h.save("Ermias", "Full");
+        h.save("Ermias", "[HP=%h]:");
+        drop(h);
+        let h = History::open(&path).unwrap();
+        assert_eq!(h.saved("Ermias").as_deref(), Some("[HP=%h]:"));
+        h.clear("Ermias");
+        assert_eq!(h.saved("Ermias"), None);
     }
 }

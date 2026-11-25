@@ -72,6 +72,8 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
         rooms: None,
         hang_up_below: None,
         inviter: None,
+        statline_store: None,
+        statline_restore: true,
     }
 }
 
@@ -98,6 +100,14 @@ async fn start(
         &mut rx,
         |r| *r == Report::State(SessionState::InGame),
         "in the game",
+    )
+    .await;
+    // The bot's own statline, with the maxima the rest thresholds need (#34 sets it once
+    // PROFILE has answered).
+    until(
+        &mut rx,
+        |r| matches!(r, Report::Vitals(v) if v.max_hp.is_some()),
+        "the bot's statline",
     )
     .await;
     (h, rx)
@@ -240,9 +250,8 @@ async fn below_the_threshold_the_bot_tells_its_leader_rests_and_says_ok() {
         .unwrap();
     let (h, mut rx) = start(&sm, None, Some(rest())).await;
     set_mana(&sm, 2, 40).await;
-    // A round brings a prompt with the new MP.
-    sm.tick(5).await;
-    until(&mut rx, |r| *r == Report::Resting(true), "resting").await;
+    // Rounds bring a prompt with the new MP.
+    until_ticking(&sm, &mut rx, |r| *r == Report::Resting(true), "resting").await;
     leader
         .read_until(|i| telepath(i, "@wait"))
         .await

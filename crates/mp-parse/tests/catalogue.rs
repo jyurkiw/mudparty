@@ -388,6 +388,21 @@ fn cases() -> Vec<Case> {
                 pct: 21,
             }],
         ),
+        // the statline, as PROFILE shows it
+        msg(
+            "profile_statline",
+            Msg::ProfileStatline { mode: s("Full") },
+            vec![E::ProfileStatline { mode: s("Full") }],
+        ),
+        msg(
+            "profile_statline",
+            Msg::ProfileStatline {
+                mode: s("[HP=%h/%H,MA=%m/%M]:%r"),
+            },
+            vec![E::ProfileStatline {
+                mode: s("[HP=%h/%H,MA=%m/%M]:%r"),
+            }],
+        ),
         // resting
         msg("rest_start", Msg::RestStart, vec![E::RestStarted]),
         msg("meditate_start", Msg::MeditateStart, vec![E::RestStarted]),

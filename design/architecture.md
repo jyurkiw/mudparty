@@ -455,6 +455,18 @@ behind.
     before its next try, and the lines behind it go on meanwhile. This also caps how fast
     a player can command one bot by telepath.
 
+**As built (#34):** after login a bot sends `pro` and reads the `Statusline:` row
+(catalogue `profile_statline`: `On`, `Full`, `Off`, or the custom template). If that is
+already the bot's template (first 60 characters), it sends nothing. Otherwise it saves the
+row in `mudparty.sqlite` (`statlines`) and sets its own. Its own template is never saved,
+so a login after a crash keeps the original from before. On an orderly logoff, before
+`quit`, it sends the saved statline back (`set statline on|full|off`, or
+`set statline full custom <template>`: PROFILE doesn't tell `custom` from `full custom`,
+so a template comes back as `full custom`, a known limit) and forgets it. If PROFILE never
+answers, the bot sets its own and saves nothing. A seated or unattended character's
+statline is never touched. A character whose statline is `Off` gets no prompt at all from
+silvermere, so a bot can't finish logging it in yet.
+
 ### 6.2 Auto login
 
 A small state machine. Its steps are data in the character YAML, defaulting to silvermere's
@@ -882,6 +894,7 @@ login:
   steps: default-silvermere                   # or an explicit list of {wait, send}
   takeover: true                              # answer Y to "already logged on" (§6.2)
 statline: "[HP=%h/%H,MA=%m/%M]:%r"            # bots only; the main char's is read, not set
+statline_restore: true                        # put the character's own back on logoff (#34)
 party:
   leader: Raijin
   invite_by_injection: true
@@ -962,6 +975,7 @@ derived at import.
 CREATE TABLE sessions (id INTEGER PRIMARY KEY, character TEXT, started_at TEXT, ended_at TEXT, end_reason TEXT);
 CREATE TABLE events   (id INTEGER PRIMARY KEY, session_id INTEGER, at TEXT, kind TEXT, data TEXT); -- JSON
 CREATE TABLE vitals   (session_id INTEGER, at TEXT, hp INTEGER, hp_max INTEGER, mp INTEGER, mp_max INTEGER, map INTEGER, room INTEGER);
+CREATE TABLE statlines (character TEXT PRIMARY KEY, original TEXT, saved_at TEXT); -- #34: the character's own while a bot's is set
 CREATE TABLE positions (id INTEGER PRIMARY KEY, character TEXT, at TEXT, why TEXT, map INTEGER, room INTEGER, room_name TEXT, hp INTEGER, max_hp INTEGER); -- MVP 9c: for rescues
 CREATE TABLE sheet_parts (                      -- §6.9, the latest of each part
   character TEXT, part TEXT,                    -- status | spells | inventory | appearance | item:<name>

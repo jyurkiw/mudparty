@@ -237,6 +237,14 @@ name: Raijin
 class: Warrior
 ```
 
+A bot sets its own statline (the file's `statline`) so it can read its HP and MP, but
+it leaves the character as it found it. Before changing anything it reads the character's
+statline with `pro` and keeps it in `mudparty.sqlite`, and it puts it back when it logs off
+cleanly. If the character already has the bot's statline, it sends nothing. After a crash
+the saved statline stays, and goes back at the next clean logoff. `statline_restore: false`
+leaves the bot's statline on. One limit: a custom statline comes back as `full custom`,
+since `pro` doesn't say whether it was `custom` or `full custom`.
+
 Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists every
 setting. The server watches `characters/`, and a running bot picks up an edited file
 without restarting.
