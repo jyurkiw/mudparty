@@ -1576,6 +1576,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "futures-util",
  "mp-config",
  "mp-data",
@@ -1583,6 +1584,7 @@ dependencies = [
  "mp-log",
  "mp-parse",
  "mp-silvermere",
+ "mp-telnet",
  "notify",
  "serde",
  "serde_json",

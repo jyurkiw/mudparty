@@ -33,6 +33,8 @@ pub struct RawClient {
     reader: Reader,
     /// Everything read so far.
     pub seen: Vec<Item>,
+    /// Every data byte read so far, telnet commands taken out.
+    pub data: Vec<u8>,
 }
 
 impl RawClient {
@@ -42,6 +44,7 @@ impl RawClient {
             telnet: ClientCodec::new(80, 24),
             reader: Reader::with_statlines(prompt_shapes()),
             seen: Vec::new(),
+            data: Vec::new(),
         })
     }
 
@@ -92,6 +95,7 @@ impl RawClient {
             let (mut data, mut reply) = (Vec::new(), Vec::new());
             self.telnet.decode(&buf[..n], &mut data, &mut reply);
             self.stream.write_all(&reply).await?;
+            self.data.extend_from_slice(&data);
             for item in self.reader.feed(&data) {
                 if let Some(line) = answer(&item) {
                     self.send(&line).await?;
@@ -121,6 +125,7 @@ impl RawClient {
             }
             let (mut data, mut reply) = (Vec::new(), Vec::new());
             self.telnet.decode(&buf[..n], &mut data, &mut reply);
+            self.data.extend_from_slice(&data);
             self.seen.extend(self.reader.feed(&data));
         }
     }

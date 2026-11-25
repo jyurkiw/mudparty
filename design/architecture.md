@@ -147,6 +147,26 @@ So from step 1:
   character's `statline` template), and an engine-driven one runs the bot statline.
   Switching driver sets the other one (*§6.1*).
 
+**As built (MVP 9a, `mudparty-server/src/proxy.rs`, `mp-engine` `spawn_seated`):**
+- The seat offers `mp_telnet::ServerCodec::OFFERS`, silvermere's own bytes in its order,
+  and answers as silvermere's option table does, so MudPlay's option state matches a
+  direct connection. A NAWS report goes upstream once the session has agreed NAWS.
+- Until MudPlay's first typed line (its answer to `Username:`), the seat holds the game
+  link itself and carries the bytes. That line names the session: the character whose
+  `login.account` matches it, case-blind, else `main_character`, else a session named as
+  typed with no file. The seat then hands the link (stream and telnet state) to a new
+  session and only carries bytes between MudPlay and it.
+- A seated session watches the login instead of driving it, and is in the game at its
+  first prompt. Its engines read everything (vitals, room, roster) but decide nothing, it
+  doesn't set the statline (a config edit doesn't either) or ask `/room`, and it answers
+  no @ commands. The page shows its card with `driver: seat` and refuses its orders.
+- What MudPlay types is logged as it arrives (`src: user` on the wire stream, each line on
+  the transcript). After `Password:` the next line is logged by length only.
+- When MudPlay leaves, the session drops the link (`SeatLeft`); detaching to a bot is
+  MVP 9c. When the game drops the link, the session ends (`SeatLinkLost`) and MudPlay
+  reconnects by itself. A bot already playing the character is left for the game's
+  takeover question, which MudPlay answers.
+
 **How `#switch Ermias` will work** (TODO, as the user settled it):
 
 1. Check the target: it must have a character YAML, and must not be an interactive
