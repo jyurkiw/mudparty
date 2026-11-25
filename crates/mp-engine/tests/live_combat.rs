@@ -50,6 +50,7 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         logoff_timeout: Duration::from_secs(20),
         reconnect_delays: vec![Duration::from_millis(200)],
         logs: None,
+        log_rolls: Default::default(),
         combat: Some(combat),
         pacing: Default::default(),
         party: None,

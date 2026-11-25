@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use mp_log::{CharacterLogs, FixedClock, Header, RollConfig, Source};
+use mp_log::{CharacterLogs, FixedClock, Header, Source, StreamRolls};
 use mp_replay::{read_wire, replay};
 use silvermere_auth::login::AuthMsg;
 use silvermere_text::{Msg, Palette, render};
@@ -32,7 +32,7 @@ fn write_login_and_fight(root: &Path) -> std::path::PathBuf {
         realm: s("silvermere"),
     };
     let clock = Box::new(FixedClock::at("2026-11-23T12:00:00.000Z"));
-    let mut logs = CharacterLogs::open(root, header, RollConfig::default(), clock).unwrap();
+    let mut logs = CharacterLogs::open(root, header, StreamRolls::default(), clock).unwrap();
     let gin = |logs: &mut CharacterLogs, b: &[u8]| logs.wire_in(b).unwrap();
     // silvermere's telnet offer, then the login dialogue.
     gin(

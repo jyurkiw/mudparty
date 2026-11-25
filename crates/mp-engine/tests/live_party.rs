@@ -62,6 +62,7 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
         logoff_timeout: Duration::from_secs(20),
         reconnect_delays: vec![Duration::from_millis(200)],
         logs: None,
+        log_rolls: Default::default(),
         combat: None,
         pacing: Default::default(),
         party,

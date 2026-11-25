@@ -5,7 +5,7 @@ use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use mp_log::{CharacterLogs, FixedClock, Header, RollConfig, ServerLog, Source};
+use mp_log::{CharacterLogs, FixedClock, Header, RollConfig, ServerLog, Source, StreamRolls};
 use serde_json::{Value, json};
 
 const T0: &str = "2026-11-23T10:00:00.250Z";
@@ -24,7 +24,7 @@ fn open(root: &Path) -> CharacterLogs {
     CharacterLogs::open(
         root,
         header(),
-        RollConfig::default(),
+        StreamRolls::default(),
         Box::new(FixedClock::at(T0)),
     )
     .unwrap()
@@ -196,4 +196,34 @@ fn the_server_log_is_one_jsonl_stream() {
     assert_eq!(recs[1]["kind"], "bot_start");
     assert_eq!(recs[1]["character"], "Ermias");
     assert_eq!(recs[1]["t"], T0);
+}
+
+#[test]
+fn each_stream_rolls_by_its_own_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let small = RollConfig {
+        file_size: 600,
+        plain_files: 2,
+        zip_archives: 0,
+    };
+    let rolls = StreamRolls {
+        wire: small,
+        ..StreamRolls::default()
+    };
+    let mut logs =
+        CharacterLogs::open(root.path(), header(), rolls, Box::new(FixedClock::at(T0))).unwrap();
+    for _ in 0..10 {
+        logs.wire_in(b"Also here: practice dummy.\r\n").unwrap();
+        logs.transcript_line("Also here: practice dummy.").unwrap();
+    }
+    logs.close().unwrap();
+    let dir = root.path().join("Ermias");
+    assert!(
+        dir.join("wire.1.jsonl").exists(),
+        "the wire rolled at 600 bytes"
+    );
+    assert!(
+        !dir.join("transcript.1.log").exists(),
+        "the transcript keeps the default 1MB"
+    );
 }

@@ -16,14 +16,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
-use mp_config::{CharacterConfig, PartyRole, Secrets, ServerConfig, load_character, load_server};
+use mp_config::{
+    CharacterConfig, Logging, PartyRole, Secrets, ServerConfig, load_character, load_server,
+};
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     AutoSwitch, CombatSettings, Command, Effect, LoginSettings, Offline, PartySettings,
     RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, SessionHandle, SessionSpec,
     SessionState, spawn,
 };
-use mp_log::{RollConfig, ServerLog, SystemClock};
+use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -415,6 +417,7 @@ impl Server {
             logoff_timeout: self.config.logoff_timeout,
             reconnect_delays: RECONNECT.iter().map(|s| Duration::from_secs(*s)).collect(),
             logs: Some(self.root.join("logs")),
+            log_rolls: log_rolls(&self.config.logging),
             combat: self.combat_for(&c),
             pacing: Default::default(),
             party: party_for(&c),
@@ -588,6 +591,25 @@ impl Server {
                 let _ = self.events.send(BotEvent::ConfigError { name, message });
             }
         }
+    }
+}
+
+/// How each of a bot's log streams rolls: its own `[logging.<stream>]` table over the
+/// shared `[logging]` settings (design §9.3).
+pub fn log_rolls(logging: &Logging) -> StreamRolls {
+    let roll = |stream: &str| {
+        let r = logging.roll_for(stream);
+        RollConfig {
+            file_size: r.file_size,
+            plain_files: r.plain_files,
+            zip_archives: r.zip_archives,
+        }
+    };
+    StreamRolls {
+        wire: roll("wire"),
+        transcript: roll("transcript"),
+        decisions: roll("decisions"),
+        events: roll("events"),
     }
 }
 

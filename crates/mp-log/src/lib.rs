@@ -12,4 +12,4 @@ mod streams;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use rolling::{RollConfig, RollingFile};
-pub use streams::{CharacterLogs, Header, ServerLog, Source};
+pub use streams::{CharacterLogs, Header, ServerLog, Source, StreamRolls};

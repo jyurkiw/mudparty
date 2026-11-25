@@ -31,6 +31,7 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         logoff_timeout: Duration::from_secs(20),
         reconnect_delays: vec![Duration::from_millis(100)],
         logs: logs.map(Path::to_owned),
+        log_rolls: Default::default(),
         combat: None,
         pacing: Default::default(),
         party: None,

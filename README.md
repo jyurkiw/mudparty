@@ -158,9 +158,12 @@ to tell a monster from a player.
 | `plain_files` | `2` | Plain files kept, the live one included. At least `1`. |
 | `zip_archives` | `3` | Rolled files kept zipped after those. The oldest is deleted. |
 
-Each log stream can override any of the three in its own table: `[logging.server]`,
-`[logging.wire]`, `[logging.transcript]`, `[logging.decisions]` and `[logging.events]`.
-For example:
+Each log stream can override any of the three in its own table. `[logging.server]` is
+the server's own log, `logs/server.jsonl`. Every bot has four streams in `logs/<Name>/`:
+`[logging.wire]` (the raw bytes, both ways), `[logging.transcript]` (the game's text as a
+player would read it), `[logging.decisions]` (what the bot decided and why) and
+`[logging.events]` (connecting, logging in, the party, rests, switches, going
+offline). For example, to keep more of the server log and less of the bulky wire capture:
 
 ```toml
 schema = 1
@@ -175,10 +178,10 @@ silvermere_db = "silvermere.db"
 [logging.server]
 file_size = "4MB"
 zip_archives = 10
-```
 
-Today only `[logging.server]` takes effect. The bots' streams roll at the defaults
-whatever these tables say.
+[logging.wire]
+zip_archives = 1
+```
 
 **Values**
 
