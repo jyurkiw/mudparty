@@ -136,6 +136,9 @@ pub enum Command {
     Config { statline: String, rev: String },
     /// Attack this monster first, until it dies (`@kill`, the web page's kill box).
     Kill { target: String },
+    /// An order from the web page, carried out as the @ command that does the same
+    /// (design §6.8): a toggle, `wait`/`ok`, a line typed for the game.
+    Do(Effect),
 }
 
 /// What a session is doing.
@@ -183,6 +186,24 @@ pub enum Report {
     Resting(bool),
     /// An @ command changed a switch.
     Automation(AutoState),
+    /// What the bot is fighting, and with what: a cast code or `melee`.
+    Fight {
+        target: Option<String>,
+        tier: Option<String>,
+    },
+    /// The room the game last said the bot is in (`/room`).
+    Room {
+        map: u32,
+        room: u32,
+    },
+}
+
+/// What [`Runner::watch_states`] last reported, so only changes are.
+#[derive(Default)]
+struct Watched {
+    party: Option<PartyState>,
+    resting: bool,
+    fight: (Option<String>, Option<String>),
 }
 
 /// A running session.
@@ -467,20 +488,30 @@ impl Runner {
         &mut self,
         party: &Option<PartyJoin>,
         rester: &Option<Rester>,
-        party_state: &mut Option<PartyState>,
-        resting: &mut bool,
+        combat: &Option<Combat>,
+        seen: &mut Watched,
     ) {
+        let fight = combat
+            .as_ref()
+            .map_or((None, None), |c| (c.target().map(str::to_owned), c.tier()));
+        if fight != seen.fight {
+            seen.fight = fight.clone();
+            self.report(Report::Fight {
+                target: fight.0,
+                tier: fight.1,
+            });
+        }
         let now_party = party.as_ref().map(PartyJoin::state);
-        if now_party != *party_state {
-            *party_state = now_party;
+        if now_party != seen.party {
+            seen.party = now_party;
             if let Some(s) = now_party {
                 self.event("party", json!({"state": format!("{s:?}")}));
                 self.report(Report::Party(s));
             }
         }
         let now_resting = rester.as_ref().is_some_and(Rester::resting);
-        if now_resting != *resting {
-            *resting = now_resting;
+        if now_resting != seen.resting {
+            seen.resting = now_resting;
             self.event("resting", json!({"resting": now_resting}));
             self.report(Report::Resting(now_resting));
         }
@@ -542,8 +573,7 @@ impl Runner {
         let mut party = self.spec.party.clone().map(PartyJoin::new);
         let mut rester = self.spec.rest.clone().map(Rester::new);
         let mut pacer = Pacer::new(self.spec.pacing.clone());
-        let mut party_state: Option<PartyState> = None;
-        let mut resting = false;
+        let mut seen = Watched::default();
         let mut in_game = false;
         let mut last_vitals: Option<Vitals> = None;
         // While logging off: when to give up, and how many `quit`s were sent.
@@ -600,6 +630,8 @@ impl Runner {
                                         if self.set_statline(&mut stream, &mut reader).await.is_err() {
                                             return LinkEnd::Lost { was_in_game: true };
                                         }
+                                        // Where the bot came in, for the web page's card.
+                                        pacer.push("/room");
                                         if let Some(p) = &mut party {
                                             let acts = p.start(Instant::now());
                                             self.queue(&mut pacer, "party", acts);
@@ -657,6 +689,7 @@ impl Runner {
                                 self.answer(&mut pacer, |q| q == Query::Exp, None, &Doing::of(&combat, &rester, now));
                             }
                             Item::Event(Event::RoomKey { map, room }) => {
+                                self.report(Report::Room { map: *map, room: *room });
                                 self.answer(&mut pacer, |q| q != Query::Exp, Some((*map, *room)), &Doing::of(&combat, &rester, now));
                             }
                             _ => {}
@@ -705,7 +738,7 @@ impl Runner {
                             let acts = r.on_item(&t.item, now, fighting);
                             self.queue(&mut pacer, "rest", acts);
                         }
-                        self.watch_states(&party, &rester, &mut party_state, &mut resting);
+                        self.watch_states(&party, &rester, &combat, &mut seen);
                     }
                     if self.drain(&mut stream, &mut pacer).await.is_err() {
                         return LinkEnd::Lost { was_in_game: in_game };
@@ -726,6 +759,18 @@ impl Runner {
                                 }
                             }
                         }
+                    }
+                    Some(Command::Do(e)) if in_game && logging_off.is_none() => {
+                        self.decision("order", json!({"effect": format!("{e:?}")}));
+                        let now = Instant::now();
+                        self.apply(e, &mut pacer, &mut combat, &mut party, now);
+                        self.watch_states(&party, &rester, &combat, &mut seen);
+                        if self.drain(&mut stream, &mut pacer).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
+                    }
+                    Some(Command::Do(e)) => {
+                        self.decision("order_dropped", json!({"effect": format!("{e:?}"), "why": "not in the game"}));
                     }
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
@@ -781,7 +826,7 @@ impl Runner {
                             let acts = p.on_tick(now);
                             self.queue(&mut pacer, "party", acts);
                         }
-                        self.watch_states(&party, &rester, &mut party_state, &mut resting);
+                        self.watch_states(&party, &rester, &combat, &mut seen);
                         if self.drain(&mut stream, &mut pacer).await.is_err() {
                             return LinkEnd::Lost { was_in_game: true };
                         }
@@ -891,6 +936,9 @@ async fn run(
                         // No link, so no room to fight in: an order from now is dropped.
                         Some(Command::Kill { target }) => {
                             r.decision("kill_order_dropped", json!({"target": target, "why": "reconnecting"}));
+                        }
+                        Some(Command::Do(e)) => {
+                            r.decision("order_dropped", json!({"effect": format!("{e:?}"), "why": "reconnecting"}));
                         }
                     }
                 }

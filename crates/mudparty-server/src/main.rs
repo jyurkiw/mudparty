@@ -1,10 +1,11 @@
 //! `mudparty-server [--root <data root>]`: starts the server on a data root (default: the
-//! current folder), runs until Ctrl-C, then logs every bot off.
+//! current folder), serves the web page on `listen.client_hub`, runs until Ctrl-C, then logs
+//! every bot off.
 
 use std::path::PathBuf;
 
 use anyhow::bail;
-use mudparty_server::Server;
+use mudparty_server::{Server, web};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,8 +25,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let server = Server::start(&root).await?;
+    let page = web::serve(server.clone(), server.listen()).await?;
     println!(
-        "mudparty-server: running {:?}; Ctrl-C to stop",
+        "mudparty-server: running {:?}; the page is at http://{page}/; Ctrl-C to stop",
         server.running()
     );
     tokio::signal::ctrl_c().await?;

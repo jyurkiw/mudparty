@@ -13,15 +13,19 @@ mp-config = { path = "../mp-config" }
 mp-data = { path = "../mp-data" }
 mp-engine = { path = "../mp-engine" }
 mp-log = { path = "../mp-log" }
+mp-parse = { path = "../mp-parse" }
 anyhow.workspace = true
 notify.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 mp-silvermere = { path = "../mp-silvermere" }
-mp-parse = { path = "../mp-parse" }
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

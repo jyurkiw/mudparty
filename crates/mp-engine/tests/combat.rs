@@ -431,3 +431,18 @@ fn a_hold_picks_no_new_fight_but_keeps_the_one_going_and_kill_orders() {
         "a kill order is the leader's say"
     );
 }
+
+#[test]
+fn the_attack_in_use_is_known_for_the_web_page() {
+    let mut f = Fight::new(settings());
+    assert_eq!(f.combat.tier(), None);
+    f.here("Raijin, practice dummy")
+        .leader_attacks("practice dummy")
+        .prompt(80);
+    assert_eq!(f.combat.target(), Some("practice dummy"));
+    assert_eq!(f.combat.tier().as_deref(), Some("lbol"));
+    f.msg(Msg::CombatEngaged).wait(5).prompt(4);
+    assert_eq!(f.combat.tier().as_deref(), Some("melee"));
+    f.msg(Msg::ExpGain { exp: 10 });
+    assert_eq!((f.combat.target(), f.combat.tier()), (None, None));
+}

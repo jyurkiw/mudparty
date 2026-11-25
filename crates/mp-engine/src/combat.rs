@@ -146,6 +146,15 @@ impl Combat {
         self.target.as_deref()
     }
 
+    /// The attack going at the target: a spell's cast code, or `melee`.
+    pub fn tier(&self) -> Option<String> {
+        self.target.as_ref()?;
+        Some(match self.current.as_ref()? {
+            Attack::Spell(s) | Attack::Room(s) => s.clone(),
+            Attack::Melee(_) => "melee".into(),
+        })
+    }
+
     /// `@kill <name>`: this monster first, until it dies.
     pub fn order_kill(&mut self, name: &str) {
         self.kill_order = Some(name.to_owned());
