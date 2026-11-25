@@ -101,8 +101,13 @@ async fn start(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let h = spawn(spec(sm.telnet_addr(), warn_denied), tx);
     until(&mut rx, |r| *r == Report::State(SessionState::InGame)).await;
-    // The first prompt, so @health has something to say.
-    until(&mut rx, |r| matches!(r, Report::Vitals(_))).await;
+    // A prompt in the bot's own statline, which shows the maxima, so @health has them. The
+    // bot sets it only once PROFILE has said what the character had (#34).
+    until(
+        &mut rx,
+        |r| matches!(r, Report::Vitals(v) if v.max_hp.is_some()),
+    )
+    .await;
     (h, rx)
 }
 
