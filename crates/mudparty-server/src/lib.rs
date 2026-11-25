@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use mp_config::{CharacterConfig, PartyRole, Secrets, ServerConfig, load_character, load_server};
-use mp_data::GameData;
+use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     CombatSettings, Command, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
-    RestSettings, SessionHandle, SessionSpec, SessionState, spawn,
+    RestSettings, RoomBook, RoomInfo, SessionHandle, SessionSpec, SessionState, spawn,
 };
 use mp_log::{RollConfig, ServerLog, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -93,7 +93,7 @@ pub struct Server {
     log: Mutex<ServerLog>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     /// `gamedata/gamedata.sqlite`, when there is one.
-    gamedata: Mutex<Option<GameData>>,
+    gamedata: Arc<Mutex<Option<GameData>>>,
     runs: AtomicU64,
 }
 
@@ -131,7 +131,7 @@ impl Server {
             events,
             log: Mutex::new(log),
             watcher: Mutex::new(None),
-            gamedata: Mutex::new(None),
+            gamedata: Arc::new(Mutex::new(None)),
             runs: AtomicU64::new(0),
         });
         server.record("start", json!({"root": root.display().to_string()}));
@@ -302,6 +302,7 @@ impl Server {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             }),
             automation: c.automation,
+            rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn(spec, tx);
@@ -475,4 +476,33 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
         retry: ROUND,
         sick_wait: SICK_WAIT,
     })
+}
+
+/// The game data's rooms, for a bot's `@where` and `@status`.
+struct GameRooms(Arc<Mutex<Option<GameData>>>);
+
+impl std::fmt::Debug for GameRooms {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GameRooms")
+    }
+}
+
+impl RoomBook for GameRooms {
+    fn room(&self, map: u32, room: u32) -> Option<RoomInfo> {
+        let gd = self.0.lock().expect("gamedata lock");
+        let gd = gd.as_ref()?;
+        let r = gd.room(map.into(), room.into()).ok()??;
+        // Only what `Obvious exits:` shows: a hidden or text exit isn't told.
+        let exits = gd
+            .exits(map.into(), room.into())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| matches!(e.shows_as, ShowsAs::Plain | ShowsAs::Door))
+            .map(|e| e.dir)
+            .collect();
+        Some(RoomInfo {
+            name: r.name,
+            exits,
+        })
+    }
 }

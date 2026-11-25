@@ -84,6 +84,20 @@ async fn the_bots_file_says_who_may_command_it() {
     until(&mut rx, |r| *r == Report::State(SessionState::InGame)).await;
     until(&mut rx, |r| matches!(r, Report::Vitals(_))).await;
 
+    // More telepaths than one 3 s page cycle takes, so both get room for them.
+    sm.on_world(|w| {
+        for id in w.session_ids() {
+            if let Some(p) = w.session_mut(id).and_then(|s| s.character.as_mut()) {
+                p.pagemax = 50;
+            }
+        }
+    })
+    .await;
+    // The room's name and exits come from the game data the server imported.
+    assert_eq!(
+        ask(&mut raijin, "@where").await,
+        "{Arena Practice Room (map 1, room 206); exits: north, up}"
+    );
     assert_eq!(
         ask(&mut raijin, "@version").await,
         format!("{{mudparty {}}}", env!("CARGO_PKG_VERSION"))

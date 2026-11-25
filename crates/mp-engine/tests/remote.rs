@@ -3,7 +3,10 @@
 //! regexes MudPlay reads them back with, copied here as fixtures.
 
 use mp_config::{Automation, Channel};
-use mp_engine::{Action, AutoSwitch, BotView, Effect, Remote, RemoteSettings};
+use mp_engine::{
+    Action, AutoSwitch, BotView, Effect, ExpKnown, Query, Remote, RemoteSettings, RoomInfo,
+    exp_reply, status_reply, where_reply,
+};
 use mp_parse::{Event, Item, Rest, Vitals};
 use regex::Regex;
 
@@ -349,4 +352,107 @@ fn replies_are_plain_ascii() {
     set.version = s("0.1.0–dé…");
     let fx = Remote::new(set).on_item(&tele("Raijin", "@version"), &view());
     assert_eq!(wire(&fx), vec![reply_to_raijin("mudparty 0.1.0-d?...")]);
+}
+
+// ----- the queries that need the game first (MVP 6b)
+
+#[test]
+fn where_status_and_exp_ask_the_game_before_answering() {
+    for (cmd, q) in [
+        ("@where", Query::Where),
+        ("@status", Query::Status),
+        ("@exp", Query::Exp),
+    ] {
+        assert_eq!(
+            run(tele("Raijin", cmd)),
+            vec![Effect::Ask {
+                query: q,
+                channel: Channel::Telepath,
+                to: s("Raijin"),
+            }],
+            "{cmd}"
+        );
+    }
+}
+
+fn arena() -> RoomInfo {
+    RoomInfo {
+        name: s("Arena Practice Room"),
+        exits: vec![8, 0],
+    }
+}
+
+// MudPlay's WhereReplyParser.ReplyPattern.
+const MUDPLAY_WHERE: &str = r"(?i)\{[^}]*\(map (\d+), room (\d+)\)";
+
+#[test]
+fn where_names_the_room_its_key_and_exits_in_mudplays_shape() {
+    let text = where_reply((1, 206), Some(&arena()));
+    assert_eq!(
+        text,
+        "Arena Practice Room (map 1, room 206); exits: north, up"
+    );
+    let braced = format!("{{{text}}}");
+    let re = Regex::new(MUDPLAY_WHERE).unwrap();
+    let c = re.captures(&braced).expect("MudPlay reads it");
+    assert_eq!((&c[1], &c[2]), ("1", "206"));
+    assert_eq!(
+        where_reply((1, 9999), None),
+        "map 1, room 9999 (not in map data)"
+    );
+    let shut = RoomInfo {
+        name: String::new(),
+        exits: vec![],
+    };
+    assert_eq!(
+        where_reply((1, 5), Some(&shut)),
+        "??? (map 1, room 5); exits: none"
+    );
+}
+
+#[test]
+fn status_says_what_where_and_what_ails() {
+    assert_eq!(
+        status_reply("idle", Some(((1, 206), Some(&arena()))), &[]),
+        "idle; Arena Practice Room (map 1, room 206); no ailments"
+    );
+    assert_eq!(
+        status_reply("fighting", None, &["poisoned"]),
+        "fighting; location unknown; ailments: poisoned"
+    );
+}
+
+#[test]
+fn exp_is_megamuds_progress_line() {
+    let known = ExpKnown {
+        level: 1,
+        left: 1304,
+    };
+    assert_eq!(
+        exp_reply(0, 0.0, None),
+        "Made: 0  Rate: unknown (type exp for needed + time to level)"
+    );
+    assert_eq!(
+        exp_reply(0, 0.0, Some(known)),
+        "Made: 0  Needed: 1,304 (L2)  Rate: unknown"
+    );
+    assert_eq!(
+        exp_reply(1500, 652.0, Some(known)),
+        "Made: 1,500  Needed: 1,304 (L2)  Rate: 652/hr  Will level in: 2h 0m"
+    );
+    assert_eq!(
+        exp_reply(250_000, 180_000.0, Some(ExpKnown { level: 9, left: 0 })),
+        "Made: 250,000  Needed: 0 (L10)  Rate: 180 k/hr  Will level in: ready to level"
+    );
+    assert_eq!(
+        exp_reply(
+            9,
+            1_240_000.0,
+            Some(ExpKnown {
+                level: 9,
+                left: 2_500_000
+            })
+        ),
+        "Made: 9  Needed: 2,500,000 (L10)  Rate: 1.2 m/hr  Will level in: 2h 0m"
+    );
 }

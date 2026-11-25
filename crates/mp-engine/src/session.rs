@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mp_config::Automation;
@@ -24,7 +25,10 @@ use crate::combat::{Combat, CombatSettings};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
 use crate::pacing::{Action, Pacer, PacingSettings};
 use crate::party::{PartyJoin, PartySettings, PartyState};
-use crate::remote::{AutoSwitch, BotView, Effect, Remote, RemoteSettings};
+use crate::remote::{
+    AutoSwitch, BotView, Effect, ExpKnown, Query, Remote, RemoteSettings, RoomBook, exp_reply,
+    status_reply, where_reply,
+};
 use crate::rest::{RestSettings, Rester};
 
 /// What a session needs to run.
@@ -56,6 +60,26 @@ pub struct SessionSpec {
     pub remote: Option<RemoteSettings>,
     /// Which engines start switched on; `@auto-…` changes them.
     pub automation: Automation,
+    /// Room names and exits from the game data, for `@where` and `@status`.
+    pub rooms: Option<Arc<dyn RoomBook>>,
+}
+
+/// How long a query waits for the game's answer before it is answered with what is known.
+const ASK_WAIT: Duration = Duration::from_secs(5);
+
+/// A query waiting for the game (`/room` or `exp`).
+#[derive(Debug, Clone)]
+struct Ask {
+    query: Query,
+    channel: mp_config::Channel,
+    to: String,
+    until: Instant,
+}
+
+/// What the bot is doing, for `@status`.
+struct Doing {
+    fighting: bool,
+    poisoned: bool,
 }
 
 /// The switches @ commands set (design §6.3).
@@ -204,6 +228,13 @@ struct Runner {
     auto: AutoState,
     reports: mpsc::UnboundedSender<Report>,
     logs: Option<CharacterLogs>,
+    /// Queries waiting for the game.
+    asks: Vec<Ask>,
+    /// This session's experience, and since when, for `@exp`.
+    exp_made: i64,
+    exp_since: Option<Instant>,
+    exp_known: Option<ExpKnown>,
+    last_vitals: Option<Vitals>,
 }
 
 impl Runner {
@@ -268,6 +299,23 @@ impl Runner {
         let before = self.auto.clone();
         match e {
             Effect::Reply { .. } | Effect::Send(_) => {}
+            Effect::Ask { query, channel, to } => {
+                let line = if query == Query::Exp { "exp" } else { "/room" };
+                // One question to the game answers every query waiting on it.
+                let asked = self
+                    .asks
+                    .iter()
+                    .any(|a| (a.query == Query::Exp) == (query == Query::Exp));
+                if !asked {
+                    pacer.push(line);
+                }
+                self.asks.push(Ask {
+                    query,
+                    channel,
+                    to,
+                    until: now + ASK_WAIT,
+                });
+            }
             Effect::Kill(target) => {
                 self.decision("kill_order", json!({"target": target}));
                 if let Some(c) = combat {
@@ -316,6 +364,77 @@ impl Runner {
             }
             self.event("automation", json!({"state": format!("{:?}", self.auto)}));
             self.report(Report::Automation(self.auto.clone()));
+        }
+    }
+
+    /// Answers the waiting queries `which` picks.
+    fn answer(
+        &mut self,
+        pacer: &mut Pacer,
+        which: impl Fn(Query) -> bool,
+        room: Option<(u32, u32)>,
+        doing: &Doing,
+    ) {
+        let (now, rest): (Vec<Ask>, Vec<Ask>) = self.asks.drain(..).partition(|a| which(a.query));
+        self.asks = rest;
+        for a in now {
+            self.reply_to(pacer, a, room, doing);
+        }
+    }
+
+    /// The reply to one query, from what is known now.
+    fn reply_to(&mut self, pacer: &mut Pacer, a: Ask, room: Option<(u32, u32)>, doing: &Doing) {
+        let info = |key: (u32, u32)| self.spec.rooms.as_ref().and_then(|b| b.room(key.0, key.1));
+        let text = match a.query {
+            Query::Where => match room {
+                Some(key) => Some(where_reply(key, info(key).as_ref())),
+                // A refusal, said only with warn_denied.
+                None => self
+                    .spec
+                    .remote
+                    .as_ref()
+                    .is_some_and(|r| r.warn_denied)
+                    .then(|| "Location unknown".to_owned()),
+            },
+            Query::Status => {
+                let activity = if doing.fighting {
+                    "fighting"
+                } else {
+                    match self.last_vitals.map(|v| v.rest) {
+                        Some(mp_parse::Rest::Resting) => "resting",
+                        Some(mp_parse::Rest::Meditating) => "meditating",
+                        _ => "idle",
+                    }
+                };
+                let ailments: &[&str] = if doing.poisoned { &["poisoned"] } else { &[] };
+                let found = room.map(|k| (k, info(k)));
+                Some(status_reply(
+                    activity,
+                    found.as_ref().map(|(k, i)| (*k, i.as_ref())),
+                    ailments,
+                ))
+            }
+            Query::Exp => {
+                let hours = self
+                    .exp_since
+                    .map_or(0.0, |at| at.elapsed().as_secs_f64() / 3600.0);
+                let rate = if hours > 0.0 && self.exp_made > 0 {
+                    self.exp_made as f64 / hours
+                } else {
+                    0.0
+                };
+                Some(exp_reply(self.exp_made, rate, self.exp_known))
+            }
+        };
+        if let Some(text) = text {
+            let reply = Effect::Reply {
+                channel: a.channel,
+                to: a.to,
+                text,
+            };
+            if let Some(act) = reply.action() {
+                self.queue(pacer, "remote", vec![act]);
+            }
         }
     }
 
@@ -475,6 +594,7 @@ impl Runner {
                                     }
                                     LoginAction::InGame => {
                                         in_game = true;
+                                        self.exp_since.get_or_insert_with(Instant::now);
                                         self.state(SessionState::InGame);
                                         self.event("in_game", json!({}));
                                         if self.set_statline(&mut stream, &mut reader).await.is_err() {
@@ -523,6 +643,23 @@ impl Runner {
                         let now = Instant::now();
                         for (to, text) in pacer.on_item(&t.item, now) {
                             self.decision("telepath_given_up", json!({"to": to, "text": text}));
+                        }
+                        self.last_vitals = last_vitals;
+                        match &t.item {
+                            Item::Event(Event::ExpGain { exp }) => {
+                                self.exp_made += exp;
+                            }
+                            Item::Event(Event::ExpLine { level, left, .. }) => {
+                                self.exp_known = Some(ExpKnown {
+                                    level: *level,
+                                    left: *left,
+                                });
+                                self.answer(&mut pacer, |q| q == Query::Exp, None, &Doing::of(&combat, &rester, now));
+                            }
+                            Item::Event(Event::RoomKey { map, room }) => {
+                                self.answer(&mut pacer, |q| q != Query::Exp, Some((*map, *room)), &Doing::of(&combat, &rester, now));
+                            }
+                            _ => {}
                         }
                         if let Some(rm) = &remote {
                             let view = BotView {
@@ -630,6 +767,16 @@ impl Runner {
                         return LinkEnd::Done(Offline::LogoffTimedOut);
                     }
                     if in_game && logging_off.is_none() {
+                        // A query the game didn't answer in time gets what is known.
+                        if self.asks.iter().any(|a| now >= a.until) {
+                            let doing = Doing::of(&combat, &rester, now);
+                            let late: Vec<Ask> = self.asks.iter().filter(|a| now >= a.until).cloned().collect();
+                            self.asks.retain(|a| now < a.until);
+                            for a in late {
+                                self.decision("ask_timed_out", json!({"query": format!("{:?}", a.query)}));
+                                self.reply_to(&mut pacer, a, None, &doing);
+                            }
+                        }
                         if let Some(p) = &mut party {
                             let acts = p.on_tick(now);
                             self.queue(&mut pacer, "party", acts);
@@ -646,6 +793,15 @@ impl Runner {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Doing {
+    fn of(combat: &Option<Combat>, rester: &Option<Rester>, now: Instant) -> Self {
+        Self {
+            fighting: combat.as_ref().is_some_and(|c| c.target().is_some()),
+            poisoned: rester.as_ref().is_some_and(|r| r.poisoned(now)),
         }
     }
 }
@@ -675,6 +831,11 @@ async fn run(
     });
     let mut r = Runner {
         auto: AutoState::new(spec.automation),
+        asks: Vec::new(),
+        exp_made: 0,
+        exp_since: None,
+        exp_known: None,
+        last_vitals: None,
         spec,
         reports,
         logs,

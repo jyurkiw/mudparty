@@ -68,6 +68,7 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
         rest,
         remote: None,
         automation: Default::default(),
+        rooms: None,
     }
 }
 

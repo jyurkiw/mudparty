@@ -3,12 +3,13 @@
 //! who may not, telepathing from the arena.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mp_config::{Automation, Channel, Melee, Rule};
 use mp_engine::{
-    AutoState, CombatSettings, Command, LoginSettings, RemoteSettings, Report, SessionHandle,
-    SessionSpec, SessionState, spawn,
+    AutoState, CombatSettings, Command, LoginSettings, RemoteSettings, Report, RoomBook, RoomInfo,
+    SessionHandle, SessionSpec, SessionState, spawn,
 };
 use mp_parse::{Event, Item};
 use mp_silvermere::{RawClient, StockChar, StockSilvermere, WAIT};
@@ -18,6 +19,19 @@ use tokio::time::{Instant, timeout};
 
 fn s(v: &str) -> String {
     v.to_owned()
+}
+
+/// The game data's arena, standing in for the server's lookup.
+#[derive(Debug)]
+struct Arena;
+
+impl RoomBook for Arena {
+    fn room(&self, map: u32, room: u32) -> Option<RoomInfo> {
+        ((map, room) == (1, 206)).then(|| RoomInfo {
+            name: s("Arena Practice Room"),
+            exits: vec![0, 8],
+        })
+    }
 }
 
 fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
@@ -58,6 +72,7 @@ fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
             version: s("0.1.0"),
         }),
         automation: Automation::default(),
+        rooms: Some(Arc::new(Arena)),
     }
 }
 
@@ -137,6 +152,23 @@ async fn each_command_from_an_allowed_sender_gets_its_answer() {
     assert!(mudplay.is_match(&health), "{health}");
 
     assert_eq!(ask(&mut raijin, "@version").await, "{mudparty 0.1.0}");
+    // These ask the game first: `/room`, then `exp`.
+    let where_ = ask(&mut raijin, "@where").await;
+    assert_eq!(
+        where_,
+        "{Arena Practice Room (map 1, room 206); exits: north, up}"
+    );
+    let mudplay_where = Regex::new(r"(?i)\{[^}]*\(map (\d+), room (\d+)\)").unwrap();
+    assert!(mudplay_where.is_match(&where_), "MudPlay reads it");
+    assert_eq!(
+        ask(&mut raijin, "@status").await,
+        "{idle; Arena Practice Room (map 1, room 206); no ailments}"
+    );
+    let exp = ask(&mut raijin, "@exp").await;
+    assert!(
+        exp.starts_with("{Made: 0  Needed: ") && exp.ends_with(" (L2)  Rate: unknown}"),
+        "{exp}"
+    );
     assert_eq!(ask(&mut raijin, "@do say hello").await, "{ok}");
     assert_eq!(
         ask(&mut raijin, "@auto-rest off").await,

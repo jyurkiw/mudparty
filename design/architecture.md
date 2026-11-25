@@ -484,8 +484,25 @@ interactive client, so there is one code path for every source.
   - Combat and rest are built from the YAML even when `automation` starts them off, so a
     toggle can turn them on.
   - Every change reaches the server as `Report::Automation`.
-- **Still to come (MVP 6b):** `@where`, `@status` and `@exp`. They need room tracking and
-  the `exp` screen.
+- **As built (MVP 6b):** `@where`, `@status` and `@exp` ask the game before answering.
+  One question serves every query waiting on it. After 5 s with no answer the query
+  gets what is known.
+  - `@where` and `@status` send silvermere's `/room`, a fork command answering `1/206`.
+    The room name and exits come from the game data, through the server's `RoomBook`.
+    Only exits that show as obvious are listed (plain and doors), in direction order, so
+    no hidden exit leaks.
+    - `@where`: `Arena Practice Room (map 1, room 206); exits: north, up`, read back by
+      MudPlay's `WhereReplyParser`. A room not in the game data reads
+      `map 1, room 9999 (not in map data)`. With no answer: the refusal
+      `Location unknown`.
+    - `@status`: `<idle|fighting|resting|meditating>; <room>; no ailments` (or
+      `ailments: poisoned`). Poison is read from the rest engine's signs of it. With no
+      answer the room is `location unknown`. There is no walking to report yet.
+  - `@exp` sends `exp`. `Made:` is the session's own total from the `You gain N
+    experience.` lines, and the rate is that over the time since the bot came in. The
+    reply is MudPlay's progress line, with its number, rate and time formats:
+    `Made: 1,500  Needed: 1,304 (L2)  Rate: 652/hr  Will level in: 2h 0m`.
+  - There is no room tracking between queries yet: `/room` is asked each time.
 
 ### 6.4 Combat
 
