@@ -187,6 +187,11 @@ keys = ["telepath_not_sent"]
 re = '^--- Telepath Not Sent ---$'
 
 [[pattern]]
+event = "UserUnknown"
+keys = ["user_unknown"]
+re = '^Cannot find user!$'
+
+[[pattern]]
 event = "TooFast"
 keys = ["too_fast"]
 re = '^You are typing too quickly - command ignored$'
@@ -276,3 +281,25 @@ re = '^  (?P<name>.{30}) (?P<class>.{12}) \[Invited\]$'
 event = "PartyNone"
 keys = ["party_none"]
 re = '^You are not in a party at the present time\.$'
+
+# ----- resting ------------------------------------------------------------------------
+
+[[pattern]]
+event = "RestStarted"
+keys = ["rest_start", "meditate_start"]
+re = '^You are now (?:resting|meditating)\.$'
+
+[[pattern]]
+event = "TooSick"
+keys = ["rest_sick", "meditate_sick"]
+re = '^You are too sick to (?:rest|meditate)!$'
+
+[[pattern]]
+event = "MeditateUseless"
+keys = ["meditate_useless"]
+re = '^Meditation will not help at this time\.$'
+
+[[pattern]]
+event = "PoisonTick"
+keys = ["poison_tick"]
+re = '^You feel ill\.$'

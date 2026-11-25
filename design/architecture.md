@@ -383,6 +383,12 @@ behind.
   (*GAME_MECHANICS: Wire → Command rate limit*). Telepaths keep a 100 ms floor, and each
   `--- Telepath Sent to <Name> ---` or `--- Telepath Not Sent ---` acknowledgement is
   paired with its send in order. A telepath that wasn't sent is sent again, up to 3 tries.
+  - **As built (MVP 5):** a 100 ms floor for every line, at most 3 unanswered, and a shut
+    gate opens after 3 s with no prompt, so a lost prompt can't stall the bot. silvermere
+    queues typed lines and drops only from the fourteenth waiting, so 3 never loses one.
+    Login lines and `quit` skip the pacer. A telepath is `/<name> <text>`. A telepath to
+    someone not in the game gets `Cannot find user!` and no acknowledgement, so it is given
+    up at once and the acknowledgements stay paired.
 
 ### 6.2 Auto login
 
@@ -562,6 +568,13 @@ clear-line prefix and a colour):
    or `  <name> <class> [Invited]`. The mana part is nine spaces when the MP percentage is
    0. Because every member's HP% and MP% are in it, a bot's periodic `par` is a fallback
    source for party vitals.
+   - **The order (found in MVP 5, silvermere `display_party`):** `You are following
+     <leader>.` comes first, then the player's own followers (or the "not in a party"
+     line), and the player's own row is always last. So a member that follows prints both
+     `You are following Raijin.` and `You are not in a party at the present time.`, and the
+     own row is what ends the answer.
+   - An `@invite` that goes unanswered, or a bot left away from its leader, checks `par`
+     again after 30 s.
 5. From then on the game moves the bot with the leader
    (` -- Following your Party leader <dir> --`). The bot tracks its room from room
    displays and `/room`.
@@ -589,6 +602,19 @@ rest:
   shows the bot as resting, and other bots below their stop thresholds top up while they
   wait.
 - Values can be percentages or absolute numbers.
+- **As built (MVP 5):**
+  - A rest runs from falling below a start threshold to meeting every stop threshold. It
+    starts only where one can be taken, so the leader is never told to wait through a
+    fight. Once it has started, a fight or a move that stands the bot up doesn't end it:
+    the leader goes on waiting, and the bot sends `rest` again once it is out of combat,
+    at most once a round.
+  - Whether the bot is resting is read from the prompt's `%r`.
+  - "In combat" means the combat engine has a target, a `*Combat Engaged*` is running, or
+    the bot was attacked within the last round.
+  - Poison is known from `You are too sick to rest!` and from `You feel ill.` each slow tick.
+    The bot waits 30 s after the last sign before trying again.
+  - **Not built yet:** the rule for rooms whose spell does damage. It needs the bot to know
+    its room, which comes with room tracking.
 
 ### 6.7 The terminal client and headless bots
 

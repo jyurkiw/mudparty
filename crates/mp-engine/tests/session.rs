@@ -32,6 +32,9 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         reconnect_delays: vec![Duration::from_millis(100)],
         logs: logs.map(Path::to_owned),
         combat: None,
+        pacing: Default::default(),
+        party: None,
+        rest: None,
     }
 }
 

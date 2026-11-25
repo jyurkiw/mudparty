@@ -166,6 +166,9 @@ pub enum Event {
         who: String,
     },
     TelepathNotSent,
+    /// `Cannot find user!`: a telepath (among others) to nobody in the game; no
+    /// acknowledgement follows.
+    UserUnknown,
     /// `You are typing too quickly - command ignored`: the last command was lost.
     TooFast,
     /// `Why don't you slow down for a few seconds?`
@@ -212,4 +215,14 @@ pub enum Event {
         class: String,
     },
     PartyNone,
+
+    // ----- resting
+    /// `You are now resting.` or `You are now meditating.`
+    RestStarted,
+    /// `You are too sick to rest!` (or meditate): poison stops both.
+    TooSick,
+    /// `Meditation will not help at this time.`
+    MeditateUseless,
+    /// `You feel ill.`: a poison tick, each slow tick while poisoned.
+    PoisonTick,
 }
