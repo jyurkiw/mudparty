@@ -109,6 +109,8 @@ pub enum Order {
     Ok,
     /// Join this leader's party.
     Join { leader: String },
+    /// Walk to a room, written `map/room` (`1/2141`).
+    Goto { room: String },
 }
 
 /// Who a `wait` or `ok` from the web page is from, in `held_by`.
@@ -418,6 +420,9 @@ impl Server {
             Order::Wait => Command::Do(Effect::Wait(WEB.into())),
             Order::Ok => Command::Do(Effect::Ok(WEB.into())),
             Order::Join { leader } => Command::Do(Effect::Join(leader)),
+            Order::Goto { room } => Command::Goto {
+                to: room_key(&room).ok_or_else(|| format!("{room:?} isn't a room like 1/2141"))?,
+            },
         };
         let bots = self.bots.lock().expect("bots lock");
         let Some(bot) = bots.get(name) else {
@@ -863,6 +868,12 @@ pub fn log_rolls(logging: &Logging) -> StreamRolls {
     }
 }
 
+/// `1/2141` as `(1, 2141)`.
+fn room_key(text: &str) -> Option<(u32, u32)> {
+    let (map, room) = text.trim().split_once('/')?;
+    Some((map.trim().parse().ok()?, room.trim().parse().ok()?))
+}
+
 /// Whose party the bot joins: its `party.leader`, unless it leads.
 fn party_for(c: &CharacterConfig) -> Option<PartySettings> {
     if c.party.role == PartyRole::Leader {
@@ -945,5 +956,26 @@ impl RoomBook for GameRooms {
             name: r.name,
             exits,
         })
+    }
+
+    fn route(&self, from: (u32, u32), to: (u32, u32)) -> Option<Vec<mp_engine::WalkStep>> {
+        let gd = self.0.lock().expect("gamedata lock");
+        let steps = gd
+            .as_ref()?
+            .route((from.0.into(), from.1.into()), (to.0.into(), to.1.into()))
+            .ok()??;
+        steps
+            .into_iter()
+            .map(|s| {
+                Some(mp_engine::WalkStep {
+                    dir: s.dir,
+                    to: (
+                        u32::try_from(s.to_map).ok()?,
+                        u32::try_from(s.to_room).ok()?,
+                    ),
+                    door: s.door,
+                })
+            })
+            .collect()
     }
 }

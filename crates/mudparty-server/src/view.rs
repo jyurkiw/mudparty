@@ -47,6 +47,8 @@ pub struct Card {
     /// Lines typed on the page for a seated character, waiting for the user's line in
     /// MudPlay to finish.
     pub queued: Vec<String>,
+    /// Where a walk stands: `walking to 1/2141, step 2 of 4`, `arrived`, `walk failed: …`.
+    pub walk: Option<String>,
     /// Where it was last known to be, for a rescue (from `mudparty.sqlite`).
     pub last_position: Option<Position>,
     #[serde(skip)]
@@ -129,6 +131,7 @@ impl Card {
             config_error: None,
             events: VecDeque::new(),
             queued: Vec::new(),
+            walk: None,
             last_position: None,
             state: None,
             resting: false,
@@ -227,6 +230,20 @@ impl Card {
                 self.tier = tier.clone();
             }
             Report::Queued(q) => self.queued = q.clone(),
+            Report::Walk(w) => {
+                use mp_engine::WalkState as W;
+                let text = match w {
+                    W::Locating => "walking: finding where it is".to_owned(),
+                    W::Walking { step, of } => format!("walking: step {step} of {of}"),
+                    W::Paused => "walking: paused for a fight".to_owned(),
+                    W::Arrived => "arrived".to_owned(),
+                    W::Failed(why) => format!("walk failed: {why}"),
+                };
+                if matches!(w, W::Arrived | W::Failed(_)) {
+                    self.event(text.clone());
+                }
+                self.walk = Some(text);
+            }
             Report::Unattended => {
                 self.driver = Some("unattended");
                 self.event("MudPlay left; staying online".into());

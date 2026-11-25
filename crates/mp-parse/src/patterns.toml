@@ -314,6 +314,49 @@ keys = ["fork_text"]
 re = '^(?P<map>\d+)/(?P<room>\d+)$'
 numbers = ["map", "room"]
 
+# ----- moving ---------------------------------------------------------------------------
+
+# The line wraps when the exits are many; its start is enough to know the move arrived.
+[[pattern]]
+event = "ObviousExits"
+keys = ["room_exits", "room_exits_none", "exits_list", "exits_list_none"]
+re = '^Obvious exits: '
+
+[[pattern]]
+event = "NoExit"
+keys = ["no_exit", "no_exit_clr"]
+re = '^There is no exit in that direction!$'
+
+[[pattern]]
+event = "DoorClosed"
+keys = ["door_closed", "door_closed_locked", "gate_closed", "gate_closed_locked", "exit_key_closed"]
+re = '^(?:The (?:door|gate) is [Cc]losed!|There is a closed door in that direction!)$'
+
+[[pattern]]
+event = "DoorOpened"
+keys = ["door_now_open", "door_was_open"]
+re = '^The \S+ (?:is now open|was already open)\.$'
+
+[[pattern]]
+event = "DoorLocked"
+keys = ["door_is_locked"]
+re = '^The \S+ is locked\.$'
+
+[[pattern]]
+event = "BashedOpen"
+keys = ["bash_ok"]
+re = '^You bashed the \S+ open\.$'
+
+[[pattern]]
+event = "BashFailed"
+keys = ["bash_fail"]
+re = '^Your attempts to bash through fail!$'
+
+[[pattern]]
+event = "ExitRefused"
+keys = ["exit_level_low", "exit_level_high", "exit_forbidden", "exit_timed_closed", "exit_need_spell", "exit_need_item"]
+re = '^(?P<text>You (?:have not progressed far enough to go through this exit!|have progressed too far to go through this exit!|may not go through this exit!|may not pass through that exit at this point in time\.|need to cast a spell to go that way!|do not have the appropriate item to go that direction!))$'
+
 # The row's value starts after exactly nine spaces, so a template that starts with a space
 # keeps it.
 [[pattern]]

@@ -315,7 +315,10 @@ session has seen stands in for it, so points are the surer choice there.
 
 On the page, each character has a card showing HP and MP, room, what it's doing and
 against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the
-combat, nuke, rest and all switches, a kill box, and a command line to the game.
+combat, nuke, rest and all switches, a kill box, a command line to the game, and a "Go"
+box that walks the bot to a room (written `map/room`, like `1/2141`). The bot plans its
+route from the game data, confirms each room as it goes, opens doors and bashes locked
+ones, and waits out a fight on the way.
 
 In the game, a player on a bot's `remote.allow` list can command it by telepath or
 gangpath: `/Ermias @help` lists the commands.

@@ -388,6 +388,101 @@ fn cases() -> Vec<Case> {
                 pct: 21,
             }],
         ),
+        // moving: arriving, and the ways a move is refused
+        msg(
+            "room_exits",
+            Msg::RoomExits {
+                exits: s("north, up"),
+            },
+            vec![E::ObviousExits],
+        ),
+        msg("room_exits_none", Msg::RoomExitsNone, vec![E::ObviousExits]),
+        msg(
+            "exits_list",
+            Msg::ExitsList {
+                exits: s("south, down"),
+            },
+            vec![E::ObviousExits],
+        ),
+        msg("exits_list_none", Msg::ExitsListNone, vec![E::ObviousExits]),
+        msg("no_exit", Msg::NoExit, vec![E::NoExit]),
+        msg("no_exit_clr", Msg::NoExitClr, vec![E::NoExit]),
+        msg("door_closed", Msg::DoorClosed, vec![E::DoorClosed]),
+        msg(
+            "door_closed_locked",
+            Msg::DoorClosedLocked,
+            vec![E::DoorClosed],
+        ),
+        msg("gate_closed", Msg::GateClosed, vec![E::DoorClosed]),
+        msg(
+            "gate_closed_locked",
+            Msg::GateClosedLocked,
+            vec![E::DoorClosed],
+        ),
+        msg("exit_key_closed", Msg::ExitKeyClosed, vec![E::DoorClosed]),
+        msg(
+            "door_now_open",
+            Msg::DoorNowOpen { what: s("door") },
+            vec![E::DoorOpened],
+        ),
+        msg(
+            "door_was_open",
+            Msg::DoorWasOpen { what: s("gate") },
+            vec![E::DoorOpened],
+        ),
+        msg(
+            "door_is_locked",
+            Msg::DoorIsLocked { what: s("door") },
+            vec![E::DoorLocked],
+        ),
+        msg(
+            "bash_ok",
+            Msg::BashOk { what: s("door") },
+            vec![E::BashedOpen],
+        ),
+        msg("bash_fail", Msg::BashFail, vec![E::BashFailed]),
+        msg(
+            "exit_level_low",
+            Msg::ExitLevelLow,
+            vec![E::ExitRefused {
+                text: s("You have not progressed far enough to go through this exit!"),
+            }],
+        ),
+        msg(
+            "exit_level_high",
+            Msg::ExitLevelHigh,
+            vec![E::ExitRefused {
+                text: s("You have progressed too far to go through this exit!"),
+            }],
+        ),
+        msg(
+            "exit_forbidden",
+            Msg::ExitForbidden,
+            vec![E::ExitRefused {
+                text: s("You may not go through this exit!"),
+            }],
+        ),
+        msg(
+            "exit_timed_closed",
+            Msg::ExitTimedClosed,
+            vec![E::ExitRefused {
+                text: s("You may not pass through that exit at this point in time."),
+            }],
+        ),
+        msg(
+            "exit_need_spell",
+            Msg::ExitNeedSpell,
+            vec![E::ExitRefused {
+                text: s("You need to cast a spell to go that way!"),
+            }],
+        ),
+        msg(
+            "exit_need_item",
+            Msg::ExitNeedItem,
+            vec![E::ExitRefused {
+                text: s("You do not have the appropriate item to go that direction!"),
+            }],
+        ),
         // the statline, as PROFILE shows it
         msg(
             "profile_statline",

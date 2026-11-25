@@ -834,6 +834,38 @@ to the next prompt. The wire text is from silvermere's catalogue:
 
 ---
 
+### 6.10 Walking (#52)
+
+A bot walks to a room by itself: the first piece of 1.0 (*§12.2*).
+
+- **Routes** come from the game data (`mp-data` `GameData::route`): the shortest walk
+  over the exits a walker passes by walking. Those are plain exits, doors and gates,
+  map changes, level exits (the game refuses a character outside the range), and the
+  types silvermere passes like plain ones (ticket, user count, block guard, delay).
+  Key, spell, item, toll, action, hidden, trap, text, remote, class, race, timed and
+  alignment exits aren't walked.
+- **The walker** (`mp-engine` `walk.rs`) is pure logic with a clock, like the engines.
+  1. It asks `/room` to find where it is, plans, and sends one direction at a time.
+  2. After each move it waits for the room display's `Obvious exits:` line, then
+     confirms the room with `/room`. A wrong room re-plans from there; after three, it
+     gives up.
+  3. `There is no exit in that direction!` sends it back to finding where it is.
+  4. A closed door (`The door is closed!`) gets `open <dir>`. A locked one
+     (`The door is locked.`) gets `bash <dir>`, up to 8 tries. In silvermere a bash wins
+     if a 0-100 roll is under strength plus the door's bonus, costs two ticks, and one
+     try in four does 1-4 damage. The door locks again later. Newhaven's arena door to
+     the cave bear is locked.
+  5. Any other refusal (`ExitRefused`: level, alignment, timed, a spell or item needed)
+     ends the walk with the game's words.
+  6. A fight pauses it; once over, it finds where it is and goes on.
+  7. A line with no answer for 10 s is asked again, three times.
+- **In the session**, `Command::Goto { to }` starts a walk (in the game, not seated). Its
+  progress is `Report::Walk(WalkState)`. The page has a "Go" box (`goto` order, room as
+  `1/2141`), and the card shows the walk.
+- **Not yet:** tracking the room between walks (a party drag or a flee leaves the last
+  known room stale until the next `/room`), named places in the YAML (with the routine,
+  #53), and picking locks for thieves.
+
 ## 7. Data model
 
 ### 7.1 Files
@@ -1442,6 +1474,31 @@ non-MVP parts left out:
    step 3, so it fails early if it's going to.
 
 ---
+
+### 12.2 The 1.0 target (user, 2026-11-25)
+
+**1.0 is one character per bot, running Newhaven alone**, with no player leading
+(milestone 1.0, goal #57). The server logs the character in. The bot:
+- gears up from the Newhaven shops;
+- fights in the arena (1/2150, levels 1-3);
+- retreats one room up to rest (Narrow Road, 1/2146) and goes back;
+- kills the cave bear in Small Cavern (1/2156, through the arena's locked north door)
+  when it respawns, about every 4 minutes, HP permitting;
+- trains at the Adventurer's Guild (1/2147) up to level 3, since level 4 locks it out
+  of the arena.
+
+All of it is configured in hand-written YAML. Several such bots may run at once, each on
+its own. The pieces: walking (#52, *§6.10*), the routine (#53), shopping (#55), training
+(#56) and login steps (#33).
+
+**1.1** is what the user is really after: **one bot controlling several characters in
+concert**, the party director (#59). A director in the server sets goals for each
+character, and the characters' engines keep their reflexes. It brings a
+`parties/<name>.yaml`, keeps the game party underneath (#54), and also runs bots around
+a main character played through MudPlay. The user chose this order knowing 1.0's
+routine moves into the director, so #53 keeps it behind a narrow interface of goals.
+
+**1.2:** building the YAML in the web page (#58).
 
 ## 13. TODO (after step 1)
 
