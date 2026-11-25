@@ -58,6 +58,7 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         remote: None,
         automation: Default::default(),
         rooms: None,
+        hang_up_below: None,
     }
 }
 

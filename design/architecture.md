@@ -181,6 +181,24 @@ So from step 1:
   prompt back. Each goes alone and waits for its own prompt. The queue is reported
   (`Report::Queued`) and shown on the card. It is logged as `src: inject`.
 
+**As built (MVP 9c), what the user chose on 2026-11-25:** when MudPlay drops mid-game the
+character **stays online, idle**, rather than running as a full bot, because a bot would
+set its statline and silvermere would keep it (#34).
+- The session reports `Unattended`; its driver is its engine, so the page's orders and @
+  commands work, and the file's engines run (an empty file runs none). Its statline is
+  left alone, and a config edit doesn't set it either. The injection queue is dropped.
+- It asks `/room`, and the server records the room in `mudparty.sqlite` (`positions`:
+  character, time, why, map, room, room name, HP) as "MudPlay left". The card shows the
+  last position, kept across restarts. Before MudPlay drops, the room is known only if
+  the user typed `/room`.
+- **Hang-up:** on a prompt with HP below `unattended.hang_up_below` (default 30%; points
+  or `none` too), it drops the link (`Offline::HungUp`), and the server records the
+  position again with "hung up: HP n/m". Whatever else ends an unattended session is
+  recorded the same way. A statline without the maximum makes the percentage relative to
+  the most HP seen on the link.
+- A session MudPlay started never reconnects, unattended or not: MudPlay logs back in, and
+  the game's takeover question ends the old session.
+
 **How `#switch Ermias` will work** (TODO, as the user settled it):
 
 1. Check the target: it must have a character YAML, and must not be an interactive
@@ -867,6 +885,8 @@ remote:
   channels: [telepath, gangpath]
   warn_denied: false
 automation: { combat: true, nuke: true, rest: true }
+unattended:                                   # a character played in MudPlay, once it drops
+  hang_up_below: 30%                          # hang up below this (points, %, or none)
 combat: { ... }                               # §6.4
 rest: { ... }                                 # §6.6
 ```
@@ -937,6 +957,7 @@ derived at import.
 CREATE TABLE sessions (id INTEGER PRIMARY KEY, character TEXT, started_at TEXT, ended_at TEXT, end_reason TEXT);
 CREATE TABLE events   (id INTEGER PRIMARY KEY, session_id INTEGER, at TEXT, kind TEXT, data TEXT); -- JSON
 CREATE TABLE vitals   (session_id INTEGER, at TEXT, hp INTEGER, hp_max INTEGER, mp INTEGER, mp_max INTEGER, map INTEGER, room INTEGER);
+CREATE TABLE positions (id INTEGER PRIMARY KEY, character TEXT, at TEXT, why TEXT, map INTEGER, room INTEGER, room_name TEXT, hp INTEGER, max_hp INTEGER); -- MVP 9c: for rescues
 CREATE TABLE sheet_parts (                      -- §6.9, the latest of each part
   character TEXT, part TEXT,                    -- status | spells | inventory | appearance | item:<name>
   captured_at TEXT, raw BLOB,                   -- the output as received, ANSI kept

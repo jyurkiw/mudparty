@@ -11,7 +11,7 @@ mod units;
 pub use character::{
     Amount, Automation, BOT_STATLINE, Channel, CharacterConfig, Combat, Login, LoginStep,
     LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier, Rule,
-    StealthOpener, Tier,
+    StealthOpener, Tier, Unattended,
 };
 pub use error::ConfigError;
 pub use files::{Loaded, Secrets, load_character, load_server, revision};

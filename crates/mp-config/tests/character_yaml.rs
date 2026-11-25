@@ -195,3 +195,23 @@ fn an_unknown_targeting_rule_is_refused() {
     let e = err(&ERMIAS.replace("- fight_back: true", "- flee: true"));
     assert!(e.contains("flee"), "{e}");
 }
+
+#[test]
+fn an_unattended_character_hangs_up_below_30_percent_unless_told() {
+    let main = CharacterConfig::from_yaml("schema: 1\nname: Arandmoor\n").unwrap();
+    assert_eq!(main.unattended.hang_up_below, Some(Amount::Percent(30)));
+    let c = CharacterConfig::from_yaml(
+        "schema: 1\nname: Arandmoor\nunattended:\n  hang_up_below: 45\n",
+    )
+    .unwrap();
+    assert_eq!(c.unattended.hang_up_below, Some(Amount::Points(45)));
+    let c = CharacterConfig::from_yaml(
+        "schema: 1\nname: Arandmoor\nunattended:\n  hang_up_below: none\n",
+    )
+    .unwrap();
+    assert_eq!(c.unattended.hang_up_below, None, "none turns it off");
+    assert!(
+        CharacterConfig::from_yaml("schema: 1\nname: A\nunattended:\n  hang_up: 4\n").is_err(),
+        "an unknown key is refused"
+    );
+}

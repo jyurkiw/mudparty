@@ -50,7 +50,7 @@ pub struct Rester {
 }
 
 /// Below `amount`, out of `max`.
-fn below(amount: Option<Amount>, cur: Option<i32>, max: Option<i32>) -> bool {
+pub(crate) fn below(amount: Option<Amount>, cur: Option<i32>, max: Option<i32>) -> bool {
     match (amount, cur) {
         (Some(Amount::Points(n)), Some(c)) => c < n,
         (Some(Amount::Percent(p)), Some(c)) => max.is_some_and(|m| m > 0 && c * 100 < p * m),
