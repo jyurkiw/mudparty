@@ -22,6 +22,8 @@ pub struct Card {
     pub bot: bool,
     /// It has a session now.
     pub running: bool,
+    /// Who drives the session: `engine` (a headless bot) or `seat` (MudPlay).
+    pub driver: Option<&'static str>,
     /// `offline`, `connecting`, `logging_in`, `reconnecting`, `logging_off`, or in the game
     /// `fighting`, `resting`, `waiting` (held by a `@wait`) or `idle`.
     pub mode: &'static str,
@@ -107,6 +109,7 @@ impl Card {
             main,
             bot: false,
             running: false,
+            driver: None,
             mode: "offline",
             vitals: None,
             room: None,
@@ -134,9 +137,10 @@ impl Card {
         self.config_error = None;
     }
 
-    /// The bot was started: a fresh session, so nothing of the last one is current.
-    pub fn started(&mut self, automation: Automation) {
+    /// A session started: a fresh one, so nothing of the last one is current.
+    pub fn started(&mut self, automation: Automation, seated: bool) {
         self.running = true;
+        self.driver = Some(if seated { "seat" } else { "engine" });
         self.state = Some(SessionState::Connecting);
         self.vitals = None;
         self.room = None;
@@ -146,7 +150,14 @@ impl Card {
         self.offline = None;
         self.resting = false;
         self.automation = automation.into();
-        self.event("started".into());
+        self.event(
+            if seated {
+                "MudPlay attached"
+            } else {
+                "started"
+            }
+            .into(),
+        );
         self.refresh();
     }
 
@@ -168,6 +179,7 @@ impl Card {
                     }
                     SessionState::Offline(off) => {
                         self.running = false;
+                        self.driver = None;
                         self.target = None;
                         self.tier = None;
                         self.resting = false;
@@ -256,6 +268,8 @@ fn offline_text(off: &Offline) -> String {
         Offline::TakenOver => "taken over by another login".into(),
         Offline::LogoffTimedOut => "the logoff timed out".into(),
         Offline::Dropped => "dropped".into(),
+        Offline::SeatLeft => "MudPlay left".into(),
+        Offline::SeatLinkLost => "the game closed MudPlay's link".into(),
     }
 }
 

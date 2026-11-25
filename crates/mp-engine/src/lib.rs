@@ -19,5 +19,6 @@ pub use remote::{
 };
 pub use rest::{RestSettings, Rester};
 pub use session::{
-    AutoState, Command, Offline, Report, SessionHandle, SessionSpec, SessionState, spawn,
+    AutoState, Command, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec, SessionState,
+    Upstream, spawn, spawn_seated,
 };

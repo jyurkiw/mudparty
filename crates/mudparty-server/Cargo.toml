@@ -14,6 +14,7 @@ mp-data = { path = "../mp-data" }
 mp-engine = { path = "../mp-engine" }
 mp-log = { path = "../mp-log" }
 mp-parse = { path = "../mp-parse" }
+mp-telnet = { path = "../mp-telnet" }
 anyhow.workspace = true
 notify.workspace = true
 serde_json.workspace = true
@@ -24,6 +25,7 @@ serde.workspace = true
 
 [dev-dependencies]
 mp-silvermere = { path = "../mp-silvermere" }
+base64.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
 

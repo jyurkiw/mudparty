@@ -11,10 +11,11 @@ in this repository's issues.
 
 ## Status
 
-The MVP is done: headless bots, combat, resting, party join, @ commands, logs and the web
-page. Still to come: the interactive terminal client, the MudPlay proxy, character sheets
-and path translation. Settings for those already read in `mudparty.toml` (below), but
-nothing uses them yet.
+Headless bots, combat, resting, party join, @ commands, logs and the web page work, and
+MudPlay can play through the proxy. Still to come: `#` commands and typing from the web
+page through the proxy, the interactive terminal client, character sheets and path
+translation. A few settings for those already read in `mudparty.toml` (below), but nothing
+uses them yet.
 
 ## Building
 
@@ -87,7 +88,7 @@ port = 2323
 
 [listen]
 client_hub = "127.0.0.1:7171"     # the web page and its feed
-proxy = "127.0.0.1:2424"          # where MudPlay will connect (not used yet)
+proxy = "127.0.0.1:2424"          # where MudPlay connects
 
 [gamedata]                        # required
 silvermere_db = "E:/silvermere-data/silvermere.db"
@@ -125,7 +126,7 @@ zip_archives = 3                  # older files, zipped; the oldest is deleted
 | Setting | Default | Meaning |
 |---|---|---|
 | `client_hub` | `"127.0.0.1:7171"` | The web page, at `http://<client_hub>/`. The page has no login, so this must be a loopback address (`127.0.0.1` or `[::1]`); the server won't start otherwise. |
-| `proxy` | `"127.0.0.1:2424"` | Where MudPlay will connect once the proxy exists. Not used yet. |
+| `proxy` | `"127.0.0.1:2424"` | Where MudPlay connects: point MudPlay's connection here instead of at silvermere. Loopback only, like the page. |
 
 The two must use different ports. Neither may use a port silvermere already listens on:
 `2323`, `8080` and `8088` on a default silvermere.
@@ -247,8 +248,21 @@ mudparty-server --root E:/mudparty-data
 ```
 
 `--root` defaults to the current folder. The server starts every bot whose file says
-`autostart: true` and prints the web page's address. Ctrl-C logs every bot off cleanly
-before it exits.
+`autostart: true` and prints the web page's and the proxy's addresses. Ctrl-C logs every
+character off cleanly before it exits, MudPlay's included.
+
+### Playing through the proxy
+
+Point MudPlay at the proxy (`listen.proxy`, `127.0.0.1:2424` by default) instead of at
+silvermere, and log in as usual. MudPlay can't tell the difference: the proxy offers the
+same telnet options silvermere does and passes every byte through unchanged. The account
+name you type says which character this is: the one whose file has that `login.account`,
+else `main_character`. Its card on the page then follows your HP, MP and room as you play,
+and its logs record the session, your password left out.
+
+If a bot is already playing that character, the game asks MudPlay whether to take the
+character over, as it would without the proxy. When MudPlay disconnects, the proxy drops
+the character's link too.
 
 On the page, each character has a card showing HP and MP, room, what it's doing and
 against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the

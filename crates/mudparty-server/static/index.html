@@ -122,7 +122,9 @@ function card(m) {
   if (a.all_off) badges.push(el("div", { class: "note" }, "all engines off"));
   if (a.stopped) badges.push(el("div", { class: "note" }, "stopped (@stop)"));
 
-  const controls = m.bot ? [
+  const seated = m.driver === "seat";
+  const controls = seated ? [el("div", { class: "note" },
+    "Playing in MudPlay now. Typing for it from here comes next.")] : m.bot ? [
     el("div", { class: "row" },
       el("button", { disabled: m.running, onclick: () => order(m.name, { order: "start" }) }, "Start"),
       el("button", { disabled: !m.running, onclick: () => order(m.name, { order: "stop" }) }, "Stop"),
@@ -134,7 +136,7 @@ function card(m) {
     box("monster", "Kill", (t) => order(m.name, { order: "kill", target: t }), !inGame),
     box("command for the game", "Send", (t) => order(m.name, { order: "command", text: t }), !inGame),
   ] : [el("div", { class: "note" },
-    m.main ? "Played in MudPlay. Typing here comes with the proxy." : "No login: can't run as a bot.")];
+    m.main ? "Played in MudPlay, through the proxy." : "No login: can't run as a bot.")];
 
   return el("section", { class: "card" + (m.main ? " main" : "") },
     el("div", { class: "top" },

@@ -2,8 +2,12 @@
 //! statline, take config changes, log off, and reconnect a lost link.
 //!
 //! A session runs as a tokio task, driven by [`Command`]s and telling its owner what it is
-//! doing with [`Report`]s. The same runner serves a headless bot in the server and, later,
-//! the interactive client.
+//! doing with [`Report`]s. The same runner serves a headless bot in the server, a MudPlay
+//! seat on the proxy (design §2.1, [`spawn_seated`]) and, later, the interactive client.
+//!
+//! A seated session's driver is the user: MudPlay logs in and plays, every byte passes
+//! through unchanged both ways, and the engines read what the game says (the tap) but
+//! decide nothing.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -168,6 +172,11 @@ pub enum Offline {
     LogoffTimedOut,
     /// The owner went away (its command channel closed).
     Dropped,
+    /// A seated session's MudPlay left, and the link was dropped with it.
+    SeatLeft,
+    /// The game closed a seated session's link. MudPlay reconnects by itself, so the
+    /// session doesn't.
+    SeatLinkLost,
 }
 
 /// What a session tells its owner.
@@ -235,8 +244,66 @@ impl SessionHandle {
 /// Starts a session.
 pub fn spawn(spec: SessionSpec, reports: mpsc::UnboundedSender<Report>) -> SessionHandle {
     let (cmds, rx) = mpsc::unbounded_channel();
-    let task = tokio::spawn(run(spec, rx, reports));
+    let task = tokio::spawn(run_from(spec, rx, reports, None, None));
     SessionHandle { cmds, task }
+}
+
+/// A MudPlay connection attached to a session (design §2.1).
+#[derive(Debug)]
+pub struct Seat {
+    /// What MudPlay sent, telnet already taken out.
+    pub input: mpsc::UnboundedReceiver<SeatInput>,
+    /// Data bytes from the game, for the seat to write to MudPlay.
+    pub output: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+/// Something MudPlay sent through its seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatInput {
+    /// Typed bytes, as MudPlay sent them (a key at a time, or a line).
+    Data(Vec<u8>),
+    /// MudPlay's window size (NAWS).
+    Window { cols: u16, rows: u16 },
+}
+
+/// A link to the game opened before its session started: the proxy opens one while MudPlay
+/// types its account name, and hands it over once the name says whose session it is.
+#[derive(Debug)]
+pub struct Upstream {
+    pub stream: TcpStream,
+    /// The link's telnet state, as negotiated so far.
+    pub telnet: ClientCodec,
+}
+
+/// Starts a session on `upstream`, driven by a MudPlay seat. MudPlay goes on logging in by
+/// itself; the session is in the game at the first prompt it reads.
+pub fn spawn_seated(
+    spec: SessionSpec,
+    upstream: Upstream,
+    seat: Seat,
+    reports: mpsc::UnboundedSender<Report>,
+) -> SessionHandle {
+    let (cmds, rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_from(spec, rx, reports, Some(upstream), Some(seat)));
+    SessionHandle { cmds, task }
+}
+
+/// What the seat is in the middle of typing, for the logs.
+#[derive(Debug, Default)]
+struct Typing {
+    line: Vec<u8>,
+    /// The game asked for the password, so the line being typed is one.
+    secret: bool,
+    /// The last byte ended a line with CR, so an LF after it is the same line end.
+    after_cr: bool,
+}
+
+/// Waits for the seat's next input; forever when there is no seat.
+async fn from_seat(seat: &mut Option<Seat>) -> Option<Option<SeatInput>> {
+    match seat {
+        Some(s) => Some(s.input.recv().await),
+        None => std::future::pending().await,
+    }
 }
 
 /// How one link ended.
@@ -305,6 +372,45 @@ impl Runner {
         let mut out = Vec::with_capacity(bytes.len());
         mp_telnet::escape(&bytes, &mut out);
         stream.write_all(&out).await
+    }
+
+    /// Logs what the seat typed: the raw bytes on the wire stream, each finished line on the
+    /// transcript. A line typed at the password prompt is kept by its length only.
+    fn typed(&mut self, typing: &mut Typing, bytes: &[u8]) {
+        let secret = typing.secret;
+        let mut lines = Vec::new();
+        for &b in bytes {
+            match b {
+                b'\n' if typing.after_cr => typing.after_cr = false,
+                b'\r' | b'\n' => {
+                    typing.after_cr = b == b'\r';
+                    lines.push((std::mem::take(&mut typing.line), typing.secret));
+                    typing.secret = false;
+                }
+                // Backspace and delete take back the last key.
+                8 | 127 => {
+                    typing.after_cr = false;
+                    typing.line.pop();
+                }
+                _ => {
+                    typing.after_cr = false;
+                    typing.line.push(b);
+                }
+            }
+        }
+        let Some(l) = &mut self.logs else { return };
+        if secret {
+            let _ = l.wire_out_redacted(bytes, "password", &Source::User);
+        } else {
+            let _ = l.wire_out(bytes, &Source::User);
+        }
+        for (line, secret) in lines {
+            if secret {
+                let _ = l.transcript_sent_redacted(&Source::User);
+            } else {
+                let _ = l.transcript_sent(&String::from_utf8_lossy(&line), &Source::User);
+            }
+        }
     }
 
     /// Carries out what an @ command asked for.
@@ -544,19 +650,33 @@ impl Runner {
     }
 
     /// One connection, from connecting to its end.
-    async fn link(&mut self, cmds: &mut mpsc::UnboundedReceiver<Command>) -> LinkEnd {
+    async fn link(
+        &mut self,
+        cmds: &mut mpsc::UnboundedReceiver<Command>,
+        upstream: Option<Upstream>,
+        seat: &mut Option<Seat>,
+    ) -> LinkEnd {
         let lost = LinkEnd::Lost { was_in_game: false };
-        let Ok(Ok(mut stream)) = timeout(
-            self.spec.login.step_timeout,
-            TcpStream::connect(&self.spec.game),
-        )
-        .await
-        else {
-            return lost;
+        let (mut stream, mut telnet) = match upstream {
+            Some(u) => (u.stream, u.telnet),
+            None => {
+                let Ok(Ok(stream)) = timeout(
+                    self.spec.login.step_timeout,
+                    TcpStream::connect(&self.spec.game),
+                )
+                .await
+                else {
+                    return lost;
+                };
+                (stream, ClientCodec::new(80, 24))
+            }
         };
         self.state(SessionState::LoggingIn);
-        self.event("connected", json!({"game": self.spec.game}));
-        let mut telnet = ClientCodec::new(80, 24);
+        self.event(
+            "connected",
+            json!({"game": self.spec.game, "seat": seat.is_some()}),
+        );
+        let mut typing = Typing::default();
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -599,6 +719,12 @@ impl Runner {
                     if stream.write_all(&reply).await.is_err() {
                         return LinkEnd::Lost { was_in_game: in_game };
                     }
+                    if let Some(s) = seat
+                        && !data.is_empty()
+                    {
+                        // A seat that has gone is noticed on its input.
+                        let _ = s.output.send(data.clone());
+                    }
                     for t in reader.feed_traced(&data) {
                         if let Some(l) = &mut self.logs {
                             let _ = l.transcript_line(&t.plain);
@@ -610,6 +736,23 @@ impl Runner {
                                 && !matches!(t.item, Item::Prompt(_))
                             {
                                 c.on_item(&t.item, Instant::now());
+                            }
+                            // MudPlay logs in by itself: the session only watches, and is in
+                            // the game at the first prompt.
+                            if seat.is_some() {
+                                match &t.item {
+                                    Item::Event(Event::PasswordPrompt) => typing.secret = true,
+                                    Item::Prompt(v) => {
+                                        in_game = true;
+                                        self.exp_since.get_or_insert_with(Instant::now);
+                                        self.state(SessionState::InGame);
+                                        self.event("in_game", json!({"seat": true}));
+                                        last_vitals = Some(*v);
+                                        self.report(Report::Vitals(*v));
+                                    }
+                                    _ => {}
+                                }
+                                continue;
                             }
                             for action in login.on_item(&t.item, Instant::now()) {
                                 self.decision("login_step", json!({"read": t.plain, "action": format!("{action:?}").replace(&self.spec.login.password, "********")}));
@@ -696,7 +839,9 @@ impl Runner {
                             }
                             _ => {}
                         }
-                        if let Some(rm) = &remote {
+                        // A seat drives: the engines read, but decide nothing.
+                        let driving = seat.is_none();
+                        if let Some(rm) = remote.as_ref().filter(|_| driving) {
                             let view = BotView {
                                 vitals: last_vitals,
                                 automation: self.auto.automation(),
@@ -720,7 +865,7 @@ impl Runner {
                         // only on prompts.
                         let prompt = matches!(t.item, Item::Prompt(_));
                         if let Some(c) = &mut combat
-                            && (self.auto.fights() || !prompt)
+                            && ((driving && self.auto.fights()) || !prompt)
                         {
                             let commands = c.on_item(&t.item, now);
                             let target = c.target().map(str::to_owned);
@@ -729,12 +874,12 @@ impl Runner {
                                 pacer.push(cmd);
                             }
                         }
-                        if let Some(p) = &mut party {
+                        if let Some(p) = party.as_mut().filter(|_| driving) {
                             let acts = p.on_item(&t.item, now);
                             self.queue(&mut pacer, "party", acts);
                         }
                         if let Some(r) = &mut rester
-                            && (self.auto.rests() || !prompt)
+                            && ((driving && self.auto.rests()) || !prompt)
                         {
                             let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
                             let acts = r.on_item(&t.item, now, fighting);
@@ -746,6 +891,27 @@ impl Runner {
                         return LinkEnd::Lost { was_in_game: in_game };
                     }
                 }
+                input = from_seat(seat) => match input.flatten() {
+                    Some(SeatInput::Data(bytes)) => {
+                        self.typed(&mut typing, &bytes);
+                        let mut out = Vec::with_capacity(bytes.len());
+                        mp_telnet::escape(&bytes, &mut out);
+                        if stream.write_all(&out).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: in_game };
+                        }
+                    }
+                    Some(SeatInput::Window { cols, rows }) => {
+                        let mut reply = Vec::new();
+                        telnet.set_window_size(cols, rows, &mut reply);
+                        if stream.write_all(&reply).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: in_game };
+                        }
+                    }
+                    None => {
+                        self.decision("seat_left", json!({}));
+                        return LinkEnd::Done(Offline::SeatLeft);
+                    }
+                },
                 cmd = cmds.recv() => match cmd {
                     Some(Command::Kill { target }) => {
                         self.decision("kill_order", json!({"target": target}));
@@ -791,7 +957,11 @@ impl Runner {
                     Some(Command::Config { statline, rev }) => {
                         self.spec.statline = statline;
                         self.spec.config_rev = rev.clone();
-                        if in_game && self.set_statline(&mut stream, &mut reader).await.is_err() {
+                        // A seated session runs MudPlay's statline, not the file's.
+                        if in_game
+                            && seat.is_none()
+                            && self.set_statline(&mut stream, &mut reader).await.is_err()
+                        {
                             return LinkEnd::Lost { was_in_game: true };
                         }
                         self.decision("config_applied", json!({"rev": rev}));
@@ -861,10 +1031,12 @@ async fn pace(at: Option<Instant>) {
     }
 }
 
-async fn run(
+async fn run_from(
     spec: SessionSpec,
     mut cmds: mpsc::UnboundedReceiver<Command>,
     reports: mpsc::UnboundedSender<Report>,
+    mut upstream: Option<Upstream>,
+    mut seat: Option<Seat>,
 ) -> Offline {
     let logs = spec.logs.as_ref().and_then(|root| {
         let header = Header {
@@ -890,7 +1062,14 @@ async fn run(
     let mut attempt = 0usize;
     loop {
         r.state(SessionState::Connecting);
-        match r.link(&mut cmds).await {
+        let link = r.link(&mut cmds, upstream.take(), &mut seat).await;
+        // A seated session's link is MudPlay's: when the game drops it, MudPlay reconnects
+        // and logs in by itself.
+        let link = match link {
+            LinkEnd::Lost { .. } if seat.is_some() => LinkEnd::Done(Offline::SeatLinkLost),
+            other => other,
+        };
+        match link {
             LinkEnd::Done(off) => {
                 let kind = match &off {
                     Offline::LoggedOff => "logged_off",
@@ -898,6 +1077,8 @@ async fn run(
                     Offline::TakenOver => "taken_over",
                     Offline::LogoffTimedOut => "logoff_timed_out",
                     Offline::Dropped => "dropped",
+                    Offline::SeatLeft => "seat_left",
+                    Offline::SeatLinkLost => "seat_link_lost",
                 };
                 r.event(kind, json!({}));
                 r.state(SessionState::Offline(off.clone()));

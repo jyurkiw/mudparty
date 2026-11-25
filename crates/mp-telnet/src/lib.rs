@@ -5,6 +5,9 @@
 //! (`silvermere-net/src/telnet/options.rs`); the client agrees to exactly those and refuses
 //! the rest. Each answer is given only when it changes an option's state, so two sides that
 //! acknowledge acknowledgements never loop.
+//!
+//! [`ServerCodec`] is the server side, as the proxy's seat speaks to MudPlay: silvermere's
+//! own offer and answers, so MudPlay can't tell the seat from silvermere.
 
 pub const IAC: u8 = 255;
 pub const DONT: u8 = 254;
@@ -159,5 +162,117 @@ impl ClientCodec {
         let [h1, h2] = self.rows.to_be_bytes();
         escape(&[w1, w2, h1, h2], reply);
         reply.extend([IAC, SE]);
+    }
+}
+
+/// The server side of a telnet connection, as the proxy's seat speaks to MudPlay (design
+/// §2.1). It mirrors silvermere's option table (`silvermere-net/src/telnet/options.rs`) so
+/// a client can't tell the seat from silvermere: [`ServerCodec::OFFERS`] on accept, `DO`
+/// agreed only for ECHO, SGA and BINARY, `WILL` only for NAWS, everything else refused, and
+/// a refusal taken silently. The same answer isn't repeated for an option until a refusal
+/// resets it, so a client that acknowledges acknowledgements can't start a loop.
+#[derive(Debug, Clone)]
+pub struct ServerCodec {
+    state: State,
+    /// The last answer given for each option, until a refusal resets it.
+    last_reply: [Option<u8>; 256],
+    /// A NAWS payload being read.
+    sb: Vec<u8>,
+    window: Option<(u16, u16)>,
+}
+
+impl Default for ServerCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServerCodec {
+    /// Sent on accept, in silvermere's order.
+    pub const OFFERS: [u8; 12] = [
+        IAC, WILL, ECHO, IAC, WILL, SGA, IAC, WILL, BINARY, IAC, DO, NAWS,
+    ];
+
+    pub fn new() -> Self {
+        Self {
+            state: State::Data,
+            last_reply: [None; 256],
+            sb: Vec::new(),
+            window: None,
+        }
+    }
+
+    /// The client's window, once it has sent NAWS.
+    pub fn window(&self) -> Option<(u16, u16)> {
+        self.window
+    }
+
+    /// Decodes `input` from the client, appending its data bytes to `data` and any answers
+    /// to `reply`, which the caller writes back. A command split across two reads is
+    /// completed by the second.
+    pub fn decode(&mut self, input: &[u8], data: &mut Vec<u8>, reply: &mut Vec<u8>) {
+        for &b in input {
+            self.state = match self.state {
+                State::Data if b == IAC => State::Iac,
+                State::Data => {
+                    data.push(b);
+                    State::Data
+                }
+                State::Iac => match b {
+                    IAC => {
+                        data.push(IAC);
+                        State::Data
+                    }
+                    WILL | WONT | DO | DONT => State::Verb(b),
+                    SB => {
+                        self.sb.clear();
+                        State::Sb
+                    }
+                    _ => State::Data,
+                },
+                State::Verb(verb) => {
+                    self.respond(verb, b, reply);
+                    State::Data
+                }
+                State::Sb if b == IAC => State::SbIac,
+                State::Sb => {
+                    self.sb.push(b);
+                    State::Sb
+                }
+                State::SbIac if b == SE => {
+                    self.subnegotiation();
+                    State::Data
+                }
+                State::SbIac => {
+                    // `IAC IAC` inside a payload is one 0xFF.
+                    self.sb.push(b);
+                    State::Sb
+                }
+            };
+        }
+    }
+
+    fn subnegotiation(&mut self) {
+        if let [NAWS, w1, w2, h1, h2] = self.sb[..] {
+            self.window = Some((u16::from_be_bytes([w1, w2]), u16::from_be_bytes([h1, h2])));
+        }
+    }
+
+    fn respond(&mut self, verb: u8, option: u8, reply: &mut Vec<u8>) {
+        let slot = &mut self.last_reply[usize::from(option)];
+        let answer = match verb {
+            DO if server_may(option) => WILL,
+            DO => WONT,
+            WILL if option == NAWS => DO,
+            WILL => DONT,
+            _ => {
+                *slot = None;
+                return;
+            }
+        };
+        if *slot != Some(answer) {
+            *slot = Some(answer);
+            reply.extend([IAC, answer, option]);
+        }
     }
 }

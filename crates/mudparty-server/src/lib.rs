@@ -5,6 +5,7 @@
 //! [`web`]), carries out the page's orders, and on an orderly stop logs every bot off.
 //! The hub and the proxy come in later steps.
 
+pub mod proxy;
 pub mod view;
 pub mod web;
 
@@ -16,14 +17,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
+use mp_config::Loaded;
 use mp_config::{
     CharacterConfig, Logging, PartyRole, Secrets, ServerConfig, load_character, load_server,
 };
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     AutoSwitch, CombatSettings, Command, Effect, LoginSettings, Offline, PartySettings,
-    RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, SessionHandle, SessionSpec,
-    SessionState, spawn,
+    RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, Seat, SessionHandle, SessionSpec,
+    SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -115,6 +117,8 @@ struct Bot {
     rev: String,
     /// Tells this run of the bot from a later one under the same name.
     run: u64,
+    /// Driven by a MudPlay seat rather than its engine.
+    seated: bool,
 }
 
 /// A running server.
@@ -281,6 +285,11 @@ impl Server {
         self.config.listen.client_hub
     }
 
+    /// Where MudPlay connects (`listen.proxy`).
+    pub fn proxy_listen(&self) -> SocketAddr {
+        self.config.listen.proxy
+    }
+
     /// Every character's card, the main character first.
     pub fn party(&self) -> Vec<Card> {
         view::ordered(&self.cards.lock().expect("cards lock"))
@@ -333,6 +342,9 @@ impl Server {
                 if !self.running().iter().any(|n| n == name) {
                     return Err(format!("{name} isn't running"));
                 }
+                if self.seated(name) {
+                    return Err(format!("{name} is played in MudPlay"));
+                }
                 let me = Arc::clone(self);
                 let who = name.to_owned();
                 tokio::spawn(async move { me.stop_bot(&who).await });
@@ -358,6 +370,9 @@ impl Server {
         let Some(bot) = bots.get(name) else {
             return Err(format!("{name} isn't running"));
         };
+        if bot.seated {
+            return Err(format!("{name} is played in MudPlay"));
+        }
         bot.handle.send(cmd);
         Ok("sent".into())
     }
@@ -403,25 +418,121 @@ impl Server {
             .secrets
             .password(&login.account)
             .ok_or_else(|| StartError::NoPassword(login.account.clone()))?;
-        let spec = SessionSpec {
-            name: c.name.clone(),
-            game: format!("{}:{}", self.config.game.host, self.config.game.port),
-            login: LoginSettings {
-                account: login.account.clone(),
-                password: password.to_owned(),
-                takeover: login.takeover,
-                step_timeout: STEP_TIMEOUT,
+        let login = LoginSettings {
+            account: login.account.clone(),
+            password: password.to_owned(),
+            takeover: login.takeover,
+            step_timeout: STEP_TIMEOUT,
+        };
+        let spec = self.spec_for(&c, &loaded.rev, login);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = spawn(spec, tx);
+        self.attach(&mut bots, &c, loaded.rev, handle, rx, false);
+        drop(bots);
+        self.record("bot_start", json!({"character": name}));
+        Ok(())
+    }
+
+    /// Whether `name`'s session is driven by a MudPlay seat.
+    fn seated(&self, name: &str) -> bool {
+        self.bots
+            .lock()
+            .expect("bots lock")
+            .get(name)
+            .is_some_and(|b| b.seated)
+    }
+
+    /// The game's `host:port`.
+    pub fn game(&self) -> String {
+        format!("{}:{}", self.config.game.host, self.config.game.port)
+    }
+
+    /// Whose session a MudPlay seat is, from the account it typed (design §2.1): the
+    /// character whose `login.account` it is, else `main_character`, else a character named
+    /// as typed with no file.
+    fn seat_character(&self, account: &str) -> (String, Option<Loaded<CharacterConfig>>) {
+        let dir = self.root.join("characters");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        for p in files
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "yaml"))
+        {
+            if let Ok(l) = load_character(p)
+                && l.value
+                    .login
+                    .as_ref()
+                    .is_some_and(|g| g.account.eq_ignore_ascii_case(account))
+            {
+                return (l.value.name.clone(), Some(l));
+            }
+        }
+        match &self.config.main_character {
+            Some(main) => (main.clone(), load_character(&self.file(main)).ok()),
+            None => (account.to_owned(), None),
+        }
+    }
+
+    /// Attaches a MudPlay seat to a new session on `upstream`, named from the account
+    /// MudPlay typed (design §2.1). A bot already playing that character is left to the
+    /// game's takeover question, which MudPlay answers. Returns the session's name.
+    pub fn seat_session(self: &Arc<Self>, account: &str, upstream: Upstream, seat: Seat) -> String {
+        let (name, loaded) = self.seat_character(account);
+        let c = match &loaded {
+            Some(l) => l.value.clone(),
+            None => match CharacterConfig::from_yaml(&format!("schema: 1\nname: {name:?}\n")) {
+                Ok(c) => c,
+                Err(_) => CharacterConfig::from_yaml("schema: 1\nname: Unknown\n")
+                    .expect("a literal file"),
             },
+        };
+        let rev = loaded.map(|l| l.rev).unwrap_or_default();
+        let login = LoginSettings {
+            account: account.to_owned(),
+            password: self
+                .secrets
+                .password(account)
+                .unwrap_or_default()
+                .to_owned(),
+            takeover: true,
+            step_timeout: STEP_TIMEOUT,
+        };
+        let spec = self.spec_for(&c, &rev, login);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = spawn_seated(spec, upstream, seat, tx);
+        let mut bots = self.bots.lock().expect("bots lock");
+        if let Some(old) = bots.remove(&name) {
+            // The game takes the character over from the old session; let it finish.
+            self.record("seat_takes_over", json!({"character": name}));
+            tokio::spawn(old.handle.finished());
+        }
+        self.attach(&mut bots, &c, rev, handle, rx, true);
+        drop(bots);
+        self.record(
+            "seat_attached",
+            json!({"character": name, "account": account}),
+        );
+        name
+    }
+
+    /// What a session for `c` runs on.
+    fn spec_for(&self, c: &CharacterConfig, rev: &str, login: LoginSettings) -> SessionSpec {
+        SessionSpec {
+            name: c.name.clone(),
+            game: self.game(),
+            login,
             statline: c.statline.clone(),
-            config_rev: loaded.rev.clone(),
+            config_rev: rev.to_owned(),
             logoff_timeout: self.config.logoff_timeout,
             reconnect_delays: RECONNECT.iter().map(|s| Duration::from_secs(*s)).collect(),
             logs: Some(self.root.join("logs")),
             log_rolls: log_rolls(&self.config.logging),
-            combat: self.combat_for(&c),
+            combat: self.combat_for(c),
             pacing: Default::default(),
-            party: party_for(&c),
-            rest: rest_for(&c),
+            party: party_for(c),
+            rest: rest_for(c),
             remote: Some(RemoteSettings {
                 name: c.name.clone(),
                 allow: c.remote.allow.clone(),
@@ -431,25 +542,35 @@ impl Server {
             }),
             automation: c.automation,
             rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let handle = spawn(spec, tx);
+        }
+    }
+
+    /// Puts a new session in the running list and its card, and follows its reports.
+    fn attach(
+        self: &Arc<Self>,
+        bots: &mut BTreeMap<String, Bot>,
+        c: &CharacterConfig,
+        rev: String,
+        handle: SessionHandle,
+        mut rx: mpsc::UnboundedReceiver<Report>,
+        seated: bool,
+    ) {
+        let name = c.name.clone();
         let automation = c.automation;
-        self.card_for(&c);
-        self.card(name, |card| card.started(automation));
+        self.card_for(c);
+        self.card(&name, |card| card.started(automation, seated));
         let run = self.runs.fetch_add(1, Ordering::Relaxed);
         bots.insert(
-            name.to_owned(),
+            name.clone(),
             Bot {
                 handle,
-                rev: loaded.rev,
+                rev,
                 run,
+                seated,
             },
         );
-        drop(bots);
-        self.record("bot_start", json!({"character": name}));
         let me = Arc::clone(self);
-        let who = name.to_owned();
+        let who = name;
         tokio::spawn(async move {
             while let Some(report) = rx.recv().await {
                 if let Report::State(SessionState::Offline(off)) = &report {
@@ -473,7 +594,6 @@ impl Server {
                 });
             }
         });
-        Ok(())
     }
 
     /// Logs `name` off and waits for it. `None` if it had no session.
