@@ -256,6 +256,7 @@ fn cases() -> Vec<Case> {
             Msg::TelepathNotSent,
             vec![E::TelepathNotSent],
         ),
+        msg("user_unknown", Msg::UserUnknown, vec![E::UserUnknown]),
         msg("too_fast", Msg::TooFast, vec![E::TooFast]),
         msg("slow_down", Msg::SlowDown, vec![E::SlowDown]),
         // party
@@ -364,6 +365,17 @@ fn cases() -> Vec<Case> {
             }],
         ),
         msg("party_none", Msg::PartyNone, vec![E::PartyNone]),
+        // resting
+        msg("rest_start", Msg::RestStart, vec![E::RestStarted]),
+        msg("meditate_start", Msg::MeditateStart, vec![E::RestStarted]),
+        msg("rest_sick", Msg::RestSick, vec![E::TooSick]),
+        msg("meditate_sick", Msg::MeditateSick, vec![E::TooSick]),
+        msg(
+            "meditate_useless",
+            Msg::MeditateUseless,
+            vec![E::MeditateUseless],
+        ),
+        msg("poison_tick", Msg::PoisonTick, vec![E::PoisonTick]),
     ]
 }
 

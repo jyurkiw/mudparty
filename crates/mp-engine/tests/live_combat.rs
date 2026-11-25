@@ -51,6 +51,9 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         reconnect_delays: vec![Duration::from_millis(200)],
         logs: None,
         combat: Some(combat),
+        pacing: Default::default(),
+        party: None,
+        rest: None,
     }
 }
 

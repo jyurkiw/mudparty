@@ -20,6 +20,9 @@ use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
 use crate::combat::{Combat, CombatSettings};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
+use crate::pacing::{Action, Pacer, PacingSettings};
+use crate::party::{PartyJoin, PartySettings, PartyState};
+use crate::rest::{RestSettings, Rester};
 
 /// What a session needs to run.
 #[derive(Debug, Clone)]
@@ -40,6 +43,12 @@ pub struct SessionSpec {
     pub logs: Option<PathBuf>,
     /// How to fight, or `None` for a bot that doesn't (design §6.4).
     pub combat: Option<CombatSettings>,
+    /// How fast lines go to the game once in it (design §6.1).
+    pub pacing: PacingSettings,
+    /// Whose party to join, or `None` (design §6.5).
+    pub party: Option<PartySettings>,
+    /// When to rest, or `None` for a bot that doesn't (design §6.6).
+    pub rest: Option<RestSettings>,
 }
 
 /// What the owner can ask of a session.
@@ -92,6 +101,10 @@ pub enum Report {
     },
     /// A line the session sent to the game (never a password).
     Sent(String),
+    /// Where joining the leader's party stands.
+    Party(PartyState),
+    /// The bot started (`true`) or finished (`false`) a rest.
+    Resting(bool),
 }
 
 /// A running session.
@@ -184,6 +197,54 @@ impl Runner {
         stream.write_all(&out).await
     }
 
+    /// Queues what an engine wants sent.
+    fn queue(&mut self, pacer: &mut Pacer, engine: &str, acts: Vec<Action>) {
+        for a in acts {
+            self.decision(engine, json!({"action": format!("{a:?}")}));
+            match a {
+                Action::Send(l) => pacer.push(l),
+                Action::Telepath { to, text } => pacer.telepath(&to, &text),
+            }
+        }
+    }
+
+    /// Sends what the pacer lets go now.
+    async fn drain(&mut self, stream: &mut TcpStream, pacer: &mut Pacer) -> std::io::Result<()> {
+        loop {
+            let lines = pacer.ready(Instant::now());
+            if lines.is_empty() {
+                return Ok(());
+            }
+            for l in lines {
+                self.send(stream, &l, false).await?;
+            }
+        }
+    }
+
+    /// Reports the party and rest states when they change.
+    fn watch_states(
+        &mut self,
+        party: &Option<PartyJoin>,
+        rester: &Option<Rester>,
+        party_state: &mut Option<PartyState>,
+        resting: &mut bool,
+    ) {
+        let now_party = party.as_ref().map(PartyJoin::state);
+        if now_party != *party_state {
+            *party_state = now_party;
+            if let Some(s) = now_party {
+                self.event("party", json!({"state": format!("{s:?}")}));
+                self.report(Report::Party(s));
+            }
+        }
+        let now_resting = rester.as_ref().is_some_and(Rester::resting);
+        if now_resting != *resting {
+            *resting = now_resting;
+            self.event("resting", json!({"resting": now_resting}));
+            self.report(Report::Resting(now_resting));
+        }
+    }
+
     async fn set_statline(
         &mut self,
         stream: &mut TcpStream,
@@ -232,6 +293,11 @@ impl Runner {
         let mut login = Login::new(self.spec.login.clone(), Instant::now());
         // A new link is a new view of the room: the roster starts again.
         let mut combat = self.spec.combat.clone().map(Combat::new);
+        let mut party = self.spec.party.clone().map(PartyJoin::new);
+        let mut rester = self.spec.rest.clone().map(Rester::new);
+        let mut pacer = Pacer::new(self.spec.pacing.clone());
+        let mut party_state: Option<PartyState> = None;
+        let mut resting = false;
         let mut in_game = false;
         let mut last_vitals: Option<Vitals> = None;
         // While logging off: when to give up, and how many `quit`s were sent.
@@ -287,6 +353,10 @@ impl Runner {
                                         if self.set_statline(&mut stream, &mut reader).await.is_err() {
                                             return LinkEnd::Lost { was_in_game: true };
                                         }
+                                        if let Some(p) = &mut party {
+                                            let acts = p.start(Instant::now());
+                                            self.queue(&mut pacer, "party", acts);
+                                        }
                                     }
                                     LoginAction::Failed(f) => {
                                         self.event("login_failed", json!({"why": f.to_string()}));
@@ -320,18 +390,34 @@ impl Runner {
                             }
                             _ => {}
                         }
-                        if let Some(c) = &mut combat
-                            && logging_off.is_none()
-                        {
-                            let commands = c.on_item(&t.item, Instant::now());
+                        if logging_off.is_some() {
+                            continue;
+                        }
+                        let now = Instant::now();
+                        for (to, text) in pacer.on_item(&t.item, now) {
+                            self.decision("telepath_given_up", json!({"to": to, "text": text}));
+                        }
+                        if let Some(c) = &mut combat {
+                            let commands = c.on_item(&t.item, now);
                             let target = c.target().map(str::to_owned);
                             for cmd in commands {
                                 self.decision("attack", json!({"command": cmd, "target": target}));
-                                if self.send(&mut stream, &cmd, false).await.is_err() {
-                                    return LinkEnd::Lost { was_in_game: true };
-                                }
+                                pacer.push(cmd);
                             }
                         }
+                        if let Some(p) = &mut party {
+                            let acts = p.on_item(&t.item, now);
+                            self.queue(&mut pacer, "party", acts);
+                        }
+                        if let Some(r) = &mut rester {
+                            let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
+                            let acts = r.on_item(&t.item, now, fighting);
+                            self.queue(&mut pacer, "rest", acts);
+                        }
+                        self.watch_states(&party, &rester, &mut party_state, &mut resting);
+                    }
+                    if self.drain(&mut stream, &mut pacer).await.is_err() {
+                        return LinkEnd::Lost { was_in_game: in_game };
                     }
                 }
                 cmd = cmds.recv() => match cmd {
@@ -342,9 +428,10 @@ impl Runner {
                             if in_game && logging_off.is_none() {
                                 for cmd in c.act(Instant::now()) {
                                     self.decision("attack", json!({"command": cmd, "target": target}));
-                                    if self.send(&mut stream, &cmd, false).await.is_err() {
-                                        return LinkEnd::Lost { was_in_game: true };
-                                    }
+                                    pacer.push(cmd);
+                                }
+                                if self.drain(&mut stream, &mut pacer).await.is_err() {
+                                    return LinkEnd::Lost { was_in_game: true };
                                 }
                             }
                         }
@@ -353,6 +440,8 @@ impl Runner {
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
                     Some(Command::Logoff) => {
                         if logging_off.is_none() {
+                            // Nothing queued goes after the exit.
+                            pacer = Pacer::new(self.spec.pacing.clone());
                             logging_off = Some((Instant::now() + self.spec.logoff_timeout, 1));
                             self.state(SessionState::LoggingOff);
                             self.decision("logoff", json!({}));
@@ -386,9 +475,32 @@ impl Runner {
                     {
                         return LinkEnd::Done(Offline::LogoffTimedOut);
                     }
+                    if in_game && logging_off.is_none() {
+                        if let Some(p) = &mut party {
+                            let acts = p.on_tick(now);
+                            self.queue(&mut pacer, "party", acts);
+                        }
+                        self.watch_states(&party, &rester, &mut party_state, &mut resting);
+                        if self.drain(&mut stream, &mut pacer).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
+                    }
+                }
+                _ = pace(pacer.next_at()) => {
+                    if self.drain(&mut stream, &mut pacer).await.is_err() {
+                        return LinkEnd::Lost { was_in_game: in_game };
+                    }
                 }
             }
         }
+    }
+}
+
+/// Waits until the pacer's next line may go; forever when none is waiting.
+async fn pace(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
     }
 }
 

@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
-use mp_config::{CharacterConfig, Secrets, ServerConfig, load_character, load_server};
+use mp_config::{CharacterConfig, PartyRole, Secrets, ServerConfig, load_character, load_server};
 use mp_data::GameData;
 use mp_engine::{
-    CombatSettings, Command, LoginSettings, Offline, Report, SessionHandle, SessionSpec,
-    SessionState, spawn,
+    CombatSettings, Command, LoginSettings, Offline, PartySettings, Report, RestSettings,
+    SessionHandle, SessionSpec, SessionState, spawn,
 };
 use mp_log::{RollConfig, ServerLog, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -28,6 +28,11 @@ const RECONNECT: [u64; 4] = [5, 10, 30, 60];
 const ROUND: Duration = Duration::from_secs(5);
 /// How long a login step waits for the game.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a bot waits on an unanswered `@invite`, or away from its leader, before it
+/// checks `par` again (design §6.5).
+const PARTY_RETRY: Duration = Duration::from_secs(30);
+/// How long after the last sign of poison a bot waits before it tries to rest (design §6.6).
+const SICK_WAIT: Duration = Duration::from_secs(30);
 /// How long an edited character file must be quiet before it is read.
 const SETTLE: Duration = Duration::from_millis(300);
 
@@ -287,6 +292,9 @@ impl Server {
             reconnect_delays: RECONNECT.iter().map(|s| Duration::from_secs(*s)).collect(),
             logs: Some(self.root.join("logs")),
             combat: self.combat_for(&c),
+            pacing: Default::default(),
+            party: party_for(&c),
+            rest: rest_for(&c),
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn(spec, tx);
@@ -433,4 +441,33 @@ impl Server {
             }
         }
     }
+}
+
+/// Whose party the bot joins: its `party.leader`, unless it leads.
+fn party_for(c: &CharacterConfig) -> Option<PartySettings> {
+    if c.party.role == PartyRole::Leader {
+        return None;
+    }
+    Some(PartySettings {
+        name: c.name.clone(),
+        leader: c.party.leader.clone()?,
+        retry: PARTY_RETRY,
+    })
+}
+
+/// When the bot rests, if `automation.rest` is on.
+fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
+    if !c.automation.rest {
+        return None;
+    }
+    let tell = c.rest.tell_leader.then(|| c.party.leader.clone()).flatten();
+    Some(RestSettings {
+        start_when_any: c.rest.start_when_any,
+        stop_when_all: c.rest.stop_when_all,
+        command: c.rest.command.clone(),
+        tell,
+        // One rest command a round at most.
+        retry: ROUND,
+        sick_wait: SICK_WAIT,
+    })
 }

@@ -1519,6 +1519,7 @@ dependencies = [
  "mp-data",
  "mp-engine",
  "mp-log",
+ "mp-parse",
  "mp-silvermere",
  "notify",
  "serde_json",
