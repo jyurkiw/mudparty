@@ -71,6 +71,7 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
         automation: Default::default(),
         rooms: None,
         hang_up_below: None,
+        inviter: None,
     }
 }
 

@@ -269,6 +269,21 @@ The character's card on the page has a command line too. What you send there goe
 game as that character, but never into the middle of a line you're typing in MudPlay: it
 waits, shown as queued, until your line has gone and its prompt has come back.
 
+A bot whose file says `party.invite_by_injection: true` doesn't telepath `@invite` to a
+leader you're playing through the proxy: mudparty types `invite <bot>` for you, the same
+careful way, and the bot follows. With the leader played any other way, the bot asks by
+telepath as usual.
+
+```yaml
+schema: 1
+name: Ermias
+login:
+  account: Ermias
+party:
+  leader: Arandmoor
+  invite_by_injection: true
+```
+
 If a bot is already playing that character, the game asks MudPlay whether to take the
 character over, as it would without the proxy.
 

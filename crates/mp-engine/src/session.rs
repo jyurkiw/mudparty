@@ -71,6 +71,16 @@ pub struct SessionSpec {
     /// A seated character whose MudPlay has dropped hangs up when HP falls below this
     /// (`unattended.hang_up_below`).
     pub hang_up_below: Option<Amount>,
+    /// Asked before the bot telepaths `@invite` to its leader (`party.invite_by_injection`):
+    /// it may invite the bot another way.
+    pub inviter: Option<Arc<dyn Inviter>>,
+}
+
+/// Invites a bot into its leader's party without the bot asking in the game: the server
+/// injects `invite <bot>` when the leader is played through the proxy (design §6.5).
+pub trait Inviter: Send + Sync + std::fmt::Debug {
+    /// Invites `bot` as `leader`, if it can; `false` and the bot telepaths `@invite`.
+    fn invite(&self, leader: &str, bot: &str) -> bool;
 }
 
 /// How long a query waits for the game's answer before it is answered with what is known.
@@ -627,6 +637,16 @@ impl Runner {
     /// Queues what an engine wants sent.
     fn queue(&mut self, pacer: &mut Pacer, engine: &str, acts: Vec<Action>) {
         for a in acts {
+            // A bot's ask to join, answered by the server instead when it can.
+            if let Action::Telepath { to, text } = &a
+                && engine == "party"
+                && text == "@invite"
+                && let Some(i) = &self.spec.inviter
+                && i.invite(to, &self.spec.name)
+            {
+                self.decision("invite_by_injection", json!({"leader": to}));
+                continue;
+            }
             self.decision(engine, json!({"action": format!("{a:?}")}));
             match a {
                 Action::Send(l) => pacer.push(l),

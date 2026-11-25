@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -25,7 +25,7 @@ use mp_config::{
 };
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    AutoSwitch, CombatSettings, Command, Effect, LoginSettings, Offline, PartySettings,
+    AutoSwitch, CombatSettings, Command, Effect, Inviter, LoginSettings, Offline, PartySettings,
     RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, Seat, SessionHandle, SessionSpec,
     SessionState, Upstream, spawn, spawn_seated,
 };
@@ -141,6 +141,8 @@ pub struct Server {
     changed: watch::Sender<u64>,
     /// `mudparty.sqlite`, when it opens.
     history: Option<History>,
+    /// The server itself, for what a session asks of it (an invitation by injection).
+    me: Mutex<Weak<Server>>,
 }
 
 impl Server {
@@ -186,7 +188,9 @@ impl Server {
             cards: Mutex::new(BTreeMap::new()),
             changed: watch::Sender::new(0),
             history,
+            me: Mutex::new(Weak::new()),
         });
+        *server.me.lock().expect("me lock") = Arc::downgrade(&server);
         if let Some(e) = history_error {
             server.record("history_open_failed", json!({"error": e}));
         }
@@ -635,6 +639,9 @@ impl Server {
             automation: c.automation,
             rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
             hang_up_below: c.unattended.hang_up_below,
+            inviter: c.party.invite_by_injection.then(|| {
+                Arc::new(SeatInviter(self.me.lock().expect("me lock").clone())) as Arc<dyn Inviter>
+            }),
         }
     }
 
@@ -876,6 +883,35 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
         retry: ROUND,
         sick_wait: SICK_WAIT,
     })
+}
+
+/// Invites a bot by injecting `invite <bot>` as its leader, when the leader is played
+/// through the proxy and in the game (design §6.5, `party.invite_by_injection`).
+#[derive(Debug)]
+struct SeatInviter(Weak<Server>);
+
+impl Inviter for SeatInviter {
+    fn invite(&self, leader: &str, bot: &str) -> bool {
+        let Some(server) = self.0.upgrade() else {
+            return false;
+        };
+        let Some(leader) = server
+            .running()
+            .into_iter()
+            .find(|n| n.eq_ignore_ascii_case(leader))
+        else {
+            return false;
+        };
+        if !server.seat_in_game(&leader) {
+            return false;
+        }
+        let done = server.inject(&leader, &format!("invite {bot}")).is_ok();
+        server.record(
+            "invite_by_injection",
+            json!({"leader": leader, "bot": bot, "injected": done}),
+        );
+        done
+    }
 }
 
 /// The game data's rooms, for a bot's `@where` and `@status`.
