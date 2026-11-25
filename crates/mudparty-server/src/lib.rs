@@ -1,10 +1,15 @@
 //! The mudparty server (design §3.1): it owns the config, hosts the headless bots, and logs.
 //!
-//! In this step it starts and stops bots by name (one session per character), pushes an
-//! edited character file to its running bot, and on an orderly stop logs every bot off.
-//! The hub, the proxy and the web page come in later steps.
+//! It starts and stops bots by name (one session per character), pushes an edited
+//! character file to its running bot, keeps the party view the web page shows (*§6.8*,
+//! [`web`]), carries out the page's orders, and on an orderly stop logs every bot off.
+//! The hub and the proxy come in later steps.
+
+pub mod view;
+pub mod web;
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,13 +19,15 @@ use anyhow::Context;
 use mp_config::{CharacterConfig, PartyRole, Secrets, ServerConfig, load_character, load_server};
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    CombatSettings, Command, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
-    RestSettings, RoomBook, RoomInfo, SessionHandle, SessionSpec, SessionState, spawn,
+    AutoSwitch, CombatSettings, Command, Effect, LoginSettings, Offline, PartySettings,
+    RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, SessionHandle, SessionSpec,
+    SessionState, spawn,
 };
 use mp_log::{RollConfig, ServerLog, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
+use view::Card;
 
 /// Waits before each reconnect of a lost link; the last one repeats (design §6.2).
 const RECONNECT: [u64; 4] = [5, 10, 30, 60];
@@ -76,6 +83,31 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+/// An order from the web page (design §4.2) for one character.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "order", rename_all = "snake_case")]
+pub enum Order {
+    /// Start it as a headless bot.
+    Start,
+    /// Log it off.
+    Stop,
+    /// `combat`, `nuke` or `rest` on or off, or `all` (every engine) on or off.
+    Toggle { switch: String, on: bool },
+    /// A line for the game.
+    Command { text: String },
+    /// Attack this monster first, until it dies.
+    Kill { target: String },
+    /// Hold it, as a `@wait` from the page.
+    Wait,
+    /// Free it, as an `@ok` from the page.
+    Ok,
+    /// Join this leader's party.
+    Join { leader: String },
+}
+
+/// Who a `wait` or `ok` from the web page is from, in `held_by`.
+pub const WEB: &str = "web";
+
 struct Bot {
     handle: SessionHandle,
     rev: String,
@@ -95,6 +127,10 @@ pub struct Server {
     /// `gamedata/gamedata.sqlite`, when there is one.
     gamedata: Arc<Mutex<Option<GameData>>>,
     runs: AtomicU64,
+    /// The party as the web page shows it, by name.
+    cards: Mutex<BTreeMap<String, Card>>,
+    /// Counts changes to `cards`, for the page's feed.
+    changed: watch::Sender<u64>,
 }
 
 impl Server {
@@ -133,6 +169,8 @@ impl Server {
             watcher: Mutex::new(None),
             gamedata: Arc::new(Mutex::new(None)),
             runs: AtomicU64::new(0),
+            cards: Mutex::new(BTreeMap::new()),
+            changed: watch::Sender::new(0),
         });
         server.record("start", json!({"root": root.display().to_string()}));
         server.open_gamedata();
@@ -149,6 +187,7 @@ impl Server {
             let Ok(c) = load_character(&characters.join(format!("{name}.yaml"))) else {
                 continue;
             };
+            server.card_for(&c.value);
             if c.value.autostart
                 && let Err(e) = server.start_bot(&name)
             {
@@ -235,6 +274,92 @@ impl Server {
         })
     }
 
+    /// Where the web page is served (`listen.client_hub`).
+    pub fn listen(&self) -> SocketAddr {
+        self.config.listen.client_hub
+    }
+
+    /// Every character's card, the main character first.
+    pub fn party(&self) -> Vec<Card> {
+        view::ordered(&self.cards.lock().expect("cards lock"))
+    }
+
+    /// Changes whenever a card does.
+    pub fn watch_party(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
+    /// Changes `name`'s card, if it has one.
+    fn card(&self, name: &str, f: impl FnOnce(&mut Card)) {
+        let mut cards = self.cards.lock().expect("cards lock");
+        if let Some(c) = cards.get_mut(name) {
+            f(c);
+            drop(cards);
+            self.changed.send_modify(|n| *n += 1);
+        }
+    }
+
+    /// Makes or refreshes the card for a character file.
+    fn card_for(&self, c: &CharacterConfig) {
+        let main = self.config.main_character.as_deref() == Some(c.name.as_str());
+        self.cards
+            .lock()
+            .expect("cards lock")
+            .entry(c.name.clone())
+            .and_modify(|card| card.configure(c))
+            .or_insert_with(|| Card::new(c, main));
+        self.changed.send_modify(|n| *n += 1);
+    }
+
+    /// Carries out an order from the web page. `Ok` says what was done; `Err` why not.
+    pub fn order(self: &Arc<Self>, name: &str, order: Order) -> Result<String, String> {
+        if !self.cards.lock().expect("cards lock").contains_key(name) {
+            return Err(format!("no character {name}"));
+        }
+        self.record(
+            "order",
+            json!({"character": name, "order": format!("{order:?}")}),
+        );
+        let cmd = match order {
+            Order::Start => {
+                return self
+                    .start_bot(name)
+                    .map(|()| format!("{name} starting"))
+                    .map_err(|e| e.to_string());
+            }
+            Order::Stop => {
+                if !self.running().iter().any(|n| n == name) {
+                    return Err(format!("{name} isn't running"));
+                }
+                let me = Arc::clone(self);
+                let who = name.to_owned();
+                tokio::spawn(async move { me.stop_bot(&who).await });
+                return Ok(format!("{name} logging off"));
+            }
+            Order::Toggle { switch, on } => Command::Do(match switch.as_str() {
+                "combat" => Effect::SetAuto(AutoSwitch::Combat, on),
+                "nuke" => Effect::SetAuto(AutoSwitch::Nuke, on),
+                "rest" => Effect::SetAuto(AutoSwitch::Rest, on),
+                "all" => Effect::AllOff(!on),
+                other => return Err(format!("no switch {other:?}")),
+            }),
+            Order::Command { text } if text.trim().is_empty() => {
+                return Err("an empty command".into());
+            }
+            Order::Command { text } => Command::Do(Effect::Send(text)),
+            Order::Kill { target } => Command::Kill { target },
+            Order::Wait => Command::Do(Effect::Wait(WEB.into())),
+            Order::Ok => Command::Do(Effect::Ok(WEB.into())),
+            Order::Join { leader } => Command::Do(Effect::Join(leader)),
+        };
+        let bots = self.bots.lock().expect("bots lock");
+        let Some(bot) = bots.get(name) else {
+            return Err(format!("{name} isn't running"));
+        };
+        bot.handle.send(cmd);
+        Ok("sent".into())
+    }
+
     /// Everything bots do, from now on.
     pub fn subscribe(&self) -> broadcast::Receiver<BotEvent> {
         self.events.subscribe()
@@ -306,6 +431,9 @@ impl Server {
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn(spec, tx);
+        let automation = c.automation;
+        self.card_for(&c);
+        self.card(name, |card| card.started(automation));
         let run = self.runs.fetch_add(1, Ordering::Relaxed);
         bots.insert(
             name.to_owned(),
@@ -332,6 +460,10 @@ impl Server {
                         json!({"character": who, "why": format!("{off:?}")}),
                     );
                 }
+                let rooms = GameRooms(Arc::clone(&me.gamedata));
+                me.card(&who, |card| {
+                    card.report(&report, |m, r| rooms.room(m, r).map(|i| i.name));
+                });
                 let _ = me.events.send(BotEvent::Session {
                     name: who.clone(),
                     report,
@@ -426,11 +558,19 @@ impl Server {
         let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
             return;
         };
+        let loaded = load_character(path);
+        match &loaded {
+            Ok(l) => self.card_for(&l.value),
+            Err(e) => {
+                let message = e.to_string();
+                self.card(&name, |c| c.config_error = Some(message));
+            }
+        }
         let mut bots = self.bots.lock().expect("bots lock");
         let Some(bot) = bots.get_mut(&name) else {
             return;
         };
-        match load_character(path) {
+        match loaded {
             Ok(l) if l.rev != bot.rev => {
                 bot.rev = l.rev.clone();
                 bot.handle.send(Command::Config {

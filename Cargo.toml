@@ -32,6 +32,10 @@ tempfile = "3.27.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 regex = "1.13.1"
 insta = "1.49.0"
+axum = { version = "0.8.9", features = ["ws"] }
+futures-util = "0.3.34"
+# The version axum 0.8 uses, so the tests' WebSocket client builds no second copy.
+tokio-tungstenite = "0.29.0"
 # Pinned to jyurkiw/silvermere main (PR #13 merged). Move the pin deliberately: the
 # catalogue test (design §10.2) then shows what text changed.
 silvermere-text = { git = "https://github.com/jyurkiw/silvermere", rev = "8aebd91b52af66a1c4f77ab7c0458d1d1965bb7a" }

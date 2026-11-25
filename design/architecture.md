@@ -280,6 +280,14 @@ Server → client:
   client's config and game-data status). The page sends `order` messages for any bot, and
   `inject {text}` for the main character.
 - Bound to `127.0.0.1` with no login in step 1 (an open question).
+- **As built (MVP 7, `mudparty-server/src/web.rs`):** every frame is JSON text with
+  `"v": 1`. The server sends `party` (`members`, every card with the main character first,
+  and `server.running`) on connecting and on each change, at most four a second; it is the
+  whole party each time, not a delta. The page sends `order` with `name` and `order`:
+  `start`, `stop`, `toggle` (`switch`: `combat`, `nuke`, `rest` or `all`; `on`), `command`
+  (`text`), `kill` (`target`), `wait`, `ok` or `join` (`leader`). Each order gets a
+  `result` (`ok`, `message`), so a refused one is said, not dropped. `inject` is refused
+  until the proxy exists. `serve` refuses any address that isn't loopback.
 
 ### 4.3 In-game @ commands
 
@@ -700,6 +708,18 @@ rest:
 - A server panel: connected clients and running bots, the last config errors, the
   game-data rev.
 - A **Characters** menu, one entry per character (*§6.9*).
+- **As built (MVP 7):** a card per character file, from `mudparty-server/src/view.rs`:
+  class, HP and MP bars, the room (map, room and its name from the game data), the mode
+  (`offline`, `connecting`, `logging_in`, `reconnecting`, `logging_off`, or in the game
+  `fighting`, `resting`, `waiting` or `idle`), the target and the attack on it (a cast code
+  or `melee`), the switches and who holds the bot, the party state, why it last went
+  offline, a config error, and its last 8 events, each line sent shown as `> line`.
+  Start/Stop, Wait/Ok, the toggles, the kill box and a command line. A `wait` or `ok` from
+  the page holds the bot as `web`. The engine reports the target and attack
+  (`Report::Fight`) and the room (`Report::Room`); a bot asks `/room` as it comes in and
+  learns its room again from each `@where` or `@status`. Rooms are not tracked between
+  those yet, and the level, Report (*§9.5*), the stale and game-data badges, the server
+  panel's errors and the Characters menu wait for later steps.
 
 ### 6.9 The Characters menu: character sheets
 
