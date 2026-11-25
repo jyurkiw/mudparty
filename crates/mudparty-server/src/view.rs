@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use mp_config::{Automation, CharacterConfig};
+
+use crate::history::Position;
 use mp_engine::{AutoState, Offline, Report, SessionState};
 use mp_parse::{Rest, Vitals};
 use serde::Serialize;
@@ -22,7 +24,8 @@ pub struct Card {
     pub bot: bool,
     /// It has a session now.
     pub running: bool,
-    /// Who drives the session: `engine` (a headless bot) or `seat` (MudPlay).
+    /// Who drives the session: `engine` (a headless bot), `seat` (MudPlay), or
+    /// `unattended` (MudPlay dropped; the character stays in the game, idle).
     pub driver: Option<&'static str>,
     /// `offline`, `connecting`, `logging_in`, `reconnecting`, `logging_off`, or in the game
     /// `fighting`, `resting`, `waiting` (held by a `@wait`) or `idle`.
@@ -44,6 +47,8 @@ pub struct Card {
     /// Lines typed on the page for a seated character, waiting for the user's line in
     /// MudPlay to finish.
     pub queued: Vec<String>,
+    /// Where it was last known to be, for a rescue (from `mudparty.sqlite`).
+    pub last_position: Option<Position>,
     #[serde(skip)]
     state: Option<SessionState>,
     #[serde(skip)]
@@ -124,6 +129,7 @@ impl Card {
             config_error: None,
             events: VecDeque::new(),
             queued: Vec::new(),
+            last_position: None,
             state: None,
             resting: false,
         };
@@ -221,6 +227,10 @@ impl Card {
                 self.tier = tier.clone();
             }
             Report::Queued(q) => self.queued = q.clone(),
+            Report::Unattended => {
+                self.driver = Some("unattended");
+                self.event("MudPlay left; staying online".into());
+            }
             Report::Room { map, room } => {
                 self.room = Some(CardRoom {
                     map: *map,
@@ -268,7 +278,7 @@ fn vitals(v: &Vitals) -> CardVitals {
     }
 }
 
-fn offline_text(off: &Offline) -> String {
+pub(crate) fn offline_text(off: &Offline) -> String {
     match off {
         Offline::LoggedOff => "logged off".into(),
         Offline::LoginFailed(f) => format!("login failed: {f}"),
@@ -276,6 +286,10 @@ fn offline_text(off: &Offline) -> String {
         Offline::LogoffTimedOut => "the logoff timed out".into(),
         Offline::Dropped => "dropped".into(),
         Offline::SeatLeft => "MudPlay left".into(),
+        Offline::HungUp { hp, max_hp } => match max_hp {
+            Some(m) => format!("hung up: HP {hp}/{m}"),
+            None => format!("hung up: HP {hp}"),
+        },
         Offline::SeatLinkLost => "the game closed MudPlay's link".into(),
     }
 }

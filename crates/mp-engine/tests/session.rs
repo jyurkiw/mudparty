@@ -39,6 +39,7 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         remote: None,
         automation: Default::default(),
         rooms: None,
+        hang_up_below: None,
     }
 }
 

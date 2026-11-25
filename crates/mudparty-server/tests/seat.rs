@@ -209,3 +209,128 @@ async fn only_a_seated_character_takes_injection() {
     assert!(r.is_err(), "{r:?}");
     server.shutdown().await;
 }
+
+/// Sets a player's HP in the game.
+async fn set_hp(sm: &StockSilvermere, name: &'static str, hp: i16) {
+    sm.on_world(move |w| {
+        for id in w.session_ids() {
+            if let Some(p) = w.session_mut(id).and_then(|s| s.character.as_mut())
+                && p.firstname == name
+            {
+                p.hp = hp;
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_that_leaves_stays_online_until_hp_runs_low() {
+    let sm = StockSilvermere::start(&[StockChar::new("Raijin", "Warrior")], true)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let port = sm.telnet_addr().port();
+    fs::write(
+        dir.path().join("mudparty.toml"),
+        format!(
+            "schema = 1\nmain_character = \"Raijin\"\n[game]\nhost = \"127.0.0.1\"\nport = {port}\n[gamedata]\nsilvermere_db = \"none.db\"\n"
+        ),
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("characters")).unwrap();
+    fs::write(
+        dir.path().join("characters/Raijin.yaml"),
+        "schema: 1\nname: Raijin\nunattended:\n  hang_up_below: 50%\n",
+    )
+    .unwrap();
+    let server = Server::start(dir.path()).await.unwrap();
+    let addr = proxy::serve(server.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let mut rx = server.subscribe();
+    let mudplay = RawClient::log_in(addr, "Raijin", "raijin1").await.unwrap();
+    until(&mut rx, "Raijin", |r| {
+        *r == Report::State(SessionState::InGame)
+    })
+    .await;
+
+    // MudPlay goes away; Raijin stays in the game, idle, and the session finds its room.
+    drop(mudplay);
+    until(&mut rx, "Raijin", |r| *r == Report::Unattended).await;
+    until(&mut rx, "Raijin", |r| {
+        matches!(r, Report::Room { map: 1, room: 206 })
+    })
+    .await;
+    let card = server
+        .party()
+        .into_iter()
+        .find(|c| c.name == "Raijin")
+        .unwrap();
+    assert!(card.running);
+    assert_eq!(card.driver, Some("unattended"));
+    let at = server
+        .last_position("Raijin")
+        .expect("a position on record");
+    assert_eq!((at.map, at.room), (1, 206));
+    assert_eq!(at.room_name, None, "no game data in this test");
+    // An unattended character takes the page's orders like any bot.
+    assert!(
+        server
+            .order(
+                "Raijin",
+                Order::Toggle {
+                    switch: "rest".into(),
+                    on: false
+                }
+            )
+            .is_ok()
+    );
+
+    // HP falls under half: the session records where, and hangs up. The stock statline
+    // shows no maximum (`[HP=35]:`), so half is of the most HP the session has seen.
+    set_hp(&sm, "Raijin", 12).await;
+    let deadline = Instant::now() + WAIT;
+    let hung_at = loop {
+        sm.tick(1).await;
+        let got = timeout(Duration::from_millis(300), rx.recv()).await;
+        if let Ok(Ok(BotEvent::Session { name, report })) = got
+            && name == "Raijin"
+            && let Report::State(SessionState::Offline(off)) = report
+        {
+            // A regen tick may have come first.
+            let mp_engine::Offline::HungUp { hp, max_hp: None } = off else {
+                panic!("{off:?}");
+            };
+            assert!((12..17).contains(&hp), "hung up at {hp}");
+            break hp;
+        }
+        assert!(Instant::now() < deadline, "never hung up");
+    };
+    let at = server.last_position("Raijin").unwrap();
+    assert_eq!(
+        (at.map, at.room, at.hp, at.max_hp),
+        (1, 206, Some(hung_at), None)
+    );
+    assert_eq!(at.why, format!("hung up: HP {hung_at}"));
+    // The position outlives the server: it is in mudparty.sqlite.
+    server.shutdown().await;
+    drop(server);
+    let again = Server::start(dir.path()).await.unwrap();
+    assert_eq!(again.last_position("Raijin").map(|p| p.room), Some(206));
+    let card = again
+        .party()
+        .into_iter()
+        .find(|c| c.name == "Raijin")
+        .unwrap();
+    assert_eq!(card.last_position.map(|p| p.room), Some(206));
+
+    // It never set a statline of its own.
+    let out = outgoing(dir.path(), "Raijin");
+    assert!(
+        !out.iter().any(|(_, b)| b.contains("set statline")),
+        "{out:?}"
+    );
+    again.shutdown().await;
+    sm.stop().await.unwrap();
+}

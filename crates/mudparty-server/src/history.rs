@@ -1,0 +1,94 @@
+//! `mudparty.sqlite`, the server's own history (design §7.6). For now it keeps where each
+//! character was last known to be, and why that was recorded: when MudPlay drops and the
+//! character is left in the game unattended, and when it hangs up or goes offline after.
+//! That is where to look for a downed or nearly dead character to rescue.
+
+use std::path::Path;
+use std::sync::Mutex;
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+
+/// Where a character was, and why it was recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Position {
+    pub map: u32,
+    pub room: u32,
+    /// From the game data, when it has the room.
+    pub room_name: Option<String>,
+    pub hp: Option<i32>,
+    pub max_hp: Option<i32>,
+    /// `MudPlay left`, `hung up: HP 12/40`, …
+    pub why: String,
+    /// When, as an RFC 3339 time in UTC.
+    pub at: String,
+}
+
+pub struct History(Mutex<Connection>);
+
+impl History {
+    /// Opens (or makes) the file.
+    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        let db = Connection::open(path)?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS positions (
+                id INTEGER PRIMARY KEY,
+                character TEXT NOT NULL,
+                at TEXT NOT NULL,
+                why TEXT NOT NULL,
+                map INTEGER NOT NULL,
+                room INTEGER NOT NULL,
+                room_name TEXT,
+                hp INTEGER,
+                max_hp INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS positions_by_character ON positions (character, id);",
+        )?;
+        Ok(Self(Mutex::new(db)))
+    }
+
+    /// Adds a position to `character`'s record.
+    pub fn record(&self, character: &str, p: &Position) -> rusqlite::Result<()> {
+        self.0.lock().expect("history lock").execute(
+            "INSERT INTO positions (character, at, why, map, room, room_name, hp, max_hp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                character,
+                p.at,
+                p.why,
+                p.map,
+                p.room,
+                p.room_name,
+                p.hp,
+                p.max_hp
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The last position on `character`'s record.
+    pub fn last(&self, character: &str) -> Option<Position> {
+        self.0
+            .lock()
+            .expect("history lock")
+            .query_row(
+                "SELECT map, room, room_name, hp, max_hp, why, at FROM positions
+                 WHERE character = ?1 ORDER BY id DESC LIMIT 1",
+                [character],
+                |r| {
+                    Ok(Position {
+                        map: r.get(0)?,
+                        room: r.get(1)?,
+                        room_name: r.get(2)?,
+                        hp: r.get(3)?,
+                        max_hp: r.get(4)?,
+                        why: r.get(5)?,
+                        at: r.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+}

@@ -16,6 +16,8 @@ mp-log = { path = "../mp-log" }
 mp-parse = { path = "../mp-parse" }
 mp-telnet = { path = "../mp-telnet" }
 anyhow.workspace = true
+jiff.workspace = true
+rusqlite.workspace = true
 notify.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

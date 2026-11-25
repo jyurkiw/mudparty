@@ -270,8 +270,25 @@ game as that character, but never into the middle of a line you're typing in Mud
 waits, shown as queued, until your line has gone and its prompt has come back.
 
 If a bot is already playing that character, the game asks MudPlay whether to take the
-character over, as it would without the proxy. When MudPlay disconnects, the proxy drops
-the character's link too.
+character over, as it would without the proxy.
+
+**When MudPlay disconnects** mid-game, the character stays in the game, idle: its card says
+so, and it takes the page's orders like a bot. It doesn't change your statline. The server
+asks the game where the character is and records that in `mudparty.sqlite`, so a downed
+or nearly dead character can be found and rescued; the card shows it as "last seen". If HP
+then falls below the file's `unattended.hang_up_below`, the server records where again and
+hangs up. When you reconnect MudPlay and log in, the game asks to take the character over;
+answer yes.
+
+```yaml
+schema: 1
+name: Arandmoor
+unattended:
+  hang_up_below: 30%    # the default; a number of points works too, or none
+```
+
+A percentage needs the maximum HP. If your statline doesn't show it, the most HP the
+session has seen stands in for it, so points are the surer choice there.
 
 On the page, each character has a card showing HP and MP, room, what it's doing and
 against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the

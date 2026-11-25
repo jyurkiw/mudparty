@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mp_config::Automation;
+use mp_config::{Amount, Automation};
 use mp_log::{CharacterLogs, Header, Source, StreamRolls, SystemClock};
 use mp_parse::{Event, Item, Reader, Statline, Vitals};
 use mp_telnet::ClientCodec;
@@ -68,6 +68,9 @@ pub struct SessionSpec {
     pub automation: Automation,
     /// Room names and exits from the game data, for `@where` and `@status`.
     pub rooms: Option<Arc<dyn RoomBook>>,
+    /// A seated character whose MudPlay has dropped hangs up when HP falls below this
+    /// (`unattended.hang_up_below`).
+    pub hang_up_below: Option<Amount>,
 }
 
 /// How long a query waits for the game's answer before it is answered with what is known.
@@ -175,8 +178,14 @@ pub enum Offline {
     LogoffTimedOut,
     /// The owner went away (its command channel closed).
     Dropped,
-    /// A seated session's MudPlay left, and the link was dropped with it.
+    /// A seated session's MudPlay left before it was in the game, and the link was dropped
+    /// with it.
     SeatLeft,
+    /// An unattended character's HP fell below `hang_up_below`, so the link was dropped.
+    HungUp {
+        hp: i32,
+        max_hp: Option<i32>,
+    },
     /// The game closed a seated session's link. MudPlay reconnects by itself, so the
     /// session doesn't.
     SeatLinkLost,
@@ -212,6 +221,8 @@ pub enum Report {
     },
     /// Injected lines still waiting to go, oldest first.
     Queued(Vec<String>),
+    /// MudPlay dropped: the character stays in the game, idle, under its engine.
+    Unattended,
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -724,6 +735,11 @@ impl Runner {
         );
         let mut typing = Typing::default();
         let mut inject = Injector::default();
+        // The user's statline stays: set on neither a seated nor an unattended link.
+        let users_statline = seat.is_some();
+        let mut unattended = false;
+        // The most HP seen on this link: the maximum, for a statline that doesn't show it.
+        let mut most_hp = 0;
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -864,8 +880,20 @@ impl Runner {
                         if logging_off.is_some() {
                             continue;
                         }
-                        if matches!(t.item, Item::Prompt(_)) {
+                        if let Item::Prompt(v) = &t.item {
                             inject.awaiting_prompt = false;
+                            most_hp = most_hp.max(v.hp);
+                        }
+                        if unattended
+                            && let Item::Prompt(v) = &t.item
+                            && crate::rest::below(
+                                self.spec.hang_up_below,
+                                Some(v.hp),
+                                v.max_hp.or((most_hp > 0).then_some(most_hp)),
+                            )
+                        {
+                            self.decision("hang_up", json!({"hp": v.hp, "max_hp": v.max_hp, "below": format!("{:?}", self.spec.hang_up_below)}));
+                            return LinkEnd::Done(Offline::HungUp { hp: v.hp, max_hp: v.max_hp });
                         }
                         let now = Instant::now();
                         for (to, text) in pacer.on_item(&t.item, now) {
@@ -965,9 +993,28 @@ impl Runner {
                             return LinkEnd::Lost { was_in_game: in_game };
                         }
                     }
-                    None => {
+                    None if !in_game => {
                         self.decision("seat_left", json!({}));
                         return LinkEnd::Done(Offline::SeatLeft);
+                    }
+                    None => {
+                        // MudPlay dropped mid-game: the character stays, idle, under its
+                        // engine, and the session finds out where it is.
+                        *seat = None;
+                        unattended = true;
+                        inject.queue.clear();
+                        self.decision("unattended", json!({"hang_up_below": format!("{:?}", self.spec.hang_up_below)}));
+                        self.event("unattended", json!({}));
+                        self.report(Report::Unattended);
+                        self.report(Report::Queued(Vec::new()));
+                        if let Some(p) = &mut party {
+                            let acts = p.start(Instant::now());
+                            self.queue(&mut pacer, "party", acts);
+                        }
+                        pacer.push("/room");
+                        if self.drain(&mut stream, &mut pacer).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
                     }
                 },
                 cmd = cmds.recv() => match cmd {
@@ -1031,7 +1078,7 @@ impl Runner {
                         self.spec.config_rev = rev.clone();
                         // A seated session runs MudPlay's statline, not the file's.
                         if in_game
-                            && seat.is_none()
+                            && !users_statline
                             && self.set_statline(&mut stream, &mut reader).await.is_err()
                         {
                             return LinkEnd::Lost { was_in_game: true };
@@ -1132,13 +1179,15 @@ async fn run_from(
         logs,
     };
     let mut attempt = 0usize;
+    // A session MudPlay started is MudPlay's to reconnect, attended or not.
+    let seated = seat.is_some();
     loop {
         r.state(SessionState::Connecting);
         let link = r.link(&mut cmds, upstream.take(), &mut seat).await;
         // A seated session's link is MudPlay's: when the game drops it, MudPlay reconnects
         // and logs in by itself.
         let link = match link {
-            LinkEnd::Lost { .. } if seat.is_some() => LinkEnd::Done(Offline::SeatLinkLost),
+            LinkEnd::Lost { .. } if seated => LinkEnd::Done(Offline::SeatLinkLost),
             other => other,
         };
         match link {
@@ -1150,6 +1199,7 @@ async fn run_from(
                     Offline::LogoffTimedOut => "logoff_timed_out",
                     Offline::Dropped => "dropped",
                     Offline::SeatLeft => "seat_left",
+                    Offline::HungUp { .. } => "hung_up",
                     Offline::SeatLinkLost => "seat_link_lost",
                 };
                 r.event(kind, json!({}));

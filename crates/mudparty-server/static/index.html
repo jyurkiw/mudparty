@@ -104,6 +104,14 @@ function box(placeholder, label, send, disabled) {
   return el("div", { class: "row" }, input, el("button", { onclick: go, disabled }, label));
 }
 
+// Where a character was last recorded, for a rescue.
+function lastSeen(p) {
+  const room = `${p.room_name || "???"} (map ${p.map}, room ${p.room})`;
+  const hp = p.hp == null ? "" : ` · HP ${p.hp}${p.max_hp ? "/" + p.max_hp : ""}`;
+  const when = new Date(p.at).toLocaleString();
+  return `last seen: ${room}${hp} · ${p.why} · ${when}`;
+}
+
 function card(m) {
   const inGame = ["idle", "fighting", "resting", "waiting"].includes(m.mode);
   const a = m.automation;
@@ -128,7 +136,7 @@ function card(m) {
       "Playing in MudPlay. A line sent from here waits for any line you're typing there."),
     box("command for the game", "Send", (t) => order(m.name, { order: "command", text: t }), !inGame),
     m.queued.length ? el("div", { class: "note" }, "queued: " + m.queued.join(" · ")) : null,
-  ] : m.bot ? [
+  ] : (m.bot || m.driver === "unattended") ? [
     el("div", { class: "row" },
       el("button", { disabled: m.running, onclick: () => order(m.name, { order: "start" }) }, "Start"),
       el("button", { disabled: !m.running, onclick: () => order(m.name, { order: "stop" }) }, "Stop"),
@@ -152,6 +160,8 @@ function card(m) {
     el("div", {}, room),
     fight ? el("div", {}, "fighting " + fight) : null,
     m.party ? el("div", { class: "note" }, "party: " + m.party) : null,
+    m.driver === "unattended" ? el("div", { class: "note" }, "MudPlay left: staying online, idle") : null,
+    m.last_position ? el("div", { class: "note" }, lastSeen(m.last_position)) : null,
     ...badges,
     ...controls,
     m.events.length ? el("ol", {}, ...m.events.map((e) => el("li", {}, e))) : null);

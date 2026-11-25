@@ -5,6 +5,7 @@
 //! [`web`]), carries out the page's orders, and on an orderly stop logs every bot off.
 //! The hub and the proxy come in later steps.
 
+pub mod history;
 pub mod proxy;
 pub mod view;
 pub mod web;
@@ -17,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
+use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
     CharacterConfig, Logging, PartyRole, Secrets, ServerConfig, load_character, load_server,
@@ -137,6 +139,8 @@ pub struct Server {
     cards: Mutex<BTreeMap<String, Card>>,
     /// Counts changes to `cards`, for the page's feed.
     changed: watch::Sender<u64>,
+    /// `mudparty.sqlite`, when it opens.
+    history: Option<History>,
 }
 
 impl Server {
@@ -164,6 +168,10 @@ impl Server {
         .context("opening logs/server.jsonl")?;
         let characters = root.join("characters");
         std::fs::create_dir_all(&characters)?;
+        let (history, history_error) = match History::open(&root.join("mudparty.sqlite")) {
+            Ok(h) => (Some(h), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
         let (events, _) = broadcast::channel(1024);
         let server = Arc::new(Self {
             root: root.to_owned(),
@@ -177,7 +185,11 @@ impl Server {
             runs: AtomicU64::new(0),
             cards: Mutex::new(BTreeMap::new()),
             changed: watch::Sender::new(0),
+            history,
         });
+        if let Some(e) = history_error {
+            server.record("history_open_failed", json!({"error": e}));
+        }
         server.record("start", json!({"root": root.display().to_string()}));
         server.open_gamedata();
         server.watch(&characters)?;
@@ -290,6 +302,37 @@ impl Server {
         self.config.listen.proxy
     }
 
+    /// Where `name` was last known to be, from `mudparty.sqlite`.
+    pub fn last_position(&self, name: &str) -> Option<Position> {
+        self.history.as_ref()?.last(name)
+    }
+
+    /// Records where `name` is now, from its card, and why.
+    fn note_position(&self, name: &str, why: String) {
+        let card = self.cards.lock().expect("cards lock").get(name).cloned();
+        let Some(card) = card else { return };
+        let Some(room) = card.room else {
+            self.record("position_unknown", json!({"character": name, "why": why}));
+            return;
+        };
+        let p = Position {
+            map: room.map,
+            room: room.room,
+            room_name: room.name,
+            hp: card.vitals.map(|v| v.hp),
+            max_hp: card.vitals.and_then(|v| v.max_hp),
+            why,
+            at: jiff::Timestamp::now().to_string(),
+        };
+        self.record("position", json!({"character": name, "position": p}));
+        if let Some(h) = &self.history
+            && let Err(e) = h.record(name, &p)
+        {
+            self.record("history_write_failed", json!({"error": e.to_string()}));
+        }
+        self.card(name, |c| c.last_position = Some(p));
+    }
+
     /// Every character's card, the main character first.
     pub fn party(&self) -> Vec<Card> {
         view::ordered(&self.cards.lock().expect("cards lock"))
@@ -313,12 +356,17 @@ impl Server {
     /// Makes or refreshes the card for a character file.
     fn card_for(&self, c: &CharacterConfig) {
         let main = self.config.main_character.as_deref() == Some(c.name.as_str());
+        let last = self.last_position(&c.name);
         self.cards
             .lock()
             .expect("cards lock")
             .entry(c.name.clone())
             .and_modify(|card| card.configure(c))
-            .or_insert_with(|| Card::new(c, main));
+            .or_insert_with(|| {
+                let mut card = Card::new(c, main);
+                card.last_position = last;
+                card
+            });
         self.changed.send_modify(|n| *n += 1);
     }
 
@@ -586,6 +634,7 @@ impl Server {
             }),
             automation: c.automation,
             rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
+            hang_up_below: c.unattended.hang_up_below,
         }
     }
 
@@ -628,10 +677,35 @@ impl Server {
                         json!({"character": who, "why": format!("{off:?}")}),
                     );
                 }
+                let was_unattended = me
+                    .cards
+                    .lock()
+                    .expect("cards lock")
+                    .get(&who)
+                    .is_some_and(|c| c.driver == Some("unattended"));
                 let rooms = GameRooms(Arc::clone(&me.gamedata));
                 me.card(&who, |card| {
                     card.report(&report, |m, r| rooms.room(m, r).map(|i| i.name));
                 });
+                match &report {
+                    // MudPlay dropped: a bot now, taking the page's orders.
+                    Report::Unattended => {
+                        if let Some(b) = me.bots.lock().expect("bots lock").get_mut(&who)
+                            && b.run == run
+                        {
+                            b.seated = false;
+                        }
+                        me.record("unattended", json!({"character": who}));
+                    }
+                    // Where an unattended character is, for a rescue.
+                    Report::Room { .. } if was_unattended => {
+                        me.note_position(&who, "MudPlay left".into());
+                    }
+                    Report::State(SessionState::Offline(off)) if was_unattended => {
+                        me.note_position(&who, view::offline_text(off));
+                    }
+                    _ => {}
+                }
                 let _ = me.events.send(BotEvent::Session {
                     name: who.clone(),
                     report,

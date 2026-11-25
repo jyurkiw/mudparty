@@ -38,6 +38,51 @@ pub struct CharacterConfig {
     pub combat: Combat,
     #[serde(default)]
     pub rest: Rest,
+    /// What a character played in MudPlay does when MudPlay drops (design §2.1).
+    #[serde(default)]
+    pub unattended: Unattended,
+}
+
+/// A character whose MudPlay has dropped stays in the game, idle, under its engine. It
+/// sets no statline of its own, so the user's comes back unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unattended {
+    /// Hang up when HP falls below this (`30%`, or points), after recording where the
+    /// character is, so it can be found and rescued. `none` never hangs up.
+    #[serde(default = "d_hang_up", deserialize_with = "opt_amount")]
+    pub hang_up_below: Option<Amount>,
+}
+
+impl Default for Unattended {
+    fn default() -> Self {
+        Self {
+            hang_up_below: d_hang_up(),
+        }
+    }
+}
+
+fn d_hang_up() -> Option<Amount> {
+    Some(Amount::Percent(30))
+}
+
+/// An [`Amount`], or `none`.
+fn opt_amount<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Amount>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        None(NoneWord),
+        Amount(Amount),
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum NoneWord {
+        None,
+    }
+    Ok(match Raw::deserialize(d)? {
+        Raw::None(_) => None,
+        Raw::Amount(a) => Some(a),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
