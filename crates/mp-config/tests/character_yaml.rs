@@ -215,3 +215,22 @@ fn an_unattended_character_hangs_up_below_30_percent_unless_told() {
         "an unknown key is refused"
     );
 }
+
+#[test]
+fn a_bot_puts_the_characters_statline_back_unless_told() {
+    let c = CharacterConfig::from_yaml(
+        "schema: 1
+name: Ermias
+",
+    )
+    .unwrap();
+    assert!(c.statline_restore);
+    let c = CharacterConfig::from_yaml(
+        "schema: 1
+name: Ermias
+statline_restore: false
+",
+    )
+    .unwrap();
+    assert!(!c.statline_restore);
+}

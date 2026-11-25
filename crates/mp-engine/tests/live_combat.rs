@@ -60,6 +60,8 @@ fn spec(game: SocketAddr, combat: CombatSettings) -> SessionSpec {
         rooms: None,
         hang_up_below: None,
         inviter: None,
+        statline_store: None,
+        statline_restore: true,
     }
 }
 

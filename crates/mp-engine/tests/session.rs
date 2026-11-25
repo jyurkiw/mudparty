@@ -41,6 +41,8 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         rooms: None,
         hang_up_below: None,
         inviter: None,
+        statline_store: None,
+        statline_restore: true,
     }
 }
 
@@ -265,7 +267,12 @@ async fn a_session_logs_everything_and_never_its_password() {
         .unwrap();
     let logs = tempfile::tempdir().unwrap();
     let (h, mut rx) = start(spec(sm.telnet_addr(), "aldric1", Some(logs.path())));
-    until(&mut rx, is(SessionState::InGame)).await;
+    // The statline goes once PROFILE has said what the character had.
+    until(
+        &mut rx,
+        |r| matches!(r, Report::Sent(l) if l.starts_with("set statline")),
+    )
+    .await;
     h.send(Command::Logoff);
     until(&mut rx, offline).await;
     h.finished().await;

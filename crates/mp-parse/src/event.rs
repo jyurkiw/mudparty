@@ -222,6 +222,10 @@ pub enum Event {
         map: u32,
         room: u32,
     },
+    /// PROFILE's `Statusline:` row: `On`, `Full`, `Off`, or the custom template itself.
+    ProfileStatline {
+        mode: String,
+    },
     /// The `exp` command's line.
     ExpLine {
         exp: i64,

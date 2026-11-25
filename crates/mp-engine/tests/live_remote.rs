@@ -76,6 +76,8 @@ fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
         rooms: Some(Arc::new(Arena)),
         hang_up_below: None,
         inviter: None,
+        statline_store: None,
+        statline_restore: true,
     }
 }
 

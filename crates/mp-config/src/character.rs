@@ -25,9 +25,23 @@ pub struct CharacterConfig {
     /// How a bot logs in; the main character logs in through MudPlay and has none.
     #[serde(default)]
     pub login: Option<Login>,
-    /// The statline template: set by a bot, read for the main character.
+    /// The statline template: set by a bot, read for the main character. Any template the
+    /// prompt matcher can read will do. The tokens, as silvermere's `SET STATLINE CUSTOM`
+    /// expands them (silvermere-text `statline.rs`):
+    ///
+    /// - `%h` HP, `%H` max HP, `%m` mana or kai, `%M` the maximum;
+    /// - `%x` experience, `%X` experience still needed;
+    /// - `%c` all coins in copper farthings, `%i` first name, `%w` the evil warning setting;
+    /// - `%r` ` (Resting) ` or ` (Meditating) `, `%%` a `%`;
+    /// - colours `%f0`–`%f7` (foreground), `%b0`–`%b7` (background), and `%B %N %U %L %R %d`.
+    ///
+    /// `%n` (a line break) isn't allowed, since the prompt must stay one line. silvermere
+    /// keeps the first 60 characters.
     #[serde(default = "d_statline")]
     pub statline: String,
+    /// Put the character's own statline back when the bot logs off cleanly (#34).
+    #[serde(default = "yes")]
+    pub statline_restore: bool,
     #[serde(default)]
     pub party: Party,
     #[serde(default)]

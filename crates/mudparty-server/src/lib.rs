@@ -140,7 +140,7 @@ pub struct Server {
     /// Counts changes to `cards`, for the page's feed.
     changed: watch::Sender<u64>,
     /// `mudparty.sqlite`, when it opens.
-    history: Option<History>,
+    history: Option<Arc<History>>,
     /// The server itself, for what a session asks of it (an invitation by injection).
     me: Mutex<Weak<Server>>,
 }
@@ -171,7 +171,7 @@ impl Server {
         let characters = root.join("characters");
         std::fs::create_dir_all(&characters)?;
         let (history, history_error) = match History::open(&root.join("mudparty.sqlite")) {
-            Ok(h) => (Some(h), None),
+            Ok(h) => (Some(Arc::new(h)), None),
             Err(e) => (None, Some(e.to_string())),
         };
         let (events, _) = broadcast::channel(1024);
@@ -639,6 +639,11 @@ impl Server {
             automation: c.automation,
             rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
             hang_up_below: c.unattended.hang_up_below,
+            statline_store: self
+                .history
+                .clone()
+                .map(|h| h as Arc<dyn mp_engine::StatlineStore>),
+            statline_restore: c.statline_restore,
             inviter: c.party.invite_by_injection.then(|| {
                 Arc::new(SeatInviter(self.me.lock().expect("me lock").clone())) as Arc<dyn Inviter>
             }),

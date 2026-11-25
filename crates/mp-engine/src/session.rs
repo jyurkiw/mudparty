@@ -74,6 +74,31 @@ pub struct SessionSpec {
     /// Asked before the bot telepaths `@invite` to its leader (`party.invite_by_injection`):
     /// it may invite the bot another way.
     pub inviter: Option<Arc<dyn Inviter>>,
+    /// Where the character's own statline is kept while the bot's is set (#34).
+    pub statline_store: Option<Arc<dyn StatlineStore>>,
+    /// Put the saved statline back on an orderly logoff (`statline_restore`).
+    pub statline_restore: bool,
+}
+
+/// Keeps a character's own statline while a bot has its own set (#34, design §6.1).
+/// silvermere saves the statline with the character, so without this a character a bot
+/// played keeps the bot's statline afterwards.
+pub trait StatlineStore: Send + Sync + std::fmt::Debug {
+    /// The statline saved for `name`, as PROFILE showed it.
+    fn saved(&self, name: &str) -> Option<String>;
+    fn save(&self, name: &str, original: &str);
+    fn clear(&self, name: &str);
+}
+
+/// The line that puts a saved statline back. PROFILE shows `On`, `Full`, `Off`, or a
+/// custom template, but not whether that template was `custom` or `full custom`; the two
+/// differ only in whether a bare Enter redraws the room. A template comes back as
+/// `full custom`, a new character's mode (user, 2026-11-24): a known limit.
+fn restore_line(saved: &str) -> String {
+    match saved.to_ascii_lowercase().as_str() {
+        w @ ("on" | "full" | "off") => format!("set statline {w}"),
+        _ => format!("set statline full custom {saved}"),
+    }
 }
 
 /// Invites a bot into its leader's party without the bot asking in the game: the server
@@ -726,6 +751,46 @@ impl Runner {
         Ok(())
     }
 
+    /// Sets the bot's statline unless the character already has it, saving the character's
+    /// own first (`found`, from PROFILE; `None` when PROFILE didn't answer). The bot's own
+    /// template is never saved as the original: a login after a crash finds it still set,
+    /// and keeps the original saved before.
+    async fn settle_statline(
+        &mut self,
+        stream: &mut TcpStream,
+        reader: &mut Reader,
+        found: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mine = self.spec.statline.clone();
+        // silvermere keeps the first 60 characters of a template.
+        let mine_cut: String = mine.chars().take(60).collect();
+        if found == Some(mine_cut.as_str()) {
+            if let Ok(s) = Statline::compile(&mine) {
+                reader.set_statline(s);
+            }
+            self.decision("statline_kept", json!({"template": mine}));
+            return Ok(());
+        }
+        if let (Some(found), Some(store)) = (found, &self.spec.statline_store) {
+            store.save(&self.spec.name, found);
+            self.decision("statline_saved", json!({"original": found}));
+        }
+        self.set_statline(stream, reader).await
+    }
+
+    /// The line that puts the character's saved statline back, if there is one to restore
+    /// (and forgets it, since the character will have it again).
+    fn restore_statline(&mut self, users_statline: bool) -> Option<String> {
+        if users_statline || !self.spec.statline_restore {
+            return None;
+        }
+        let store = self.spec.statline_store.clone()?;
+        let saved = store.saved(&self.spec.name)?;
+        store.clear(&self.spec.name);
+        self.decision("statline_restored", json!({"original": saved}));
+        Some(restore_line(&saved))
+    }
+
     /// One connection, from connecting to its end.
     async fn link(
         &mut self,
@@ -760,6 +825,8 @@ impl Runner {
         let mut unattended = false;
         // The most HP seen on this link: the maximum, for a statline that doesn't show it.
         let mut most_hp = 0;
+        // Waiting for PROFILE's statline row, until then.
+        let mut probe: Option<Instant> = None;
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -855,9 +922,11 @@ impl Runner {
                                         self.exp_since.get_or_insert_with(Instant::now);
                                         self.state(SessionState::InGame);
                                         self.event("in_game", json!({}));
-                                        if self.set_statline(&mut stream, &mut reader).await.is_err() {
+                                        // Read the character's statline before changing it.
+                                        if self.send(&mut stream, "pro", false).await.is_err() {
                                             return LinkEnd::Lost { was_in_game: true };
                                         }
+                                        probe = Some(Instant::now() + self.spec.login.step_timeout);
                                         // Where the bot came in, for the web page's card.
                                         pacer.push("/room");
                                         if let Some(p) = &mut party {
@@ -930,6 +999,13 @@ impl Runner {
                                     left: *left,
                                 });
                                 self.answer(&mut pacer, |q| q == Query::Exp, None, &Doing::of(&combat, &rester, now));
+                            }
+                            Item::Event(Event::ProfileStatline { mode }) if probe.is_some() => {
+                                probe = None;
+                                let mode = mode.clone();
+                                if self.settle_statline(&mut stream, &mut reader, Some(&mode)).await.is_err() {
+                                    return LinkEnd::Lost { was_in_game: true };
+                                }
                             }
                             Item::Event(Event::RoomKey { map, room }) => {
                                 self.report(Report::Room { map: *map, room: *room });
@@ -1088,6 +1164,12 @@ impl Runner {
                             logging_off = Some((Instant::now() + self.spec.logoff_timeout, 1));
                             self.state(SessionState::LoggingOff);
                             self.decision("logoff", json!({}));
+                            // The character's own statline goes back before the exit.
+                            if let Some(line) = self.restore_statline(users_statline)
+                                && self.send(&mut stream, &line, false).await.is_err()
+                            {
+                                return LinkEnd::Done(Offline::LoggedOff);
+                            }
                             if self.send(&mut stream, "quit", false).await.is_err() {
                                 return LinkEnd::Done(Offline::LoggedOff);
                             }
@@ -1109,6 +1191,13 @@ impl Runner {
                 },
                 _ = tick.tick() => {
                     let now = Instant::now();
+                    // PROFILE never answered: set the bot's statline, saving nothing.
+                    if probe.is_some_and(|at| now >= at) {
+                        probe = None;
+                        if self.settle_statline(&mut stream, &mut reader, None).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
+                    }
                     if !in_game {
                         for action in login.on_tick(now) {
                             if let LoginAction::Failed(f) = action {
