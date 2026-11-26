@@ -149,7 +149,7 @@ function card(m) {
       toggle("combat", a.combat, "combat"), toggle("nuke", a.nuke, "nuke"),
       toggle("rest", a.rest, "rest"), toggle("all", !a.all_off, "all")),
     box("monster", "Kill", (t) => order(m.name, { order: "kill", target: t }), !inGame),
-    box("room, like 1/2141", "Go", (t) => order(m.name, { order: "goto", room: t }), !inGame),
+    box("room: 1/2141 or weapons-shop", "Go", (t) => order(m.name, { order: "goto", room: t }), !inGame),
     box("command for the game", "Send", (t) => order(m.name, { order: "command", text: t }), !inGame),
   ] : [el("div", { class: "note" },
     m.main ? "Played in MudPlay, through the proxy." : "No login: can't run as a bot.")];

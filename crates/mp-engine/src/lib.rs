@@ -25,4 +25,4 @@ pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,
 };
-pub use walk::{WalkState, WalkStep, Walker};
+pub use walk::{RouteRules, WalkState, WalkStep, Walker};

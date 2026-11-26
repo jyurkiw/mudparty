@@ -8,6 +8,7 @@
 mod megamud;
 pub mod places;
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -202,6 +203,59 @@ fn walkable(exit_type: i64) -> bool {
 
 /// How many rooms a route search looks at before giving up.
 const ROUTE_LIMIT: usize = 20_000;
+
+/// What a walk may not use, and what it would rather not (#64, design §14.5). Every plan a
+/// walk makes, its re-plans included, is made with the same rules, as MudPlay's route
+/// filters (`IRoomFilter`) are held for a whole walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteRules {
+    /// Rooms never walked into (the room a walk starts in is left as usual).
+    pub avoid_rooms: HashSet<(i64, i64)>,
+    /// silvermere `EXIT_` codes never taken (7 door, 9 trap, 4 toll, ...).
+    pub avoid_kinds: HashSet<i64>,
+    /// Exits the game refused on this walk: `(room, direction)`.
+    pub refused: HashSet<((i64, i64), u8)>,
+    /// Rooms walked through only when the way round is longer than this many steps more.
+    pub prefer_not: HashMap<(i64, i64), u32>,
+}
+
+/// Why [`GameData::route_with`] found no walk.
+#[derive(Debug)]
+pub enum RouteError {
+    Data(DataError),
+    /// No walk keeps to the rules; what stands in the way, in words.
+    NoWay(String),
+}
+
+impl fmt::Display for RouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Data(e) => e.fmt(f),
+            Self::NoWay(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for RouteError {}
+
+impl From<DataError> for RouteError {
+    fn from(e: DataError) -> Self {
+        Self::Data(e)
+    }
+}
+
+const DIR_WORDS: [&str; 10] = [
+    "north",
+    "south",
+    "east",
+    "west",
+    "northeast",
+    "northwest",
+    "southeast",
+    "southwest",
+    "up",
+    "down",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spell {
@@ -608,47 +662,154 @@ impl GameData {
     /// The shortest walk from `from` to `to`, both `(map, room)`, over walkable exits;
     /// `None` when there is none.
     pub fn route(&self, from: (i64, i64), to: (i64, i64)) -> Result<Option<Vec<Step>>, DataError> {
-        use std::collections::{HashMap, VecDeque};
-        if from == to {
-            return Ok(Some(Vec::new()));
+        match self.route_with(from, to, &RouteRules::default()) {
+            Ok(steps) => Ok(Some(steps)),
+            Err(RouteError::NoWay(_)) => Ok(None),
+            Err(RouteError::Data(e)) => Err(e),
         }
+    }
+
+    /// The cheapest walk from `from` to `to` that keeps to `rules` (#64): each step costs
+    /// one, plus a room's `prefer_not`. Ties go to the exit found first, in direction
+    /// order, so the same world and rules always give the same walk. With no walk, the
+    /// error says what stands in the way.
+    pub fn route_with(
+        &self,
+        from: (i64, i64),
+        to: (i64, i64),
+        rules: &RouteRules,
+    ) -> Result<Vec<Step>, RouteError> {
+        if from == to {
+            return Ok(Vec::new());
+        }
+        if rules.avoid_rooms.contains(&to) {
+            return Err(RouteError::NoWay(format!("{} is avoided", self.named(to)?)));
+        }
+        if let Some(steps) = self.search(from, to, rules)? {
+            return Ok(steps);
+        }
+        Err(RouteError::NoWay(self.in_the_way(from, to, rules)?))
+    }
+
+    /// Dijkstra over the walkable exits that `rules` allow.
+    fn search(
+        &self,
+        from: (i64, i64),
+        to: (i64, i64),
+        rules: &RouteRules,
+    ) -> Result<Option<Vec<Step>>, DataError> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let mut best: HashMap<(i64, i64), u64> = HashMap::from([(from, 0)]);
         let mut came: HashMap<(i64, i64), ((i64, i64), Step)> = HashMap::new();
-        let mut queue = VecDeque::from([from]);
-        while let Some(here) = queue.pop_front() {
-            if came.len() > ROUTE_LIMIT {
+        let mut queue = BinaryHeap::from([Reverse((0u64, 0u64, from))]);
+        let mut seq = 0u64;
+        let mut done: HashSet<(i64, i64)> = HashSet::new();
+        while let Some(Reverse((cost, _, here))) = queue.pop() {
+            if !done.insert(here) {
+                continue;
+            }
+            if here == to {
+                let mut steps = Vec::new();
+                let mut at = to;
+                while at != from {
+                    let (prev, s) = came[&at];
+                    steps.push(s);
+                    at = prev;
+                }
+                steps.reverse();
+                return Ok(Some(steps));
+            }
+            if done.len() > ROUTE_LIMIT {
                 break;
             }
             for e in self.exits(here.0, here.1)? {
                 let next = (e.to_map, e.to_room);
                 if !walkable(e.exit_type)
                     || e.to_room == 0
-                    || next == from
-                    || came.contains_key(&next)
+                    || done.contains(&next)
+                    || rules.avoid_kinds.contains(&e.exit_type)
+                    || rules.avoid_rooms.contains(&next)
+                    || rules.refused.contains(&(here, e.dir))
                 {
                     continue;
                 }
-                let step = Step {
-                    dir: e.dir,
-                    to_map: e.to_map,
-                    to_room: e.to_room,
-                    door: matches!(e.exit_type, EXIT_DOOR | EXIT_GATE),
-                };
-                came.insert(next, (here, step));
-                if next == to {
-                    let mut steps = vec![step];
-                    let mut at = here;
-                    while at != from {
-                        let (prev, s) = came[&at];
-                        steps.push(s);
-                        at = prev;
-                    }
-                    steps.reverse();
-                    return Ok(Some(steps));
+                let step_cost = 1 + u64::from(rules.prefer_not.get(&next).copied().unwrap_or(0));
+                let c = cost + step_cost;
+                if best.get(&next).is_some_and(|&b| b <= c) {
+                    continue;
                 }
-                queue.push_back(next);
+                best.insert(next, c);
+                came.insert(
+                    next,
+                    (
+                        here,
+                        Step {
+                            dir: e.dir,
+                            to_map: e.to_map,
+                            to_room: e.to_room,
+                            door: matches!(e.exit_type, EXIT_DOOR | EXIT_GATE),
+                        },
+                    ),
+                );
+                seq += 1;
+                queue.push(Reverse((c, seq, next)));
             }
         }
         Ok(None)
+    }
+
+    /// Why no walk keeps to `rules`: the first thing the rules forbid on the walk there
+    /// would be without them, or that there's no walk at all.
+    fn in_the_way(
+        &self,
+        from: (i64, i64),
+        to: (i64, i64),
+        rules: &RouteRules,
+    ) -> Result<String, DataError> {
+        let ends = format!("from {} to {}", self.named(from)?, self.named(to)?);
+        let Some(free) = self.search(from, to, &RouteRules::default())? else {
+            return Ok(format!("no way {ends} by walking"));
+        };
+        let mut at = from;
+        for s in &free {
+            let next = (s.to_map, s.to_room);
+            let kind = self
+                .exits(at.0, at.1)?
+                .into_iter()
+                .find(|e| e.dir == s.dir)
+                .map_or(0, |e| e.exit_type);
+            let dir = DIR_WORDS[usize::from(s.dir) % DIR_WORDS.len()];
+            if rules.refused.contains(&(at, s.dir)) {
+                return Ok(format!(
+                    "every way {ends} is barred: the shortest goes {dir} from {}, which the game refused",
+                    self.named(at)?
+                ));
+            }
+            if rules.avoid_kinds.contains(&kind) {
+                return Ok(format!(
+                    "every way {ends} is barred: the shortest goes {dir} from {} by a {} exit, and those are avoided",
+                    self.named(at)?,
+                    places::exit_kind_name(kind)
+                ));
+            }
+            if rules.avoid_rooms.contains(&next) {
+                return Ok(format!(
+                    "every way {ends} is barred: the shortest goes through {}, which is avoided",
+                    self.named(next)?
+                ));
+            }
+            at = next;
+        }
+        Ok(format!("no way {ends} keeps to the rules"))
+    }
+
+    /// `Square (1/1)`, or the bare key for a room the data hasn't.
+    fn named(&self, key: (i64, i64)) -> Result<String, DataError> {
+        Ok(match self.room(key.0, key.1)? {
+            Some(r) => format!("{} ({}/{})", r.name, key.0, key.1),
+            None => format!("{}/{}", key.0, key.1),
+        })
     }
 
     /// The rooms with MegaMud hash `hash`, as `(map, room)`.

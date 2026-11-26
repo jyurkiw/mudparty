@@ -23,11 +23,12 @@ use mp_config::Loaded;
 use mp_config::{
     CharacterConfig, Logging, PartyRole, Secrets, ServerConfig, load_character, load_server,
 };
+use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     AutoSwitch, CombatSettings, Command, Effect, HuntSettings, Inviter, LoginSettings, Offline,
-    PartySettings, RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, RoutineSettings, Seat,
-    SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
+    PartySettings, RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, RouteRules,
+    RoutineSettings, Seat, SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -113,8 +114,13 @@ pub enum Order {
     Ok,
     /// Join this leader's party.
     Join { leader: String },
-    /// Walk to a room, written `map/room` (`1/2141`).
-    Goto { room: String },
+    /// Walk to a room: a key (`1/2141`), or a place from the compiled room files (#63),
+    /// keeping out of the rooms in `avoid` (#64).
+    Goto {
+        room: String,
+        #[serde(default)]
+        avoid: Vec<String>,
+    },
     /// Pause movement and automation, the routine with them, as a `@stop`.
     Pause,
     /// Go on after a pause, as a `@rego`.
@@ -144,6 +150,8 @@ pub struct Server {
     watcher: Mutex<Option<RecommendedWatcher>>,
     /// `gamedata/gamedata.sqlite`, when there is one.
     gamedata: Arc<Mutex<Option<GameData>>>,
+    /// The compiled room files in `places/` (#63), for naming rooms; none read is empty.
+    places: Places,
     runs: AtomicU64,
     /// The party as the web page shows it, by name.
     cards: Mutex<BTreeMap<String, Card>>,
@@ -184,6 +192,12 @@ impl Server {
             Ok(h) => (Some(Arc::new(h)), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        let places_dir = root.join("places");
+        let places = if places_dir.is_dir() {
+            Places::load(&places_dir).context("reading places/")?
+        } else {
+            Places::default()
+        };
         let (events, _) = broadcast::channel(1024);
         let server = Arc::new(Self {
             root: root.to_owned(),
@@ -194,6 +208,7 @@ impl Server {
             log: Mutex::new(log),
             watcher: Mutex::new(None),
             gamedata: Arc::new(Mutex::new(None)),
+            places,
             runs: AtomicU64::new(0),
             cards: Mutex::new(BTreeMap::new()),
             changed: watch::Sender::new(0),
@@ -430,8 +445,9 @@ impl Server {
             Order::Join { leader } => Command::Do(Effect::Join(leader)),
             Order::Pause => Command::Do(Effect::Stop(true)),
             Order::Resume => Command::Do(Effect::Stop(false)),
-            Order::Goto { room } => Command::Goto {
-                to: room_key(&room).ok_or_else(|| format!("{room:?} isn't a room like 1/2141"))?,
+            Order::Goto { room, avoid } => Command::Goto {
+                to: self.place(None, &room)?,
+                rules: self.route_rules(None, &avoid, &[], &[], &BTreeMap::new())?,
             },
         };
         let bots = self.bots.lock().expect("bots lock");
@@ -478,6 +494,8 @@ impl Server {
         let loaded =
             load_character(&self.file(name)).map_err(|e| StartError::Config(e.to_string()))?;
         let c = loaded.value;
+        // The routine's places and avoid lists name rooms in the compiled room files.
+        self.routine_for(&c).map_err(StartError::Config)?;
         let login = c
             .login
             .clone()
@@ -659,7 +677,9 @@ impl Server {
                 .clone()
                 .map(|h| h as Arc<dyn mp_engine::StatlineStore>),
             statline_restore: c.statline_restore,
-            routine: routine_for(c),
+            // A seated session runs no routine, so a routine that doesn't read is no matter
+            // there; a bot's is checked before it starts.
+            routine: self.routine_for(c).unwrap_or(None),
             inviter: c.party.invite_by_injection.then(|| {
                 Arc::new(SeatInviter(self.me.lock().expect("me lock").clone())) as Arc<dyn Inviter>
             }),
@@ -935,30 +955,85 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
     })
 }
 
-/// A solo bot's loop (#53), its places looked up. The config loader has checked that each
-/// one is a room.
-fn routine_for(c: &CharacterConfig) -> Option<RoutineSettings> {
-    let r = c.routine.as_ref()?;
-    Some(RoutineSettings {
-        camp: c.place(&r.camp)?,
-        rest_at: c.place(&r.rest_at)?,
-        retreat: c.rest.start_when_any,
-        look_every: r.look_every,
-        hunts: r
-            .hunts
-            .iter()
-            .filter_map(|h| {
-                Some(HuntSettings {
-                    monster: h.monster.clone(),
-                    at: c.place(&h.at)?,
-                    every: h.every,
-                    min_hp: h.min_hp,
-                })
-            })
-            .collect(),
-        retry: ROUTINE_RETRY,
-        kill_wait: KILL_WAIT,
-    })
+impl Server {
+    /// The room a place names: a key (`1/2150`), the character's own `places:`, or the
+    /// compiled room files (design §14.3).
+    fn place(&self, c: Option<&CharacterConfig>, name: &str) -> Result<(u32, u32), String> {
+        if let Some(k) = room_key(name).or_else(|| c.and_then(|c| c.place(name))) {
+            return Ok(k);
+        }
+        self.places.resolve(name, None).map_err(|e| e.to_string())
+    }
+
+    /// What a walk keeps out of (#64): rooms and the rooms of areas, exit kinds by name, and
+    /// the rooms it would rather not walk through.
+    fn route_rules(
+        &self,
+        c: Option<&CharacterConfig>,
+        rooms: &[String],
+        areas: &[String],
+        exits: &[String],
+        prefer_not: &BTreeMap<String, u32>,
+    ) -> Result<RouteRules, String> {
+        let mut rules = RouteRules::default();
+        for r in rooms {
+            rules.avoid_rooms.insert(self.place(c, r)?);
+        }
+        for a in areas {
+            let keys = self
+                .places
+                .rooms_in(a)
+                .ok_or_else(|| format!("no area {a:?} in places/"))?;
+            rules.avoid_rooms.extend(keys);
+        }
+        for e in exits {
+            let code = mp_data::places::exit_kind_code(e)
+                .ok_or_else(|| format!("{e:?} isn't an exit kind"))?;
+            rules.avoid_kinds.insert(code);
+        }
+        for (r, cost) in prefer_not {
+            rules.prefer_not.insert(self.place(c, r)?, *cost);
+        }
+        Ok(rules)
+    }
+
+    /// A solo bot's loop (#53), its places looked up; an error names what didn't read.
+    fn routine_for(&self, c: &CharacterConfig) -> Result<Option<RoutineSettings>, String> {
+        let Some(r) = c.routine.as_ref() else {
+            return Ok(None);
+        };
+        let at = |field: &str, name: &str| {
+            self.place(Some(c), name)
+                .map_err(|e| format!("{}: routine.{field}: {e}", c.name))
+        };
+        let mut hunts = Vec::new();
+        for (i, h) in r.hunts.iter().enumerate() {
+            hunts.push(HuntSettings {
+                monster: h.monster.clone(),
+                at: at(&format!("hunts[{i}].at"), &h.at)?,
+                every: h.every,
+                min_hp: h.min_hp,
+            });
+        }
+        Ok(Some(RoutineSettings {
+            camp: at("camp", &r.camp)?,
+            rest_at: at("rest_at", &r.rest_at)?,
+            retreat: c.rest.start_when_any,
+            look_every: r.look_every,
+            hunts,
+            retry: ROUTINE_RETRY,
+            kill_wait: KILL_WAIT,
+            route: self
+                .route_rules(
+                    Some(c),
+                    &r.avoid.rooms,
+                    &r.avoid.areas,
+                    &r.avoid.exits,
+                    &r.prefer_not,
+                )
+                .map_err(|e| format!("{}: routine.avoid: {e}", c.name))?,
+        }))
+    }
 }
 
 /// Invites a bot by injecting `invite <bot>` as its leader, when the leader is played
@@ -1018,20 +1093,36 @@ impl RoomBook for GameRooms {
         })
     }
 
-    fn route(&self, from: (u32, u32), to: (u32, u32)) -> Option<Vec<mp_engine::WalkStep>> {
+    fn route(
+        &self,
+        from: (u32, u32),
+        to: (u32, u32),
+        rules: &RouteRules,
+    ) -> Result<Vec<mp_engine::WalkStep>, String> {
+        let key = |(m, r): (u32, u32)| (i64::from(m), i64::from(r));
         let gd = self.0.lock().expect("gamedata lock");
+        let gd = gd.as_ref().ok_or("no game data to plan a walk on")?;
+        let rules = mp_data::RouteRules {
+            avoid_rooms: rules.avoid_rooms.iter().copied().map(key).collect(),
+            avoid_kinds: rules.avoid_kinds.iter().copied().collect(),
+            refused: rules.refused.iter().map(|&(r, d)| (key(r), d)).collect(),
+            prefer_not: rules
+                .prefer_not
+                .iter()
+                .map(|(&r, &c)| (key(r), c))
+                .collect(),
+        };
         let steps = gd
-            .as_ref()?
-            .route((from.0.into(), from.1.into()), (to.0.into(), to.1.into()))
-            .ok()??;
+            .route_with(key(from), key(to), &rules)
+            .map_err(|e| e.to_string())?;
         steps
             .into_iter()
             .map(|s| {
-                Some(mp_engine::WalkStep {
+                Ok(mp_engine::WalkStep {
                     dir: s.dir,
                     to: (
-                        u32::try_from(s.to_map).ok()?,
-                        u32::try_from(s.to_room).ok()?,
+                        u32::try_from(s.to_map).map_err(|e| e.to_string())?,
+                        u32::try_from(s.to_room).map_err(|e| e.to_string())?,
                     ),
                     door: s.door,
                 })

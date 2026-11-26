@@ -3,16 +3,18 @@
 //! lands somewhere else, waits out a fight, and gives up on an exit the game refuses.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mp_engine::{RoomBook, RoomInfo, WalkState, WalkStep, Walker};
+use mp_engine::{RoomBook, RoomInfo, RouteRules, WalkState, WalkStep, Walker};
 use mp_parse::{Event, Item};
 
 /// A line of rooms 1/1 – 1/2 – 1/3 (east), with a door between 1/2 and 1/3, and 1/9 off
-/// to the side of 1/1 (north), from where the way back is south.
+/// to the side of 1/1 (north), from where the way back is south. With 1/1's east exit
+/// refused, the way from 1/1 goes north by 1/9 and on east to 1/3. Every rule set a plan
+/// was made with is kept, to see what the walker asked for.
 #[derive(Debug)]
-struct Map(HashMap<(u32, u32), Vec<WalkStep>>);
+struct Map(HashMap<(u32, u32), Vec<WalkStep>>, Mutex<Vec<RouteRules>>);
 
 fn step(dir: u8, room: u32, door: bool) -> WalkStep {
     WalkStep {
@@ -26,23 +28,41 @@ impl RoomBook for Map {
     fn room(&self, _: u32, _: u32) -> Option<RoomInfo> {
         None
     }
-    fn route(&self, from: (u32, u32), to: (u32, u32)) -> Option<Vec<WalkStep>> {
-        if to != (1, 3) {
-            return None;
+    fn route(
+        &self,
+        from: (u32, u32),
+        to: (u32, u32),
+        rules: &RouteRules,
+    ) -> Result<Vec<WalkStep>, String> {
+        self.1.lock().unwrap().push(rules.clone());
+        let none = || {
+            format!(
+                "no way from {}/{} to {}/{} by walking",
+                from.0, from.1, to.0, to.1
+            )
+        };
+        if to != (1, 3) || rules.refused.contains(&((from.0, from.1), 2)) && from != (1, 1) {
+            return Err(none());
         }
-        self.0.get(&from).cloned()
+        if from == (1, 1) && rules.refused.contains(&((1, 1), 2)) {
+            return Ok(vec![step(0, 9, false), step(2, 3, false)]);
+        }
+        self.0.get(&from).cloned().ok_or_else(none)
     }
 }
 
 fn map() -> Arc<Map> {
-    Arc::new(Map(HashMap::from([
-        ((1, 1), vec![step(2, 2, false), step(2, 3, true)]),
-        ((1, 2), vec![step(2, 3, true)]),
-        (
-            (1, 9),
-            vec![step(1, 1, false), step(2, 2, false), step(2, 3, true)],
-        ),
-    ])))
+    Arc::new(Map(
+        HashMap::from([
+            ((1, 1), vec![step(2, 2, false), step(2, 3, true)]),
+            ((1, 2), vec![step(2, 3, true)]),
+            (
+                (1, 9),
+                vec![step(1, 1, false), step(2, 2, false), step(2, 3, true)],
+            ),
+        ]),
+        Mutex::new(Vec::new()),
+    ))
 }
 
 const STEP_WAIT: Duration = Duration::from_secs(10);
@@ -166,16 +186,54 @@ fn no_exit_finds_where_it_is_again() {
 }
 
 #[test]
-fn an_exit_the_game_refuses_ends_the_walk() {
+fn an_exit_the_game_refuses_with_no_way_round_ends_the_walk() {
     let mut w = Walk::to(3);
     w.take();
-    w.at(1).hear(Event::ExitRefused {
+    w.at(2).hear(Event::ExitRefused {
         text: "You have progressed too far to go through this exit!".into(),
     });
     assert_eq!(
         w.w.state(),
         WalkState::Failed("You have progressed too far to go through this exit!".into())
     );
+}
+
+#[test]
+fn an_exit_the_game_refuses_is_planned_around() {
+    let mut w = Walk::to(3);
+    w.take();
+    w.at(1);
+    assert_eq!(w.take(), ["east"]);
+    w.hear(Event::ExitRefused {
+        text: "You have not progressed far enough to go through this exit!".into(),
+    });
+    // East from 1/1 is barred: north by 1/9 instead.
+    assert_eq!(w.take(), ["north"]);
+    assert_eq!(w.w.state(), WalkState::Walking { step: 1, of: 2 });
+    w.arrive().at(9);
+    assert_eq!(w.take(), ["/room", "east"]);
+    w.arrive().at(3);
+    assert_eq!(w.w.state(), WalkState::Arrived);
+}
+
+#[test]
+fn every_plan_of_a_walk_keeps_its_rules() {
+    let map = map();
+    let book: Arc<dyn RoomBook> = map.clone();
+    let rules = RouteRules {
+        avoid_rooms: [(1, 7)].into(),
+        ..Default::default()
+    };
+    let now = Instant::now();
+    let mut w = Walker::new((1, 3), book, STEP_WAIT).with_rules(rules);
+    w.start(now);
+    w.on_item(&Item::Event(Event::RoomKey { map: 1, room: 1 }), now, false);
+    w.on_item(&Item::Event(Event::ObviousExits), now, false);
+    // A wrong room: the walk plans again from 1/9.
+    w.on_item(&Item::Event(Event::RoomKey { map: 1, room: 9 }), now, false);
+    let asked = map.1.lock().unwrap();
+    assert_eq!(asked.len(), 2);
+    assert!(asked.iter().all(|r| r.avoid_rooms.contains(&(1, 7))));
 }
 
 #[test]

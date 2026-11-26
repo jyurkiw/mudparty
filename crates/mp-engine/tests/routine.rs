@@ -36,6 +36,7 @@ fn settings(hunts: bool) -> RoutineSettings {
         },
         retry: RETRY,
         kill_wait: KILL_WAIT,
+        route: Default::default(),
     }
 }
 

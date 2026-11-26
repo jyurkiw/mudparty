@@ -114,10 +114,15 @@ pub struct RoomInfo {
 pub trait RoomBook: Send + Sync + std::fmt::Debug {
     fn room(&self, map: u32, room: u32) -> Option<RoomInfo>;
 
-    /// The shortest walk from one room to another (#52); `None` when there's none, or no
-    /// map to plan on.
-    fn route(&self, _from: (u32, u32), _to: (u32, u32)) -> Option<Vec<crate::walk::WalkStep>> {
-        None
+    /// The cheapest walk from one room to another that keeps to `rules` (#52, #64); with
+    /// none, why, in words.
+    fn route(
+        &self,
+        _from: (u32, u32),
+        _to: (u32, u32),
+        _rules: &crate::walk::RouteRules,
+    ) -> Result<Vec<crate::walk::WalkStep>, String> {
+        Err("no game data to plan a walk on".into())
     }
 }
 

@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+mp-data = { path = "../mp-data" }
 mp-parse = { path = "../mp-parse" }
 serde.workspace = true
 serde_norway.workspace = true
@@ -16,7 +17,6 @@ sha2.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-mp-data = { path = "../mp-data" }
 tempfile.workspace = true
 
 [lints]

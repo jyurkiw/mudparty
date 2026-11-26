@@ -100,3 +100,27 @@ fn a_hunt_needs_a_monster_and_a_time() {
     let e = error(&NEWHAVEN.replace("min_hp: 80%", "min_hp: 180%"));
     assert!(e.contains("routine.hunts[0].min_hp"), "{e}");
 }
+
+#[test]
+fn a_routine_may_avoid_rooms_areas_and_exit_kinds() {
+    let c = CharacterConfig::from_yaml(&NEWHAVEN.replace(
+        "  look_every: 4s\n",
+        "  look_every: 4s\n  avoid:\n    rooms: [healer, 1/2190]\n    areas: [dungeon]\n    exits: [trap, toll]\n  prefer_not:\n    narrow-path: 20\n",
+    ))
+    .unwrap();
+    let r = c.routine.unwrap();
+    assert_eq!(r.avoid.rooms, ["healer", "1/2190"]);
+    assert_eq!(r.avoid.areas, ["dungeon"]);
+    assert_eq!(r.avoid.exits, ["trap", "toll"]);
+    assert_eq!(r.prefer_not.get("narrow-path"), Some(&20));
+}
+
+#[test]
+fn an_exit_kind_must_be_one_the_game_has() {
+    let e = error(&NEWHAVEN.replace(
+        "  look_every: 4s\n",
+        "  look_every: 4s\n  avoid:\n    exits: [trapdoor]\n",
+    ));
+    assert!(e.contains("routine.avoid.exits[0]"), "{e}");
+    assert!(e.contains("trapdoor"), "{e}");
+}

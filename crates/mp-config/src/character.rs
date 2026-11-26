@@ -81,6 +81,26 @@ pub struct Routine {
     pub look_every: Duration,
     #[serde(default)]
     pub hunts: Vec<Hunt>,
+    /// What the routine's walks never use (#64, design §14.5).
+    #[serde(default)]
+    pub avoid: Avoid,
+    /// Rooms walked through only when the way round is longer than this many steps more.
+    #[serde(default)]
+    pub prefer_not: BTreeMap<String, u32>,
+}
+
+/// What a walk never uses. Rooms are places (aliases, slugs, names or keys, from the
+/// compiled room files or the character's `places:`); areas are compiled areas; exits are
+/// silvermere's exit kinds as the room files write them (`door`, `trap`, `toll`, ...).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Avoid {
+    #[serde(default)]
+    pub rooms: Vec<String>,
+    #[serde(default)]
+    pub areas: Vec<String>,
+    #[serde(default)]
+    pub exits: Vec<String>,
 }
 
 /// A monster with a known spawn room and respawn time, such as Newhaven's cave bear.
@@ -585,6 +605,25 @@ impl CharacterConfig {
                 ));
             }
             check_amount(&format!("{at}.min_hp"), h.min_hp)?;
+        }
+        // Rooms and areas are looked up in the compiled room files when the bot starts.
+        for (i, kind) in r.avoid.exits.iter().enumerate() {
+            if mp_data::places::exit_kind_code(kind).is_none() {
+                return Err(ConfigError::at(
+                    format!("routine.avoid.exits[{i}]"),
+                    format!(
+                        "{kind:?} isn't an exit kind (door, gate, trap, toll, key, level, ...)"
+                    ),
+                ));
+            }
+        }
+        for (field, names) in [("rooms", &r.avoid.rooms), ("areas", &r.avoid.areas)] {
+            if let Some(i) = names.iter().position(|n| n.trim().is_empty()) {
+                return Err(ConfigError::at(
+                    format!("routine.avoid.{field}[{i}]"),
+                    "a name is needed",
+                ));
+            }
         }
         Ok(())
     }

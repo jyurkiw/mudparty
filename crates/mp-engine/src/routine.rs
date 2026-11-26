@@ -19,7 +19,7 @@ use mp_config::{Amount, Pools};
 use mp_parse::Vitals;
 
 use crate::rest::below;
-use crate::walk::WalkState;
+use crate::walk::{RouteRules, WalkState};
 
 /// A routine's rooms and thresholds, from the character's `routine:` and `rest:`.
 #[derive(Debug, Clone)]
@@ -37,6 +37,8 @@ pub struct RoutineSettings {
     pub retry: Duration,
     /// How long a hunted monster may stand there unfought before the hunt gives up on it.
     pub kill_wait: Duration,
+    /// What the routine's walks keep out of (#64).
+    pub route: RouteRules,
 }
 
 /// A monster with a known spawn room and respawn time.
@@ -163,6 +165,11 @@ impl Routine {
 
     pub fn look_every(&self) -> Duration {
         self.set.look_every
+    }
+
+    /// What the routine's walks keep out of.
+    pub fn route_rules(&self) -> &RouteRules {
+        &self.set.route
     }
 
     /// Pauses (`@stop`) or resumes the routine; it resumes where it was.
