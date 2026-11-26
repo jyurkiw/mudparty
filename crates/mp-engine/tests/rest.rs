@@ -246,3 +246,44 @@ fn points_and_a_class_without_mana() {
     assert!(r.on_item(&warrior(30), t, false).is_empty());
     assert!(!r.resting(), "no mana to wait for");
 }
+
+#[test]
+fn with_auto_start_off_it_rests_only_when_told() {
+    let t = Instant::now();
+    let mut r = Rester::new(RestSettings {
+        tell: None,
+        ..settings()
+    });
+    r.set_auto_start(false);
+    // Below the start thresholds, but a routine decides where to rest.
+    assert!(
+        r.on_item(&prompt(10, 5, Rest::Standing), t, false)
+            .is_empty()
+    );
+    assert!(!r.resting());
+    assert!(r.begin().is_empty());
+    assert!(r.resting());
+    assert_eq!(
+        r.on_item(&prompt(10, 5, Rest::Standing), t, false),
+        vec![rest()]
+    );
+    // It stops at the stop thresholds as ever.
+    assert!(
+        r.on_item(&prompt(95, 20, Rest::Resting), t, false)
+            .is_empty()
+    );
+    assert!(!r.resting());
+}
+
+#[test]
+fn begun_at_full_it_ends_at_the_next_prompt() {
+    let t = Instant::now();
+    let mut r = Rester::new(settings());
+    // The leader is told, as when it starts by itself.
+    assert_eq!(r.begin(), vec![wait()]);
+    assert_eq!(
+        r.on_item(&prompt(100, 40, Rest::Standing), t, false),
+        vec![ok()]
+    );
+    assert!(!r.resting());
+}

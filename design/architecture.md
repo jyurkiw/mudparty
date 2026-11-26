@@ -863,8 +863,43 @@ A bot walks to a room by itself: the first piece of 1.0 (*§12.2*).
   progress is `Report::Walk(WalkState)`. The page has a "Go" box (`goto` order, room as
   `1/2141`), and the card shows the walk.
 - **Not yet:** tracking the room between walks (a party drag or a flee leaves the last
-  known room stale until the next `/room`), named places in the YAML (with the routine,
-  #53), and picking locks for thieves.
+  known room stale until the next `/room`), and picking locks for thieves. Named places
+  came with the routine (*§6.11*).
+
+### 6.11 The routine (#53)
+
+A solo bot's loop, the heart of 1.0 (*§12.2*): camp, retreat to rest, return, and timed
+hunts, from the character's `routine:` and `places:` (*§7.3*).
+
+- **Goals.** The routine (`mp-engine` `routine.rs`) is pure logic with a clock. It hands
+  the session one `Goal` at a time: `Walk(room)`, `Rest`, `Camp`, `Kill(monster)` or
+  `Wait`. The bot's engines carry each one out: the walker walks (*§6.10*), the rest engine
+  rests (`Rester::begin`, to its stop thresholds), the combat engine fights (a kill order
+  for `Kill`, its targeting rules in the camp). The session tells the routine how a walk
+  or a rest ended, and shows what the bot is doing (`Seen`: vitals, fighting, the room's
+  monsters, the room, walking). In 1.1 the party director (#59) hands out the same goals
+  for several characters, so they stay few and plain.
+- **The loop.**
+  1. Walk to the camp and camp there. A bot found elsewhere, not walking, walks back.
+  2. In the camp, a bare Enter every `look_every` (5 s) redraws the room, so the combat
+     engine sees monsters that arrive (silvermere's arrival lines are per-monster text).
+  3. `rest.start_when_any` met, with no fight going on: walk to `rest_at`, rest, walk back.
+     A routine turns the rest engine's own start off, so it never rests in the camp.
+     Fleeing mid-fight is #16.
+  4. A hunt due, HP at least its `min_hp`, no fight: walk to its room. The monster there
+     (its name, or a name ending with it: `big cave bear`) is killed; then back to camp.
+     It's due again `every` after the kill, or after a visit that found it gone. A monster
+     left unfought for 30 s is given up on.
+  5. A walk that fails waits 30 s, then starts again from the camp (or the rest).
+- **Pausing.** `@stop` (the page's Pause) pauses the routine with the rest of the bot and
+  calls its walk off; `@rego` (Go on) picks it up where it was. While it runs, a `goto`
+  order is refused.
+- **The roster.** A room display lists who else is here before its exits and leaves the
+  line out when the room is empty, so the combat engine now empties its roster at
+  `Obvious exits:` with no `Also here:` since the last prompt.
+- **Only bots.** A seated character, or one whose MudPlay has dropped, runs no routine.
+- **Not yet:** training (#56) and shopping (#55), which join the loop as parts of their
+  own; an @ command to send the bot to a part; keeping hunt times across a reconnect.
 
 ## 7. Data model
 
@@ -939,6 +974,19 @@ unattended:                                   # a character played in MudPlay, o
   hang_up_below: 30%                          # hang up below this (points, %, or none)
 combat: { ... }                               # §6.4
 rest: { ... }                                 # §6.6
+places:                                       # rooms by name, for the routine (§6.11)
+  arena: 1/2150
+  road: 1/2146
+  cavern: 1/2156
+routine:                                      # a solo bot's loop (§6.11); places or 1/2150
+  camp: arena
+  rest_at: road                               # left for when rest.start_when_any is met
+  look_every: 5s
+  hunts:
+    - monster: cave bear
+      at: cavern
+      every: 4m                               # due again this long after a kill or a miss
+      min_hp: 80%
 ```
 
 The main character's file is smaller: `name`, `statline` (the template MudPlay uses, for

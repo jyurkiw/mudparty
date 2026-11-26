@@ -47,6 +47,9 @@ pub struct Rester {
     last_attacked: Option<Instant>,
     last_try: Option<Instant>,
     sick_until: Option<Instant>,
+    /// Starts a rest by itself below the start thresholds. A routine turns this off: it
+    /// walks somewhere safe first, then calls [`Rester::begin`].
+    auto_start: bool,
 }
 
 /// Below `amount`, out of `max`.
@@ -77,6 +80,33 @@ impl Rester {
             last_attacked: None,
             last_try: None,
             sick_until: None,
+            auto_start: true,
+        }
+    }
+
+    /// Whether a rest starts by itself below the start thresholds.
+    pub fn set_auto_start(&mut self, on: bool) {
+        self.auto_start = on;
+    }
+
+    /// Starts a rest now, whatever the start thresholds say: the next prompt rests (once
+    /// one can be taken), and the rest ends at the stop thresholds as ever. Returns the
+    /// word to the leader, if it is told.
+    pub fn begin(&mut self) -> Vec<Action> {
+        if self.resting {
+            return Vec::new();
+        }
+        self.resting = true;
+        self.last_try = None;
+        match &self.set.tell {
+            Some(to) => {
+                self.told = true;
+                vec![Action::Telepath {
+                    to: to.clone(),
+                    text: "@wait".into(),
+                }]
+            }
+            None => Vec::new(),
         }
     }
 
@@ -144,6 +174,9 @@ impl Rester {
             {
                 return vec![self.try_rest(now)];
             }
+            return Vec::new();
+        }
+        if !self.auto_start {
             return Vec::new();
         }
         let needs = below(start.hp, Some(v.hp), v.max_hp) || below(start.mp, v.mp, v.max_mp);

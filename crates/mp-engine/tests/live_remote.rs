@@ -78,6 +78,7 @@ fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
         inviter: None,
         statline_store: None,
         statline_restore: true,
+        routine: None,
     }
 }
 

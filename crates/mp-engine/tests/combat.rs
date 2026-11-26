@@ -446,3 +446,23 @@ fn the_attack_in_use_is_known_for_the_web_page() {
     f.msg(Msg::ExpGain { exp: 10 });
     assert_eq!((f.combat.target(), f.combat.tier()), (None, None));
 }
+
+#[test]
+fn a_room_shown_with_nobody_else_here_empties_the_roster() {
+    let mut f = Fight::new(settings());
+    f.here("practice dummy").prompt(80);
+    assert_eq!(f.combat.monsters(), ["practice dummy"]);
+    // The next room's display has no `Also here:` line before its exits.
+    f.msg(Msg::RoomExits {
+        exits: s("north, up"),
+    })
+    .prompt(80);
+    assert!(f.combat.monsters().is_empty());
+    // An `Also here:` in the same display is the room's list.
+    f.here("giant rat")
+        .msg(Msg::RoomExits {
+            exits: s("north, up"),
+        })
+        .prompt(80);
+    assert_eq!(f.combat.monsters(), ["giant rat"]);
+}

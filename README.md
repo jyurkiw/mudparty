@@ -245,6 +245,48 @@ the saved statline stays, and goes back at the next clean logoff. `statline_rest
 leaves the bot's statline on. One limit: a custom statline comes back as `full custom`,
 since `pro` doesn't say whether it was `custom` or `full custom`.
 
+### A routine
+
+A bot with a `routine:` runs a loop of its own, with no one leading it. It walks to its
+camp and stays there, fighting what comes and looking around now and then. When
+`rest.start_when_any` is met and no fight is going on, it walks to `rest_at`, rests to
+`rest.stop_when_all`, and walks back. When a hunt is due and HP allows, it walks to the
+monster's room, kills it if it's there, and comes back. A hunt is due again `every` after
+the kill, or after the visit that found it gone. Name rooms once under `places:`, or write
+them out (`1/2150`) wherever a place goes. Newhaven's arena, with its cave bear:
+
+```yaml
+schema: 1
+name: Ermias
+login:
+  account: Ermias
+combat:
+  targeting:
+    - kill_order: true
+    - priority: ["*"]
+  melee: a
+rest:
+  start_when_any: { hp: 50% }
+  stop_when_all: { hp: 100% }
+places:
+  arena: 1/2150        # levels 1-3 only
+  road: 1/2146         # Narrow Road, up the stairs
+  cavern: 1/2156       # Small Cavern, through the arena's locked north door
+routine:
+  camp: arena
+  rest_at: road
+  look_every: 5s       # the default
+  hunts:
+    - monster: cave bear   # "big cave bear" counts too
+      at: cavern
+      every: 4m
+      min_hp: 80%          # go only with this much HP
+```
+
+The card shows where the routine is: camping, going to rest, resting, hunting. `@stop` (or
+the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where
+it was. While it runs, the page's Go box is refused, since the routine is walking the bot.
+
 Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists every
 setting. The server watches `characters/`, and a running bot picks up an edited file
 without restarting.
