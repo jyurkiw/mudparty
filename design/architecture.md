@@ -981,19 +981,9 @@ unattended:                                   # a character played in MudPlay, o
   hang_up_below: 30%                          # hang up below this (points, %, or none)
 combat: { ... }                               # §6.4
 rest: { ... }                                 # §6.6
-places:                                       # rooms by name, for the routine (§6.11)
-  arena: 1/2150
-  road: 1/2146
-  cavern: 1/2156
-routine:                                      # a solo bot's loop (§6.11); places or 1/2150
-  camp: arena
-  rest_at: road                               # left for when rest.start_when_any is met
-  look_every: 5s
-  hunts:
-    - monster: cave bear
-      at: cavern
-      every: 4m                               # due again this long after a kill or a miss
-      min_hp: 80%
+routine:                                      # routines/newhaven-arena.yaml (§14.6)
+  use: newhaven-arena
+  with: { rest_below: 60% }                   # the routine's params
 ```
 
 The main character's file is smaller: `name`, `statline` (the template MudPlay uses, for
@@ -1823,13 +1813,28 @@ do:
   - camp:    { at: arena }
 ```
 
-- **Conditions** (`when:`): `hp_below`, `mp_below`, `hp_at_least`, `level_below`,
-  `missing` (gear), and later time windows. A rule without `when:` always applies.
-- **Taking over:** a rule higher up that becomes due takes over from a lower one at a safe
-  point, never mid-fight (fleeing is #16). The lower rule keeps its state (a loop its
-  place, a circuit its timers) and picks up where it left off.
-- **Parameters:** a routine may name values a character can change:
-  `routine: { use: newhaven-arena, with: { rest_below: 60% } }`.
+- **Conditions** (`when:`): `hp_below`, `mp_below`, `hp_at_least`, `mp_at_least`; every
+  one given must hold. `level_below` comes with training (#56), `missing` with gear
+  (#55), and time windows later.
+- **Taking over:** a rule's `when` says when it starts; once started it runs until it's
+  done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
+  (fleeing is #16). The lower rule keeps its state (a hunt its timer) and applies again
+  once its `when` holds.
+- **Parameters:** a routine declares them with their defaults under `params:` and uses
+  them as `${name}`; a character changes them:
+  `routine: { use: newhaven-arena, with: { rest_below: 60% } }`. A value that is only
+  `${name}` takes the parameter as YAML would read it; one with more around it takes the
+  text. A character may set only parameters the routine declares, and a routine may use
+  only those it declares.
+- **Built in #65** (`mp-config` `routine.rs`, `mp-engine` `routine.rs`): the rules `rest`
+  (`at`, `when`, `until`, the character's `rest.stop_when_all` when left out), `hunt`
+  (`monster`, `at`, `every`, `when`; #67 makes it a circuit) and `camp` (`at`,
+  `look_every`). A routine file has `schema`, `name`, `places` (the area its places are
+  looked for in first), `params`, `avoid`, `prefer_not` and `do`. It is checked when read:
+  a rule below one that always applies (a camp) would never run, and a rest says when.
+  Its places are looked up when the bot starts. A routine may be written inline in the
+  character's file (`routine: { do: [...] }`); a character's own `places:` are gone, in
+  favour of the compiled room files and their local aliases.
 - **The goals stay the interface** (*§6.11*): each rule hands the engines goals (walk,
   rest, camp, kill, buy and equip, train), and the 1.1 director (#59) hands out the same
   goals, with rules of its own (follow the leader, hold the group).
@@ -1948,7 +1953,7 @@ web page needs one too (user).
 
 ### 14.11 Moving to it
 
-- PR #61's `places:` and `routine:` are replaced; the README and §6.11 follow the code.
+- PR #61's `places:` and `routine:` are replaced (#65); the README follows the code.
 - #55's `gear:` lands as the `gear` errand, its shops found from the compiled file.
 - The engine pieces stay: the walker (*§6.10*), the goals and the session's wiring
   (*§6.11*), the rest and combat engines.

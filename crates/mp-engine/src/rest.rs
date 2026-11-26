@@ -50,6 +50,8 @@ pub struct Rester {
     /// Starts a rest by itself below the start thresholds. A routine turns this off: it
     /// walks somewhere safe first, then calls [`Rester::begin`].
     auto_start: bool,
+    /// This rest's stop thresholds, when a routine's rest rule gives its own (`until`).
+    stop_for_now: Option<Pools>,
 }
 
 /// Below `amount`, out of `max`.
@@ -81,7 +83,16 @@ impl Rester {
             last_try: None,
             sick_until: None,
             auto_start: true,
+            stop_for_now: None,
         }
+    }
+
+    /// [`Rester::begin`], resting until both reach `until` this time rather than the stop
+    /// thresholds (a routine's rest rule, #65).
+    pub fn begin_until(&mut self, until: Pools) -> Vec<Action> {
+        let acts = self.begin();
+        self.stop_for_now = Some(until);
+        acts
     }
 
     /// Whether a rest starts by itself below the start thresholds.
@@ -150,10 +161,12 @@ impl Rester {
     }
 
     fn on_prompt(&mut self, v: &Vitals, now: Instant, fighting: bool) -> Vec<Action> {
-        let (start, stop) = (self.set.start_when_any, self.set.stop_when_all);
+        let start = self.set.start_when_any;
+        let stop = self.stop_for_now.unwrap_or(self.set.stop_when_all);
         if self.resting {
             if meets(stop.hp, Some(v.hp), v.max_hp) && meets(stop.mp, v.mp, v.max_mp) {
                 self.resting = false;
+                self.stop_for_now = None;
                 self.last_try = None;
                 return match (self.told, &self.set.tell) {
                     (true, Some(to)) => {

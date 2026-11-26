@@ -29,6 +29,16 @@ impl ConfigError {
         }
     }
 
+    /// The same error, its field inside `parent`: `do[0]` under `routine` is
+    /// `routine.do[0]`.
+    pub(crate) fn under(mut self, parent: &str) -> Self {
+        self.field = Some(match self.field {
+            Some(f) => format!("{parent}.{f}"),
+            None => parent.to_owned(),
+        });
+        self
+    }
+
     pub(crate) fn in_file(mut self, file: &Path) -> Self {
         self.file = Some(file.to_owned());
         self

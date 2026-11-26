@@ -1,12 +1,12 @@
 //! A character's YAML (design §7.3, §6.4, §6.6).
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use mp_parse::Statline;
 use serde::{Deserialize, Deserializer, de};
 
 use crate::error::ConfigError;
+use crate::routine::RoutineRef;
 
 /// The statline a bot runs unless its file says otherwise (design §6.1).
 pub const BOT_STATLINE: &str = "[HP=%h/%H,MA=%m/%M]:%r";
@@ -56,78 +56,10 @@ pub struct CharacterConfig {
     /// What a character played in MudPlay does when MudPlay drops (design §2.1).
     #[serde(default)]
     pub unattended: Unattended,
-    /// Rooms by name (`arena: 1/2150`), for the routine to use. A room may also be written
-    /// straight out wherever a place goes.
+    /// A solo bot's routine (#65): a file in `routines/`, with parameters of the
+    /// character's own, or one written here.
     #[serde(default)]
-    pub places: BTreeMap<String, String>,
-    /// A solo bot's loop (#53), or none.
-    #[serde(default)]
-    pub routine: Option<Routine>,
-}
-
-/// A solo bot's loop (#53): stay in the camp and fight, leave to rest when a rest is due,
-/// come back, and go after the hunts' monsters when they're due. Rooms are places.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Routine {
-    /// Where the bot stays and fights.
-    pub camp: String,
-    /// Where it rests. It leaves the camp when `rest.start_when_any` is met (once no fight
-    /// is going on) and comes back when `rest.stop_when_all` is.
-    pub rest_at: String,
-    /// How often the bot in the camp looks around (a bare Enter redraws the room), so it
-    /// sees monsters that arrive.
-    #[serde(default = "d_look", deserialize_with = "crate::units::duration")]
-    pub look_every: Duration,
-    #[serde(default)]
-    pub hunts: Vec<Hunt>,
-    /// What the routine's walks never use (#64, design §14.5).
-    #[serde(default)]
-    pub avoid: Avoid,
-    /// Rooms walked through only when the way round is longer than this many steps more.
-    #[serde(default)]
-    pub prefer_not: BTreeMap<String, u32>,
-}
-
-/// What a walk never uses. Rooms are places (aliases, slugs, names or keys, from the
-/// compiled room files or the character's `places:`); areas are compiled areas; exits are
-/// silvermere's exit kinds as the room files write them (`door`, `trap`, `toll`, ...).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Avoid {
-    #[serde(default)]
-    pub rooms: Vec<String>,
-    #[serde(default)]
-    pub areas: Vec<String>,
-    #[serde(default)]
-    pub exits: Vec<String>,
-}
-
-/// A monster with a known spawn room and respawn time, such as Newhaven's cave bear.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Hunt {
-    /// The monster's name. A name the room shows that ends with it counts
-    /// (`big cave bear` is a `cave bear`).
-    pub monster: String,
-    /// Its spawn room.
-    pub at: String,
-    /// How long after a kill, or a visit that found it gone, it's due again.
-    #[serde(deserialize_with = "crate::units::duration")]
-    pub every: Duration,
-    /// Go only with at least this much HP.
-    #[serde(default)]
-    pub min_hp: Option<Amount>,
-}
-
-fn d_look() -> Duration {
-    Duration::from_secs(5)
-}
-
-/// `1/2150` as `(1, 2150)`.
-fn room_key(text: &str) -> Option<(u32, u32)> {
-    let (map, room) = text.trim().split_once('/')?;
-    Some((map.trim().parse().ok()?, room.trim().parse().ok()?))
+    pub routine: Option<RoutineRef>,
 }
 
 /// A character whose MudPlay has dropped stays in the game, idle, under its engine. It
@@ -322,10 +254,21 @@ pub enum Rule {
 
 impl<'de> Deserialize<'de> for Rule {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let map = BTreeMap::<String, serde_norway::Value>::deserialize(d)?;
-        let mut it = map.into_iter();
-        let (Some((name, value)), None) = (it.next(), it.next()) else {
-            return Err(de::Error::custom("a targeting rule is a map with one key"));
+        let raw = serde_norway::Value::deserialize(d)?;
+        // A rule that takes no value may be its bare name: `kill_order`.
+        let (name, value) = match raw {
+            serde_norway::Value::String(name) => (name, serde_norway::Value::Bool(true)),
+            other => {
+                let map = BTreeMap::<String, serde_norway::Value>::deserialize(other)
+                    .map_err(de::Error::custom)?;
+                let mut it = map.into_iter();
+                let (Some((name, value)), None) = (it.next(), it.next()) else {
+                    return Err(de::Error::custom(
+                        "a targeting rule is its name, or a map with one key",
+                    ));
+                };
+                (name, value)
+            }
         };
         let flag = |v: serde_norway::Value| bool::deserialize(v).map_err(de::Error::custom);
         match name.as_str() {
@@ -479,14 +422,6 @@ fn d_stop() -> Pools {
 }
 
 impl CharacterConfig {
-    /// A place's room: a name from `places:`, or a room written out (`1/2150`).
-    pub fn place(&self, name: &str) -> Option<(u32, u32)> {
-        match self.places.get(name.trim()) {
-            Some(room) => room_key(room),
-            None => room_key(name),
-        }
-    }
-
     /// Reads and checks a character's YAML.
     pub fn from_yaml(text: &str) -> Result<Self, ConfigError> {
         let c: Self = serde_norway::from_str(text).map_err(|e| ConfigError::new(e.to_string()))?;
@@ -558,72 +493,8 @@ impl CharacterConfig {
         if self.rest.command.trim().is_empty() {
             return Err(ConfigError::at("rest.command", "a rest command is needed"));
         }
-        for (name, room) in &self.places {
-            if room_key(room).is_none() {
-                return Err(ConfigError::at(
-                    format!("places.{name}"),
-                    format!("{room:?} isn't a room like 1/2150"),
-                ));
-            }
-        }
-        if let Some(r) = &self.routine {
-            self.validate_routine(r)?;
-        }
-        Ok(())
-    }
-
-    fn validate_routine(&self, r: &Routine) -> Result<(), ConfigError> {
-        let place = |at: String, name: &str| match self.place(name) {
-            Some(_) => Ok(()),
-            None => Err(ConfigError::at(
-                at,
-                format!("{name:?} isn't in places: or a room like 1/2150"),
-            )),
-        };
-        place("routine.camp".into(), &r.camp)?;
-        place("routine.rest_at".into(), &r.rest_at)?;
-        let start = self.rest.start_when_any;
-        if start.hp.is_none() && start.mp.is_none() {
-            return Err(ConfigError::at(
-                "rest.start_when_any",
-                "a routine leaves its camp to rest when HP or MP falls below this: set one",
-            ));
-        }
-        for (i, h) in r.hunts.iter().enumerate() {
-            let at = format!("routine.hunts[{i}]");
-            if h.monster.trim().is_empty() {
-                return Err(ConfigError::at(
-                    format!("{at}.monster"),
-                    "a monster is needed",
-                ));
-            }
-            place(format!("{at}.at"), &h.at)?;
-            if h.every.is_zero() {
-                return Err(ConfigError::at(
-                    format!("{at}.every"),
-                    "must be more than 0s",
-                ));
-            }
-            check_amount(&format!("{at}.min_hp"), h.min_hp)?;
-        }
-        // Rooms and areas are looked up in the compiled room files when the bot starts.
-        for (i, kind) in r.avoid.exits.iter().enumerate() {
-            if mp_data::places::exit_kind_code(kind).is_none() {
-                return Err(ConfigError::at(
-                    format!("routine.avoid.exits[{i}]"),
-                    format!(
-                        "{kind:?} isn't an exit kind (door, gate, trap, toll, key, level, ...)"
-                    ),
-                ));
-            }
-        }
-        for (field, names) in [("rooms", &r.avoid.rooms), ("areas", &r.avoid.areas)] {
-            if let Some(i) = names.iter().position(|n| n.trim().is_empty()) {
-                return Err(ConfigError::at(
-                    format!("routine.avoid.{field}[{i}]"),
-                    "a name is needed",
-                ));
-            }
+        if let Some(RoutineRef::Inline(r)) = &self.routine {
+            crate::routine::check(r).map_err(|e| e.under("routine"))?;
         }
         Ok(())
     }

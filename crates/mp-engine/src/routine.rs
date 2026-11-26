@@ -1,11 +1,18 @@
-//! The routine (#53): a solo bot's loop, as pure logic. What the bot looks like and a clock
-//! go in; one [`Goal`] at a time comes out.
+//! The routine (#53, #65): a list of rules read top-down, as pure logic. What the bot looks
+//! like and a clock go in; one [`Goal`] at a time comes out.
 //!
-//! The loop: walk to the camp and stay there, fighting what comes. When a rest is due
-//! (`rest.start_when_any`) and no fight is going on, walk to the rest room, rest to the
-//! stop thresholds, and walk back. When a hunt is due and HP allows, walk to the monster's
-//! spawn room, kill it if it's there, and walk back; it's due again `every` after the kill,
-//! or after the visit that found it gone.
+//! **Rules.** The first rule that applies wins, and the last is what the bot does when
+//! nothing else is due:
+//! - `rest`: below its `when` line, walk to its room and rest to its `until`;
+//! - `hunt`: when due and its `when` holds, walk to the monster's spawn room, kill it if
+//!   it's there, and be done; due again `every` after the kill, or after the visit that
+//!   found it gone;
+//! - `camp`: walk to its room and stay, fighting what comes; always applies.
+//!
+//! **Taking over.** A rule's `when` says when it starts; once started it runs until it's
+//! done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
+//! (fleeing is #16). A hunt that was interrupted keeps its timer, so it applies again once
+//! its `when` holds.
 //!
 //! The routine decides only *what* to do. The session's engines carry each goal out (the
 //! walker walks, the rest engine rests, the combat engine fights), and the session tells
@@ -15,24 +22,17 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use mp_config::{Amount, Pools};
+use mp_config::{Pools, When};
 use mp_parse::Vitals;
 
 use crate::rest::below;
 use crate::walk::{RouteRules, WalkState};
 
-/// A routine's rooms and thresholds, from the character's `routine:` and `rest:`.
+/// A routine's rules, with their rooms looked up.
 #[derive(Debug, Clone)]
 pub struct RoutineSettings {
-    /// Where the bot stays and fights.
-    pub camp: (u32, u32),
-    /// Where it rests.
-    pub rest_at: (u32, u32),
-    /// Leave the camp to rest when either falls below (`rest.start_when_any`).
-    pub retreat: Pools,
-    /// How often the bot in the camp looks around.
-    pub look_every: Duration,
-    pub hunts: Vec<HuntSettings>,
+    /// Top-down: the first that applies wins.
+    pub rules: Vec<RuleSettings>,
     /// How long after a failed walk the routine tries again.
     pub retry: Duration,
     /// How long a hunted monster may stand there unfought before the hunt gives up on it.
@@ -41,13 +41,28 @@ pub struct RoutineSettings {
     pub route: RouteRules,
 }
 
+/// One rule, its rooms looked up.
+#[derive(Debug, Clone)]
+pub enum RuleSettings {
+    Rest {
+        at: (u32, u32),
+        when: When,
+        until: Pools,
+    },
+    Hunt(HuntSettings),
+    Camp {
+        at: (u32, u32),
+        look_every: Duration,
+    },
+}
+
 /// A monster with a known spawn room and respawn time.
 #[derive(Debug, Clone)]
 pub struct HuntSettings {
     pub monster: String,
     pub at: (u32, u32),
     pub every: Duration,
-    pub min_hp: Option<Amount>,
+    pub when: When,
 }
 
 /// What the routine wants done now. The session's engines carry it out.
@@ -55,10 +70,10 @@ pub struct HuntSettings {
 pub enum Goal {
     /// Walk to this room.
     Walk((u32, u32)),
-    /// Rest here, to the rest engine's stop thresholds.
-    Rest,
-    /// Stay here, look around now and then, and fight what comes.
-    Camp,
+    /// Rest here until both reach these.
+    Rest(Pools),
+    /// Stay here, look around this often, and fight what comes.
+    Camp(Duration),
     /// Attack this monster (the name as the room shows it) until it's gone.
     Kill(String),
     /// Nothing: waiting to try again, or paused.
@@ -76,6 +91,8 @@ pub enum RoutinePart {
     Killing(String),
     Stuck(String),
     Paused,
+    /// No rule applies (a routine with no camp at the end).
+    Idle,
 }
 
 impl fmt::Display for RoutinePart {
@@ -89,6 +106,7 @@ impl fmt::Display for RoutinePart {
             Self::Killing(m) => write!(f, "killing {m}"),
             Self::Stuck(why) => write!(f, "stuck ({why}); trying again soon"),
             Self::Paused => f.write_str("paused"),
+            Self::Idle => f.write_str("nothing to do"),
         }
     }
 }
@@ -108,35 +126,39 @@ pub struct Seen {
     pub walking: bool,
 }
 
+/// What the rule under way is doing.
 #[derive(Debug, Clone)]
-enum Phase {
-    ToCamp,
-    Camp,
-    ToRest,
-    Rest,
-    /// Walking to hunt `hunts[i]`.
-    Hunt(usize),
-    /// At the spawn room, the monster in it.
+enum Doing {
+    /// Walking to its room.
+    Walking,
+    /// In its room: resting, or camping.
+    Here,
+    /// In the spawn room, the monster in it.
     Kill {
-        hunt: usize,
         target: String,
         since: Instant,
         /// A fight has started since the bot got here.
         started: bool,
     },
-    Stuck {
-        why: String,
-        until: Instant,
-    },
+}
+
+#[derive(Debug, Clone)]
+struct Active {
+    rule: usize,
+    doing: Doing,
 }
 
 #[derive(Debug)]
 pub struct Routine {
     set: RoutineSettings,
-    phase: Phase,
-    /// When each hunt is due.
+    active: Option<Active>,
+    /// When each rule (each hunt) is due next.
     due: Vec<Instant>,
+    /// A failed walk, and when to try again.
+    stuck: Option<(String, Instant)>,
     paused: bool,
+    /// What the bot looked like last.
+    last: Seen,
 }
 
 /// The room's name for `monster`: the same name, or one that ends with it (`big cave
@@ -151,20 +173,39 @@ fn present(monster: &str, here: &[String]) -> Option<String> {
         .cloned()
 }
 
-impl Routine {
-    /// A routine starting now: every hunt is due at once.
-    pub fn new(set: RoutineSettings, now: Instant) -> Self {
-        let due = vec![now; set.hunts.len()];
-        Self {
-            set,
-            phase: Phase::ToCamp,
-            due,
-            paused: false,
-        }
-    }
+/// At or above `a`, out of `max`; never before a prompt.
+fn at_least(a: mp_config::Amount, cur: Option<i32>, max: Option<i32>) -> bool {
+    cur.is_some() && !below(Some(a), cur, max)
+}
 
-    pub fn look_every(&self) -> Duration {
-        self.set.look_every
+/// Whether every condition of `w` holds. One about HP or MP can't hold before a prompt.
+fn holds(w: &When, s: &Seen) -> bool {
+    if *w == When::default() {
+        return true;
+    }
+    let Some(v) = s.vitals else { return false };
+    let (hp, mp) = (Some(v.hp), v.mp);
+    w.hp_below.is_none_or(|a| below(Some(a), hp, v.max_hp))
+        && w.mp_below.is_none_or(|a| below(Some(a), mp, v.max_mp))
+        && w.hp_at_least.is_none_or(|a| at_least(a, hp, v.max_hp))
+        && w.mp_at_least.is_none_or(|a| at_least(a, mp, v.max_mp))
+}
+
+impl Routine {
+    /// A routine starting now: every hunt is due at once, and the first rule that applies
+    /// before the first prompt (usually the camp) is under way.
+    pub fn new(set: RoutineSettings, now: Instant) -> Self {
+        let due = vec![now; set.rules.len()];
+        let mut r = Self {
+            set,
+            active: None,
+            due,
+            stuck: None,
+            paused: false,
+            last: Seen::default(),
+        };
+        r.pick(&Seen::default(), now, None);
+        r
     }
 
     /// What the routine's walks keep out of.
@@ -177,19 +218,49 @@ impl Routine {
         self.paused = paused;
     }
 
+    fn applies(&self, i: usize, s: &Seen, now: Instant) -> bool {
+        match &self.set.rules[i] {
+            RuleSettings::Rest { when, .. } => holds(when, s),
+            RuleSettings::Hunt(h) => now >= self.due[i] && holds(&h.when, s),
+            RuleSettings::Camp { .. } => true,
+        }
+    }
+
+    /// The first rule that applies (but `skip`), from the top, set under way.
+    fn pick(&mut self, s: &Seen, now: Instant, skip: Option<usize>) {
+        self.active = (0..self.set.rules.len())
+            .filter(|&i| Some(i) != skip)
+            .find(|&i| self.applies(i, s, now))
+            .map(|rule| Active {
+                rule,
+                doing: Doing::Walking,
+            });
+    }
+
+    /// Done with hunt `i` for now: due again after its time, and on to what applies.
+    fn hunted(&mut self, i: usize, s: &Seen, now: Instant) {
+        if let RuleSettings::Hunt(h) = &self.set.rules[i] {
+            self.due[i] = now + h.every;
+        }
+        self.pick(s, now, None);
+    }
+
     /// What the routine wants done now.
     pub fn goal(&self) -> Goal {
-        if self.paused {
+        if self.paused || self.stuck.is_some() {
             return Goal::Wait;
         }
-        match &self.phase {
-            Phase::ToCamp => Goal::Walk(self.set.camp),
-            Phase::Camp => Goal::Camp,
-            Phase::ToRest => Goal::Walk(self.set.rest_at),
-            Phase::Rest => Goal::Rest,
-            Phase::Hunt(i) => Goal::Walk(self.set.hunts[*i].at),
-            Phase::Kill { target, .. } => Goal::Kill(target.clone()),
-            Phase::Stuck { .. } => Goal::Wait,
+        let Some(a) = &self.active else {
+            return Goal::Wait;
+        };
+        match (&self.set.rules[a.rule], &a.doing) {
+            (RuleSettings::Rest { at, .. } | RuleSettings::Camp { at, .. }, Doing::Walking) => {
+                Goal::Walk(*at)
+            }
+            (RuleSettings::Hunt(_), Doing::Kill { target, .. }) => Goal::Kill(target.clone()),
+            (RuleSettings::Hunt(h), _) => Goal::Walk(h.at),
+            (RuleSettings::Rest { until, .. }, _) => Goal::Rest(*until),
+            (RuleSettings::Camp { look_every, .. }, _) => Goal::Camp(*look_every),
         }
     }
 
@@ -197,85 +268,81 @@ impl Routine {
         if self.paused {
             return RoutinePart::Paused;
         }
-        match &self.phase {
-            Phase::ToCamp => RoutinePart::ToCamp,
-            Phase::Camp => RoutinePart::Camping,
-            Phase::ToRest => RoutinePart::ToRest,
-            Phase::Rest => RoutinePart::Resting,
-            Phase::Hunt(i) => RoutinePart::Hunting(self.set.hunts[*i].monster.clone()),
-            Phase::Kill { target, .. } => RoutinePart::Killing(target.clone()),
-            Phase::Stuck { why, .. } => RoutinePart::Stuck(why.clone()),
+        if let Some((why, _)) = &self.stuck {
+            return RoutinePart::Stuck(why.clone());
+        }
+        let Some(a) = &self.active else {
+            return RoutinePart::Idle;
+        };
+        match (&self.set.rules[a.rule], &a.doing) {
+            (RuleSettings::Rest { .. }, Doing::Walking) => RoutinePart::ToRest,
+            (RuleSettings::Rest { .. }, _) => RoutinePart::Resting,
+            (RuleSettings::Camp { .. }, Doing::Walking) => RoutinePart::ToCamp,
+            (RuleSettings::Camp { .. }, _) => RoutinePart::Camping,
+            (RuleSettings::Hunt(_), Doing::Kill { target, .. }) => {
+                RoutinePart::Killing(target.clone())
+            }
+            (RuleSettings::Hunt(h), _) => RoutinePart::Hunting(h.monster.clone()),
         }
     }
 
-    fn needs_rest(&self, s: &Seen) -> bool {
-        let Some(v) = s.vitals else { return false };
-        let r = self.set.retreat;
-        below(r.hp, Some(v.hp), v.max_hp) || below(r.mp, v.mp, v.max_mp)
-    }
-
-    /// The first hunt that is due and that the bot's HP allows.
-    fn hunt_due(&self, s: &Seen, now: Instant) -> Option<usize> {
-        let v = s.vitals?;
-        self.set.hunts.iter().enumerate().find_map(|(i, h)| {
-            let hp_ok = h.min_hp.is_none() || !below(h.min_hp, Some(v.hp), v.max_hp);
-            (now >= self.due[i] && hp_ok).then_some(i)
-        })
-    }
-
-    /// Done with `hunt` for now: due again after its time.
-    fn hunted(&mut self, hunt: usize, now: Instant) {
-        self.due[hunt] = now + self.set.hunts[hunt].every;
-        self.phase = Phase::ToCamp;
-    }
-
-    /// Looks at the bot and moves the loop on.
+    /// Looks at the bot and moves the routine on.
     pub fn update(&mut self, s: &Seen, now: Instant) {
+        self.last = s.clone();
         if self.paused {
             return;
         }
-        match &mut self.phase {
-            Phase::Stuck { until, .. } => {
-                if now >= *until {
-                    self.phase = if self.needs_rest(s) {
-                        Phase::ToRest
-                    } else {
-                        Phase::ToCamp
-                    };
-                }
+        if let Some((_, until)) = &self.stuck {
+            if now < *until {
                 return;
             }
-            Phase::ToRest | Phase::Rest => return,
-            Phase::Kill { started, .. } if s.fighting => {
-                *started = true;
-            }
-            _ => {}
+            self.stuck = None;
+            self.active = None;
         }
-        // A rest comes first, once no fight is going on (fleeing mid-fight is #16).
-        if !s.fighting && self.needs_rest(s) {
-            self.phase = Phase::ToRest;
+        let Some(a) = self.active.clone() else {
+            self.pick(s, now, None);
+            return;
+        };
+        if s.fighting
+            && let Some(Active {
+                doing: Doing::Kill { started, .. },
+                ..
+            }) = &mut self.active
+        {
+            *started = true;
+        }
+        // A rule above the one under way that now applies takes over, out of a fight.
+        if !s.fighting
+            && let Some(i) = (0..a.rule).find(|&i| self.applies(i, s, now))
+        {
+            self.active = Some(Active {
+                rule: i,
+                doing: Doing::Walking,
+            });
             return;
         }
-        match self.phase.clone() {
-            Phase::Camp => {
-                if !s.walking && s.room.is_some_and(|r| r != self.set.camp) {
-                    self.phase = Phase::ToCamp;
-                } else if !s.fighting
-                    && let Some(i) = self.hunt_due(s, now)
-                {
-                    self.phase = Phase::Hunt(i);
+        match (&self.set.rules[a.rule], &a.doing) {
+            (RuleSettings::Camp { at, .. }, Doing::Here) => {
+                // Moved away (by hand, or dragged): back to the camp.
+                if !s.walking && s.room.is_some_and(|r| r != *at) {
+                    self.active = Some(Active {
+                        rule: a.rule,
+                        doing: Doing::Walking,
+                    });
                 }
             }
-            Phase::Kill {
-                hunt,
-                target,
-                since,
-                started,
-            } if !s.fighting => match present(&target, &s.monsters) {
+            (
+                RuleSettings::Hunt(_),
+                Doing::Kill {
+                    target,
+                    since,
+                    started,
+                },
+            ) if !s.fighting => match present(target, &s.monsters) {
                 // Dead, or gone.
-                None => self.hunted(hunt, now),
-                Some(_) if !started && now.duration_since(since) >= self.set.kill_wait => {
-                    self.hunted(hunt, now);
+                None => self.hunted(a.rule, s, now),
+                Some(_) if !started && now.duration_since(*since) >= self.set.kill_wait => {
+                    self.hunted(a.rule, s, now);
                 }
                 Some(_) => {}
             },
@@ -285,37 +352,47 @@ impl Routine {
 
     /// The walk the routine asked for ended.
     pub fn walk_ended(&mut self, end: &WalkState, s: &Seen, now: Instant) {
+        self.last = s.clone();
+        let Some(a) = self.active.clone() else { return };
         match end {
             WalkState::Failed(why) => {
-                self.phase = Phase::Stuck {
-                    why: why.clone(),
-                    until: now + self.set.retry,
-                };
+                self.stuck = Some((why.clone(), now + self.set.retry));
+                self.active = None;
             }
-            WalkState::Arrived => match self.phase {
-                Phase::ToCamp => self.phase = Phase::Camp,
-                Phase::ToRest => self.phase = Phase::Rest,
-                Phase::Hunt(i) => match present(&self.set.hunts[i].monster, &s.monsters) {
+            WalkState::Arrived => match &self.set.rules[a.rule] {
+                RuleSettings::Rest { .. } | RuleSettings::Camp { .. } => {
+                    self.active = Some(Active {
+                        rule: a.rule,
+                        doing: Doing::Here,
+                    });
+                }
+                RuleSettings::Hunt(h) => match present(&h.monster, &s.monsters) {
                     Some(target) => {
-                        self.phase = Phase::Kill {
-                            hunt: i,
-                            target,
-                            since: now,
-                            started: s.fighting,
-                        };
+                        self.active = Some(Active {
+                            rule: a.rule,
+                            doing: Doing::Kill {
+                                target,
+                                since: now,
+                                started: s.fighting,
+                            },
+                        });
                     }
-                    None => self.hunted(i, now),
+                    None => self.hunted(a.rule, s, now),
                 },
-                _ => {}
             },
             _ => {}
         }
     }
 
-    /// The rest the routine asked for ended: back to the camp.
-    pub fn rest_ended(&mut self, _now: Instant) {
-        if matches!(self.phase, Phase::Rest) {
-            self.phase = Phase::ToCamp;
+    /// The rest the routine asked for ended: on to whatever else applies (the rest that
+    /// just ended aside, since what the bot looked like is a prompt behind).
+    pub fn rest_ended(&mut self, now: Instant) {
+        if let Some(a) = &self.active
+            && matches!(self.set.rules[a.rule], RuleSettings::Rest { .. })
+        {
+            let done = a.rule;
+            let last = self.last.clone();
+            self.pick(&last, now, Some(done));
         }
     }
 }

@@ -247,13 +247,43 @@ since `pro` doesn't say whether it was `custom` or `full custom`.
 
 ### A routine
 
-A bot with a `routine:` runs a loop of its own, with no one leading it. It walks to its
-camp and stays there, fighting what comes and looking around now and then. When
-`rest.start_when_any` is met and no fight is going on, it walks to `rest_at`, rests to
-`rest.stop_when_all`, and walks back. When a hunt is due and HP allows, it walks to the
-monster's room, kills it if it's there, and comes back. A hunt is due again `every` after
-the kill, or after the visit that found it gone. Name rooms once under `places:`, or write
-them out (`1/2150`) wherever a place goes. Newhaven's arena, with its cave bear:
+A bot with a `routine:` runs a loop of its own, with no one leading it. A routine is a
+file in `routines/`, shared by any character that names it: a list of rules read from the
+top, where the first that applies wins and the last is what the bot does when nothing else
+is due. Newhaven's arena, with its cave bear, as `routines/newhaven-arena.yaml`:
+
+```yaml
+schema: 1
+name: newhaven-arena
+places: newhaven             # places are looked for in this area first
+params:                      # a character may change these; used as ${name}
+  rest_below: 50%
+  bear_hp: 80%
+avoid:                       # never walked through; rooms are places, as everywhere
+  rooms: [healer]
+  exits: [trap]              # exit kinds, as the room files name them
+do:
+  - rest:                    # below the line: walk to the road and rest
+      at: road
+      when: { hp_below: "${rest_below}" }
+      until: { hp: 100% }    # the character's rest.stop_when_all when left out
+  - hunt:                    # when due and HP allows: the bear's cavern
+      monster: cave bear     # "big cave bear" counts too
+      at: dungeon:small-cavern-2156
+      every: 4m              # due again this long after a kill, or a visit that found it gone
+      when: { hp_at_least: "${bear_hp}" }
+  - camp:                    # otherwise: stay in the arena and fight what comes
+      at: arena
+      look_every: 5s         # the default
+```
+
+The rules are `rest`, `hunt` and `camp`. A rule's `when` (`hp_below`, `mp_below`,
+`hp_at_least`, `mp_at_least`) says when it starts; once started it runs until it's done,
+unless a rule above it starts, which takes over once no fight is going on. A hunt that
+was cut short is still due. `road` and `arena` are aliases in `places/newhaven.local.yaml`
+(see [Places](#places)), since Newhaven has two of each.
+
+A character names the routine, and may change its parameters:
 
 ```yaml
 schema: 1
@@ -261,30 +291,14 @@ name: Ermias
 login:
   account: Ermias
 combat:
-  targeting:
-    - kill_order: true
-    - priority: ["*"]
+  targeting: [kill_order, { priority: ["*"] }]   # a rule with no value may be a bare word
   melee: a
-rest:
-  start_when_any: { hp: 50% }
-  stop_when_all: { hp: 100% }
-places:
-  arena: 1/2150        # levels 1-3 only
-  road: 1/2146         # Narrow Road, up the stairs
-  cavern: 1/2156       # Small Cavern, through the arena's locked north door
 routine:
-  camp: arena
-  rest_at: road
-  look_every: 5s       # the default
-  avoid:               # never walked through; rooms are places, as everywhere
-    rooms: [1/2190]    # the Healer
-    exits: [trap]      # exit kinds, as the room files name them
-  hunts:
-    - monster: cave bear   # "big cave bear" counts too
-      at: cavern
-      every: 4m
-      min_hp: 80%          # go only with this much HP
+  use: newhaven-arena        # or just `routine: newhaven-arena`
+  with: { rest_below: 60% }
 ```
+
+A one-off routine may be written in the character's file instead, as `routine: { do: [...] }`.
 
 The card shows where the routine is: camping, going to rest, resting, hunting. `@stop` (or
 the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where
