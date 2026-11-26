@@ -61,6 +61,7 @@ const EXIT_TEXT: i64 = 10;
 const EXIT_GATE: i64 = 11;
 const EXIT_REMOTE: i64 = 12;
 const EXIT_TIMED: i64 = 16;
+const EXIT_LEVEL: i64 = 15;
 
 /// How an exit of silvermere type `exit_type` shows, as the world stands before anyone
 /// searches, springs a trap or opens a timed exit.
@@ -217,6 +218,32 @@ pub struct RouteRules {
     pub refused: HashSet<((i64, i64), u8)>,
     /// Rooms walked through only when the way round is longer than this many steps more.
     pub prefer_not: HashMap<(i64, i64), u32>,
+    /// The character's level, when known: a level exit (`par1` the lowest level, `par2`
+    /// the highest, 0 for none) that doesn't let it through isn't taken. Unknown, level
+    /// exits are walked and the game decides, as it does for a walker (#52).
+    pub level: Option<u32>,
+}
+
+/// Whether a level exit lets a character of `level` through, as silvermere decides it
+/// (`EXIT_LEVEL`: at least `par1`, and at most `par2` unless `par2` is 0).
+fn level_lets_through(e: &RoomExit, level: u32) -> bool {
+    let level = i64::from(level);
+    level >= e.par1 && (e.par2 == 0 || level <= e.par2)
+}
+
+/// A level exit's range in words: `levels 2 to 3`, `level 5 and up`.
+fn level_range(e: &RoomExit) -> String {
+    if e.par2 == 0 {
+        format!("level {} and up", e.par1)
+    } else {
+        format!("levels {} to {}", e.par1, e.par2)
+    }
+}
+
+/// Whether `rules` keep a walk from taking `e`, for its kind or the character's level.
+fn kept_off(e: &RoomExit, rules: &RouteRules) -> bool {
+    rules.avoid_kinds.contains(&e.exit_type)
+        || (e.exit_type == EXIT_LEVEL && rules.level.is_some_and(|l| !level_lets_through(e, l)))
 }
 
 /// Why [`GameData::route_with`] found no walk.
@@ -728,7 +755,7 @@ impl GameData {
                 if !walkable(e.exit_type)
                     || e.to_room == 0
                     || done.contains(&next)
-                    || rules.avoid_kinds.contains(&e.exit_type)
+                    || kept_off(&e, rules)
                     || rules.avoid_rooms.contains(&next)
                     || rules.refused.contains(&(here, e.dir))
                 {
@@ -774,16 +801,23 @@ impl GameData {
         let mut at = from;
         for s in &free {
             let next = (s.to_map, s.to_room);
-            let kind = self
-                .exits(at.0, at.1)?
-                .into_iter()
-                .find(|e| e.dir == s.dir)
-                .map_or(0, |e| e.exit_type);
+            let taken = self.exits(at.0, at.1)?.into_iter().find(|e| e.dir == s.dir);
+            let kind = taken.as_ref().map_or(0, |e| e.exit_type);
             let dir = DIR_WORDS[usize::from(s.dir) % DIR_WORDS.len()];
             if rules.refused.contains(&(at, s.dir)) {
                 return Ok(format!(
                     "every way {ends} is barred: the shortest goes {dir} from {}, which the game refused",
                     self.named(at)?
+                ));
+            }
+            if let (Some(e), Some(level)) = (&taken, rules.level)
+                && kind == EXIT_LEVEL
+                && !level_lets_through(e, level)
+            {
+                return Ok(format!(
+                    "every way {ends} is barred: the shortest goes {dir} from {} by an exit for {}, and the character is level {level}",
+                    self.named(at)?,
+                    level_range(e)
                 ));
             }
             if rules.avoid_kinds.contains(&kind) {

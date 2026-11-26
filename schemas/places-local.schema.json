@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An area's hand-written companion, `<area>.local.yaml`.",
+  "properties": {
+    "aliases": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Names of the user's own: `arena: 1/2150`, `road: narrow-road-2146`. The target is\nany way of naming a room except another alias.",
+      "type": "object"
+    },
+    "area": {
+      "type": "string"
+    },
+    "schema": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "area"
+  ],
+  "title": "mudparty places local file",
+  "type": "object"
+}

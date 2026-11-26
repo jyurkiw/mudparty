@@ -34,7 +34,7 @@ fn exit(kind: ExitType, target: u32, par1: u32) -> Exit {
 /// A small world:
 ///
 /// ```text
-///   1/2 Street ── east ── 1/6 Lane
+///   1/2 Street ── east ── 1/6 Lane ── east, levels 2-3 ── 1/7 Guild
 ///      │ south              │ south
 ///   1/1 Square ── east, a door ── 1/3 Shop
 ///      │  up: hidden 1/4 Loft
@@ -66,8 +66,18 @@ async fn world() -> (TestDb, GameData, tempfile::TempDir) {
     lane.name = "Lane".into();
     lane.exits[W] = exit(ExitType::Normal, 2, 0);
     lane.exits[S] = exit(ExitType::Normal, 3, 0);
+    // East: a level exit, levels 2 to 3.
+    lane.exits[E] = Exit {
+        par2: 3,
+        ..exit(ExitType::Level, 7, 2)
+    };
     db.rooms().insert(&lane).await.unwrap();
-    for (key, name) in [((1, 4), "Loft"), ((1, 5), "Vault"), ((2, 1), "Far Room")] {
+    for (key, name) in [
+        ((1, 4), "Loft"),
+        ((1, 5), "Vault"),
+        ((2, 1), "Far Room"),
+        ((1, 7), "Guild"),
+    ] {
         let mut r = blank::clear_room(RoomKey::new(key.0, key.1));
         r.name = name.into();
         db.rooms().insert(&r).await.unwrap();
@@ -205,6 +215,37 @@ async fn a_room_that_costs_more_is_gone_round_when_it_can_be() {
         };
         let r = gd.route_with((1, 2), (1, 3), &rules).unwrap();
         assert_eq!(through(&r)[0], way, "costly {dear:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_level_exit_is_walked_only_at_a_level_it_lets_through() {
+    let (_t, gd, _dir) = world().await;
+    // No level given: the walker tries it, as the game decides (#52).
+    let r = gd
+        .route_with((1, 2), (1, 7), &RouteRules::default())
+        .unwrap();
+    assert_eq!(through(&r), [(1, 6), (1, 7)]);
+    for ok in [2, 3] {
+        let rules = RouteRules {
+            level: Some(ok),
+            ..Default::default()
+        };
+        assert!(gd.route_with((1, 2), (1, 7), &rules).is_ok(), "level {ok}");
+    }
+    for no in [1, 4] {
+        let rules = RouteRules {
+            level: Some(no),
+            ..Default::default()
+        };
+        match gd.route_with((1, 2), (1, 7), &rules) {
+            Err(RouteError::NoWay(why)) => {
+                assert!(why.contains("levels 2 to 3"), "{why}");
+                assert!(why.contains(&format!("level {no}")), "{why}");
+                assert!(why.contains("Lane"), "{why}");
+            }
+            other => panic!("level {no}: {other:?}"),
+        }
     }
 }
 

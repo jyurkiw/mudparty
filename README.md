@@ -38,6 +38,11 @@ The server keeps everything in one folder, the *data root*:
   secrets.yaml           account passwords
   characters/
     <Name>.yaml          one file per character, named after it
+  routines/
+    <name>.yaml          what a solo bot does, shared between characters
+  places/
+    <area>.yaml          the compiled room files (places compile)
+    <area>.local.yaml    your own names for rooms
   gamedata/
     gamedata.sqlite      imported from silvermere's database on first start
   logs/
@@ -348,9 +353,64 @@ aliases:
 
 A room is named by an alias, its slug (`weapons-shop`, or `dungeon:entrance` in another
 area), the game's own name while only one room has it (`Newhaven, Weapons Shop`), or its key
-(`1/2141`). A name that could be several rooms is an error that lists them. Section 14 of
+(`1/2141`). A name that could be several rooms is an error that lists them.
+
+Wherever a file names a place, it may name the room by number and keep its name beside it:
+`at: { room: 1/2150, name: "Newhaven, Arena" }`. The number is what's used. The name is for
+you and for `check` (below), which says when the world's name for that room has changed, as
+it would if the world were renumbered. Section 14 of
 [the design](design/architecture.md#14-scripts-places-routes-routines-and-the-map-designed-2026-11-26)
 has the rest.
+
+## Writing the files by hand
+
+**Schemas.** `schemas/` holds a JSON Schema for each file you write in YAML:
+`character.schema.json`, `routine.schema.json` and `places-local.schema.json`. With them an
+editor that has a YAML extension (VS Code's Red Hat YAML, for one) completes keys, shows
+each setting's description, and marks mistakes as you type. Point a file to its schema with
+a first line such as `# yaml-language-server: $schema=../schemas/routine.schema.json`, or
+point whole folders to them in the editor's settings:
+
+```json
+"yaml.schemas": {
+  "E:/Repos/mudparty/schemas/character.schema.json": "characters/*.yaml",
+  "E:/Repos/mudparty/schemas/routine.schema.json": "routines/*.yaml",
+  "E:/Repos/mudparty/schemas/places-local.schema.json": "places/*.local.yaml"
+}
+```
+
+`mudparty-server schema --out <folder>` writes them again, from the version of mudparty you
+run. A schema checks how a file is written. What it means is checked when it's read, and
+against the world by `check`.
+
+**`check`.** `mudparty-server check <file> [--level <n>] [--root <data root>]` reads a
+character's, a routine's or a places local file as the server would, and prints it with
+everything filled in:
+
+- every setting, defaults too;
+- a routine's parameters;
+- each place as the room it names, in the long form;
+- where each item of gear would be bought, in comments at the end.
+
+A character's routine is printed inline, so what's printed is itself a file that reads the
+same. Then `check` says, by file and field, what would stop the bot, and exits 1 if
+anything would:
+
+```text
+routines/newhaven-arena.yaml: do[1].at: every way from Newhaven, Arena (1/2150) to Newhaven, Healer (1/2190) is barred: the shortest goes west from Newhaven, Narrow Road (1/2146) by an exit for levels 1 to 3, and the character is level 5
+characters/Ermias.yaml: gear[0]: no shop selling "club" can be walked to: ...
+```
+
+It checks three things:
+
+- **Every place can be walked to and back** from the place of the routine's last rule,
+  keeping to its `avoid` and `prefer_not`. With a gear rule, so can a shop for each item.
+- **Level exits.** With `--level`, a walk through a level exit that won't let the character
+  through counts as no walk. Without it, the game decides on the way.
+- **Rooms by number** whose names have changed.
+
+`check` opens the game data as the server does, importing it from `silvermere.db` first if
+`gamedata/` hasn't got it yet.
 
 ## Running
 

@@ -1,0 +1,397 @@
+{
+  "$defs": {
+    "Amount": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "pattern": "^\\s*(\\d+\\s*%?|\\$\\{[^}]+\\})\\s*$",
+          "type": "string"
+        }
+      ],
+      "description": "A percentage of the maximum (`50%`) or a number of points."
+    },
+    "Avoid": {
+      "additionalProperties": false,
+      "description": "What a walk never uses. Rooms are places (aliases, slugs, names or keys, from the\ncompiled room files); areas are compiled areas; exits are silvermere's exit kinds as the\nroom files write them (`door`, `trap`, `toll`, ...).",
+      "properties": {
+        "areas": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exits": {
+          "default": [],
+          "items": {
+            "enum": [
+              "normal",
+              "spell",
+              "key",
+              "item",
+              "toll",
+              "action",
+              "hidden",
+              "door",
+              "map_change",
+              "trap",
+              "text",
+              "gate",
+              "remote_action",
+              "class",
+              "race",
+              "level",
+              "timed",
+              "ticket",
+              "user_count",
+              "block_guard",
+              "alignment",
+              "delay",
+              "cast",
+              "ability",
+              "spell_trap"
+            ]
+          },
+          "type": "array"
+        },
+        "rooms": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Place"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "CampRule": {
+      "additionalProperties": false,
+      "description": "Stay in a room and fight what comes.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Place"
+        },
+        "look_every": {
+          "default": "5s",
+          "description": "How often the bot looks around (a bare Enter redraws the room), so it sees monsters\nthat arrive.",
+          "pattern": "^\\s*(\\d+(ms|s|m|h)|\\$\\{[^}]+\\})\\s*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    },
+    "GearRule": {
+      "additionalProperties": false,
+      "description": "Keep the character's `gear:` (#55): check the inventory when the routine starts and\nafter each rest, put on what's carried but not in use, and buy what's missing.",
+      "properties": {
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "HuntRule": {
+      "additionalProperties": false,
+      "description": "A monster with a known spawn room and respawn time, such as Newhaven's cave bear.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Place",
+          "description": "Its spawn room."
+        },
+        "every": {
+          "description": "How long after a kill, or a visit that found it gone, it's due again.",
+          "pattern": "^\\s*(\\d+(ms|s|m|h)|\\$\\{[^}]+\\})\\s*$",
+          "type": "string"
+        },
+        "monster": {
+          "description": "The monster's name. A name the room shows that ends with it counts (`big cave bear`\nis a `cave bear`).",
+          "type": "string"
+        },
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {}
+        }
+      },
+      "required": [
+        "monster",
+        "at",
+        "every"
+      ],
+      "type": "object"
+    },
+    "Place": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "description": "Its name, checked against the world's by `check`.",
+              "type": "string"
+            },
+            "room": {
+              "description": "The room's number, map/room.",
+              "pattern": "^\\s*\\d+\\s*/\\s*\\d+\\s*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "room"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A room: an alias, a slug (`weapons-shop`, `dungeon:entrance`), the game's name, a key (`1/2150`), or { room: 1/2150, name: \"Newhaven, Arena\" }."
+    },
+    "Pools": {
+      "additionalProperties": false,
+      "description": "HP and MP amounts; either may be left out.",
+      "properties": {
+        "hp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RestRule": {
+      "additionalProperties": false,
+      "description": "Walk to a room and rest there.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Place"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pools"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rest until both reach these; the character's `rest.stop_when_all` when left out."
+        },
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {},
+          "description": "Left out, it's refused by the check, which says what it needs."
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    },
+    "Rule": {
+      "anyOf": [
+        {
+          "const": "gear"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "rest": {
+              "$ref": "#/$defs/RestRule"
+            }
+          },
+          "required": [
+            "rest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hunt": {
+              "$ref": "#/$defs/HuntRule"
+            }
+          },
+          "required": [
+            "hunt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "camp": {
+              "$ref": "#/$defs/CampRule"
+            }
+          },
+          "required": [
+            "camp"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "gear": {
+              "$ref": "#/$defs/GearRule"
+            }
+          },
+          "required": [
+            "gear"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A rule: a map with one key (rest, hunt, camp or gear), or the bare word `gear`."
+    },
+    "When": {
+      "additionalProperties": false,
+      "description": "When a rule starts. Every condition given must hold; none given always holds. A rule\nthat has started goes on until it's done, unless a rule above it starts.",
+      "properties": {
+        "hp_at_least": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hp_below": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mp_at_least": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mp_below": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A routine file as written, its parameters already filled in.",
+  "properties": {
+    "avoid": {
+      "$ref": "#/$defs/Avoid",
+      "default": {
+        "areas": [],
+        "exits": [],
+        "rooms": []
+      },
+      "description": "What its walks never use."
+    },
+    "do": {
+      "description": "Its rules, read top-down: the first that applies wins.",
+      "items": {
+        "$ref": "#/$defs/Rule"
+      },
+      "type": "array"
+    },
+    "name": {
+      "default": null,
+      "description": "The routine's name; the file's name when left out.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "params": {
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      },
+      "default": {},
+      "description": "Its parameters and their defaults, used as `${name}` in any value; a character may\nset them with `with:`.",
+      "type": "object"
+    },
+    "places": {
+      "default": null,
+      "description": "The area its places are looked for in first.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prefer_not": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "pattern": "^\\$\\{[^}]+\\}$",
+            "type": "string"
+          }
+        ]
+      },
+      "default": {},
+      "description": "Rooms walked through only when the way round is longer than this many steps more.",
+      "type": "object"
+    },
+    "schema": {
+      "default": null,
+      "description": "The file's format: 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "do"
+  ],
+  "title": "mudparty routine file",
+  "type": "object"
+}

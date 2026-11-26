@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 rusqlite.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
 sha2.workspace = true

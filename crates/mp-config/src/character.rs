@@ -1,30 +1,36 @@
 //! A character's YAML (design §7.3, §6.4, §6.6).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use mp_parse::Statline;
-use serde::{Deserialize, Deserializer, de};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::error::ConfigError;
+use crate::place::Place;
 use crate::routine::RoutineRef;
+use crate::schema::{amount_schema, one_key};
 
 /// The statline a bot runs unless its file says otherwise (design §6.1).
 pub const BOT_STATLINE: &str = "[HP=%h/%H,MA=%m/%M]:%r";
 
 /// One character's file: a bot's, or the main character's shorter one.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "mudparty character file")]
 pub struct CharacterConfig {
     pub schema: u32,
     pub name: String,
     /// The class, checked against game data.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// Start as a headless bot when the server starts.
     #[serde(default)]
     pub autostart: bool,
     /// How a bot logs in; the main character logs in through MudPlay and has none.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<Login>,
     /// The statline template: set by a bot, read for the main character. Any template the
     /// prompt matcher can read will do. The tokens, as silvermere's `SET STATLINE CUSTOM`
@@ -58,7 +64,7 @@ pub struct CharacterConfig {
     pub unattended: Unattended,
     /// A solo bot's routine (#65): a file in `routines/`, with parameters of the
     /// character's own, or one written here.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineRef>,
     /// What the character carries (#55). A routine's `gear` rule keeps it so.
     #[serde(default)]
@@ -66,7 +72,7 @@ pub struct CharacterConfig {
 }
 
 /// One item of a character's gear.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Gear {
     /// The item's name, as the game lists it (`padded vest`).
@@ -76,12 +82,12 @@ pub struct Gear {
     pub how: GearUse,
     /// The shop to buy it at, a place; left out, a shop the compiled room files say sells
     /// it.
-    #[serde(default)]
-    pub at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Place>,
 }
 
 /// How an item is put to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GearUse {
     Wield,
@@ -90,12 +96,17 @@ pub enum GearUse {
 
 /// A character whose MudPlay has dropped stays in the game, idle, under its engine. It
 /// sets no statline of its own, so the user's comes back unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Unattended {
     /// Hang up when HP falls below this (`30%`, or points), after recording where the
     /// character is, so it can be found and rescued. `none` never hangs up.
-    #[serde(default = "d_hang_up", deserialize_with = "opt_amount")]
+    #[serde(
+        default = "d_hang_up",
+        deserialize_with = "opt_amount",
+        serialize_with = "ser_opt_amount"
+    )]
+    #[schemars(schema_with = "opt_amount_schema")]
     pub hang_up_below: Option<Amount>,
 }
 
@@ -130,7 +141,20 @@ fn opt_amount<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Amount>, D::Erro
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// An [`Amount`], or `none`, as [`opt_amount`] reads it.
+fn ser_opt_amount<S: Serializer>(a: &Option<Amount>, s: S) -> Result<S::Ok, S::Error> {
+    match a {
+        None => s.serialize_str("none"),
+        Some(a) => a.serialize(s),
+    }
+}
+
+fn opt_amount_schema(g: &mut SchemaGenerator) -> Schema {
+    let amount = g.subschema_for::<Amount>();
+    json_schema!({ "anyOf": [{ "const": "none" }, amount] })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
     /// The account name; its password is `secrets.yaml` → `accounts.<account>`.
@@ -151,7 +175,7 @@ pub enum LoginSteps {
 }
 
 /// Wait for `wait`, then send `send` (`{account}` and `{password}` filled in).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LoginStep {
     pub wait: String,
@@ -176,7 +200,30 @@ impl<'de> Deserialize<'de> for LoginSteps {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+impl Serialize for LoginSteps {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::DefaultSilvermere => s.serialize_str("default-silvermere"),
+            Self::Steps(steps) => steps.serialize(s),
+        }
+    }
+}
+
+impl JsonSchema for LoginSteps {
+    fn schema_name() -> Cow<'static, str> {
+        "LoginSteps".into()
+    }
+
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        let steps = g.subschema_for::<Vec<LoginStep>>();
+        json_schema!({
+            "description": "`default-silvermere`, or a list of { wait, send }.",
+            "anyOf": [{ "const": "default-silvermere" }, steps]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PartyRole {
     #[default]
@@ -184,11 +231,11 @@ pub enum PartyRole {
     Leader,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Party {
     /// The leader to join after login.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader: Option<String>,
     /// Have the server inject `invite <bot>` when the leader is the proxied main character.
     #[serde(default)]
@@ -197,14 +244,14 @@ pub struct Party {
     pub role: PartyRole,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
     Telepath,
     Gangpath,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Remote {
     /// Who may send @ commands.
@@ -227,7 +274,7 @@ impl Default for Remote {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Automation {
     #[serde(default = "yes")]
@@ -248,7 +295,7 @@ impl Default for Automation {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Combat {
     /// Evaluated top-down; the first rule naming a monster in the room wins.
@@ -261,7 +308,7 @@ pub struct Combat {
     pub room_tiers: Vec<RoomTier>,
     #[serde(default)]
     pub melee: Melee,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stealth_opener: Option<StealthOpener>,
 }
 
@@ -311,7 +358,50 @@ impl<'de> Deserialize<'de> for Rule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+impl Serialize for Rule {
+    /// A flag that's on as its bare name, as it may be written; the rest as a one-key map.
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let (name, on) = match self {
+            Self::KillOrder(on) => ("kill_order", *on),
+            Self::AssistLeader(on) => ("assist_leader", *on),
+            Self::FightBack(on) => ("fight_back", *on),
+            Self::Priority(names) => {
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_entry("priority", names)?;
+                return m.end();
+            }
+        };
+        if on {
+            return s.serialize_str(name);
+        }
+        let mut m = s.serialize_map(Some(1))?;
+        m.serialize_entry(name, &on)?;
+        m.end()
+    }
+}
+
+impl JsonSchema for Rule {
+    fn schema_name() -> Cow<'static, str> {
+        "TargetingRule".into()
+    }
+
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        let flag = g.subschema_for::<bool>();
+        let names = g.subschema_for::<Vec<String>>();
+        json_schema!({
+            "description": "A targeting rule: its name, or a map with one key.",
+            "anyOf": [
+                { "enum": ["kill_order", "assist_leader", "fight_back"] },
+                one_key("kill_order", flag.clone()),
+                one_key("assist_leader", flag.clone()),
+                one_key("fight_back", flag),
+                one_key("priority", names)
+            ]
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Tier {
     /// The short name the game accepts.
@@ -320,7 +410,7 @@ pub struct Tier {
     pub min_mp: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RoomTier {
     pub spell: String,
@@ -347,7 +437,29 @@ impl<'de> Deserialize<'de> for Melee {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+impl Serialize for Melee {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::None => s.serialize_str("none"),
+            Self::Command(c) => s.serialize_str(c),
+        }
+    }
+}
+
+impl JsonSchema for Melee {
+    fn schema_name() -> Cow<'static, str> {
+        "Melee".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "The attack command when no tier fits (`a`, `bs`), or `none`.",
+            "type": "string"
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Require {
     Sneaking,
@@ -356,7 +468,7 @@ pub enum Require {
 }
 
 /// The fork's spell backstab, for Avenger and Assassin bots.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StealthOpener {
     pub spell: String,
@@ -390,17 +502,37 @@ impl<'de> Deserialize<'de> for Amount {
     }
 }
 
+impl Serialize for Amount {
+    /// `50%`, or a bare number of points.
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Percent(p) => s.serialize_str(&format!("{p}%")),
+            Self::Points(n) => s.serialize_i32(*n),
+        }
+    }
+}
+
+impl JsonSchema for Amount {
+    fn schema_name() -> Cow<'static, str> {
+        "Amount".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        amount_schema()
+    }
+}
+
 /// HP and MP amounts; either may be left out.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Pools {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hp: Option<Amount>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mp: Option<Amount>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rest {
     /// Start when either falls below.
@@ -453,6 +585,12 @@ impl CharacterConfig {
         let c: Self = serde_norway::from_str(text).map_err(|e| ConfigError::new(e.to_string()))?;
         c.validate()?;
         Ok(c)
+    }
+
+    /// The character as YAML, every setting written out, defaults too: what `check` prints
+    /// (#66). It reads back the same.
+    pub fn to_yaml(&self) -> String {
+        serde_norway::to_string(self).expect("a character always writes")
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -526,7 +664,7 @@ impl CharacterConfig {
                     "an item is needed",
                 ));
             }
-            if g.at.as_ref().is_some_and(|a| a.trim().is_empty()) {
+            if g.at.as_ref().is_some_and(Place::is_blank) {
                 return Err(ConfigError::at(
                     format!("gear[{i}].at"),
                     "a place is needed",
