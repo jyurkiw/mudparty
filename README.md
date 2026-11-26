@@ -277,7 +277,7 @@ do:
       look_every: 5s         # the default
 ```
 
-The rules are `rest`, `hunt` and `camp`. A rule's `when` (`hp_below`, `mp_below`,
+The rules are `rest`, `hunt`, `camp` and `gear` (below). A rule's `when` (`hp_below`, `mp_below`,
 `hp_at_least`, `mp_at_least`) says when it starts; once started it runs until it's done,
 unless a rule above it starts, which takes over once no fight is going on. A hunt that
 was cut short is still due. `road` and `arena` are aliases in `places/newhaven.local.yaml`
@@ -296,9 +296,30 @@ combat:
 routine:
   use: newhaven-arena        # or just `routine: newhaven-arena`
   with: { rest_below: 60% }
+gear:                        # what it carries, kept by the routine's gear rule
+  - { item: club, use: wield }
+  - { item: padded vest, use: wear }
+  - { item: padded pants, use: wear, at: armour-shop }   # at: a shop of your choosing
 ```
 
 A one-off routine may be written in the character's file instead, as `routine: { do: [...] }`.
+
+A `gear` rule (`- gear`, or `- gear: { when: {...} }`) keeps the character's `gear:`. When
+the routine starts and after each rest, it looks at the inventory. An item carried but not
+in use is put on where the bot stands. A missing one is bought at a shop that sells it, as
+the compiled room files say (those in the routine's `places` area first), and put on; then
+it looks again. An item it can't get (no money, can't use it, no shop sells it, no way
+there) is skipped and noted on the card, and not tried again until the bot restarts. Put
+`gear` at the top of a new character's routine, so it gears up before it fights:
+
+```yaml
+schema: 1
+name: newhaven-start
+places: newhaven
+do:
+  - gear
+  - camp: { at: arena }
+```
 
 The card shows where the routine is: camping, going to rest, resting, hunting. `@stop` (or
 the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where

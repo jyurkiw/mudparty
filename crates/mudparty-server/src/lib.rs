@@ -27,10 +27,10 @@ use mp_config::{
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    AutoSwitch, CombatSettings, Command, Effect, HuntSettings, Inviter, LoginSettings, Offline,
-    PartySettings, RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, RouteRules,
-    RoutineSettings, RuleSettings, Seat, SessionHandle, SessionSpec, SessionState, Upstream, spawn,
-    spawn_seated,
+    AutoSwitch, CombatSettings, Command, Effect, GearSettings, HuntSettings, Inviter,
+    LoginSettings, Offline, PartySettings, RemoteSettings, Report, RestSettings, RoomBook,
+    RoomInfo, RouteRules, RoutineSettings, RuleSettings, Seat, SessionHandle, SessionSpec,
+    SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -1032,6 +1032,29 @@ impl Server {
                     at: at(field, &camp.at)?,
                     look_every: camp.look_every,
                 },
+                // The character's gear, each item with the shops to buy it at: the one its
+                // `at:` names, or those the compiled room files say sell it.
+                RuleSpec::Gear(g) => {
+                    let mut items = Vec::new();
+                    for (j, gear) in c.gear.iter().enumerate() {
+                        let shops = match &gear.at {
+                            Some(shop) => vec![
+                                self.place(shop, area)
+                                    .map_err(|e| format!("{}: gear[{j}].at: {e}", c.name))?,
+                            ],
+                            None => self.places.shops_selling(&gear.item, area),
+                        };
+                        items.push(GearSettings {
+                            item: gear.item.clone(),
+                            how: gear.how,
+                            shops,
+                        });
+                    }
+                    RuleSettings::Gear {
+                        items,
+                        when: g.when,
+                    }
+                }
             });
         }
         Ok(Some(RoutineSettings {

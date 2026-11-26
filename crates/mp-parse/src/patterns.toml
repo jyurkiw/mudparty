@@ -304,6 +304,58 @@ event = "PoisonTick"
 keys = ["poison_tick"]
 re = '^You feel ill\.$'
 
+# ----- shops and gear (#55) -------------------------------------------------------------
+
+# The price is ` <n> <coin>` words, or ` Free`; only the item matters.
+[[pattern]]
+event = "Bought"
+keys = ["shop_bought"]
+re = '^You just bought (?P<item>.+) for.*\.$'
+
+[[pattern]]
+event = "CannotAfford"
+keys = ["shop_cannot_afford"]
+re = '^You cannot afford (?P<item>.+)\.$'
+
+[[pattern]]
+event = "BuyRefused"
+keys = ["shop_unknown", "shop_cannot_buy", "carry_too_much"]
+re = '^(?P<text>.+ is not a known item\.|You cannot buy .+ here!|You cannot carry that much!)$'
+
+[[pattern]]
+event = "Equipped"
+keys = ["wield_ok", "wear_ok"]
+re = '^You are now (?:holding|wearing) (?P<item>.+)\.$'
+
+[[pattern]]
+event = "EquipRefused"
+keys = ["wear_no_room", "wear_forbidden", "weapon_forbidden", "wear_not_have_any"]
+re = '^(?P<text>You have no more room to wear that item!|You may not wear that item!|You may not use that weapon\.|You do not have any .+\.)$'
+
+# INVENTORY: the carried list (wrapped at 79 columns, so it may run onto the next lines),
+# the keys line, `Wealth:` and `Encumbrance:` (silvermere display/inventory.rs). Nothing!
+# comes first, since the list's own pattern would read it too.
+[[pattern]]
+event = "CarryingNothing"
+keys = ["inv_carrying_nothing"]
+re = '^You are carrying Nothing!$'
+
+[[pattern]]
+event = "Carrying"
+keys = ["inv_carrying"]
+re = '^You are carrying (?P<items>.+)$'
+
+[[pattern]]
+event = "KeysLine"
+keys = ["inv_keys_list", "keys_none"]
+re = '^You have (?:no keys\.|the following keys: .*\.)$'
+
+[[pattern]]
+event = "Wealth"
+keys = ["inv_wealth"]
+re = '^Wealth: (?P<copper>\d+) '
+numbers = ["copper"]
+
 # ----- where and how far --------------------------------------------------------------
 
 # `/room` answers with the bare key through the fork's text line; a `/room <dir>` with no

@@ -9,6 +9,7 @@ mod remote;
 mod rest;
 mod routine;
 mod session;
+mod shop;
 mod walk;
 
 pub use combat::{Combat, CombatSettings};
@@ -20,9 +21,12 @@ pub use remote::{
     exp_reply, status_reply, where_reply,
 };
 pub use rest::{RestSettings, Rester};
-pub use routine::{Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen};
+pub use routine::{
+    GearSettings, Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen,
+};
 pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,
 };
+pub use shop::{Carried, EquipState, Equipper, InventoryReader, parse_carried};
 pub use walk::{RouteRules, WalkState, WalkStep, Walker};

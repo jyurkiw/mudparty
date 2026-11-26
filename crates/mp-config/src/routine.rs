@@ -60,12 +60,23 @@ pub struct Avoid {
     pub exits: Vec<String>,
 }
 
-/// One rule, written as a one-key map: `- rest: { at: road, when: { hp_below: 50% } }`.
+/// One rule, written as a one-key map: `- rest: { at: road, when: { hp_below: 50% } }`, or
+/// a bare word for one with nothing to say: `- gear`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleSpec {
     Rest(RestRule),
     Hunt(HuntRule),
     Camp(CampRule),
+    Gear(GearRule),
+}
+
+/// Keep the character's `gear:` (#55): check the inventory when the routine starts and
+/// after each rest, put on what's carried but not in use, and buy what's missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GearRule {
+    #[serde(default)]
+    pub when: When,
 }
 
 /// When a rule starts. Every condition given must hold; none given always holds. A rule
@@ -129,18 +140,29 @@ fn d_look() -> Duration {
 
 impl<'de> Deserialize<'de> for RuleSpec {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let map = BTreeMap::<String, Value>::deserialize(d)?;
-        let mut it = map.into_iter();
-        let (Some((name, value)), None) = (it.next(), it.next()) else {
-            return Err(de::Error::custom("a rule is a map with one key"));
+        let raw = Value::deserialize(d)?;
+        let (name, value) = match raw {
+            Value::String(name) => (name, Value::Mapping(Default::default())),
+            other => {
+                let map =
+                    BTreeMap::<String, Value>::deserialize(other).map_err(de::Error::custom)?;
+                let mut it = map.into_iter();
+                let (Some((name, value)), None) = (it.next(), it.next()) else {
+                    return Err(de::Error::custom(
+                        "a rule is its name, or a map with one key",
+                    ));
+                };
+                (name, value)
+            }
         };
         let e = de::Error::custom;
         match name.as_str() {
             "rest" => RestRule::deserialize(value).map(Self::Rest).map_err(e),
             "hunt" => HuntRule::deserialize(value).map(Self::Hunt).map_err(e),
             "camp" => CampRule::deserialize(value).map(Self::Camp).map_err(e),
+            "gear" => GearRule::deserialize(value).map(Self::Gear).map_err(e),
             other => Err(de::Error::custom(format!(
-                "unknown rule `{other}`: rest, hunt or camp"
+                "unknown rule `{other}`: rest, hunt, camp or gear"
             ))),
         }
     }
@@ -347,6 +369,7 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
                 check_when(&at, &h.when)?;
             }
             RuleSpec::Camp(c) => place(&c.at)?,
+            RuleSpec::Gear(g) => check_when(&at, &g.when)?,
         }
         // A rule below one that always applies would never run.
         if let Some(j) = r.rules[..i].iter().position(always) {
@@ -379,7 +402,7 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
 fn always(rule: &RuleSpec) -> bool {
     match rule {
         RuleSpec::Camp(_) => true,
-        RuleSpec::Rest(_) | RuleSpec::Hunt(_) => false,
+        RuleSpec::Rest(_) | RuleSpec::Hunt(_) | RuleSpec::Gear(_) => false,
     }
 }
 

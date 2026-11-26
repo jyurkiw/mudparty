@@ -35,10 +35,14 @@ use crate::remote::{
 };
 use crate::rest::{RestSettings, Rester};
 use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen};
+use crate::shop::{EquipState, Equipper, InventoryReader};
 use crate::walk::{RouteRules, WalkState, Walker};
 
 /// How long a walk's line may go unanswered before the walker asks where it is again.
 const WALK_STEP_WAIT: Duration = Duration::from_secs(10);
+
+/// How long `i`, a `buy` or a `wield`/`wear` may go unanswered before it's sent again.
+const GEAR_WAIT: Duration = Duration::from_secs(10);
 
 /// What a session needs to run.
 #[derive(Debug, Clone)]
@@ -272,6 +276,8 @@ pub enum Report {
     Walk(WalkState),
     /// Where the routine is (#53).
     Routine(RoutinePart),
+    /// Something the routine says for the card: an item of gear skipped, and why (#55).
+    RoutineNote(String),
 }
 
 /// A routine and the goal the session is carrying out for it (#53).
@@ -285,6 +291,11 @@ struct Running {
     resting: bool,
     last_look: Instant,
     shown: Option<RoutinePart>,
+    /// When `i` went for the routine's gear check, while its answer is awaited.
+    asked_inventory: Option<Instant>,
+    inventory: InventoryReader,
+    /// Buying and putting on an item, for the routine.
+    equipper: Option<Equipper>,
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -741,6 +752,49 @@ impl Runner {
         None
     }
 
+    /// Feeds the routine's gear steps (#55) the next item the game sent, or time passing
+    /// (`item` none): the inventory it asked for, and how a buy and equip went.
+    fn feed_gear(
+        &mut self,
+        run: &mut Running,
+        item: Option<&Item>,
+        pacer: &mut Pacer,
+        now: Instant,
+    ) {
+        match (item, run.asked_inventory) {
+            (Some(i), Some(_)) => {
+                if let Some(carried) = run.inventory.on_item(i) {
+                    run.asked_inventory = None;
+                    self.decision("inventory", json!({"carried": format!("{carried:?}")}));
+                    run.routine.inventory(&carried, now);
+                }
+            }
+            (None, Some(at)) if now.duration_since(at) >= GEAR_WAIT => {
+                pacer.push("i");
+                run.asked_inventory = Some(now);
+            }
+            _ => {}
+        }
+        if let Some(e) = &mut run.equipper {
+            let lines = match item {
+                Some(i) => e.on_item(i, now),
+                None => e.on_tick(now),
+            };
+            for line in lines {
+                pacer.push(line);
+            }
+            if e.done() {
+                let result = match e.state() {
+                    EquipState::Failed(why) => Err(why),
+                    _ => Ok(()),
+                };
+                self.decision("equipped", json!({"result": format!("{result:?}")}));
+                run.equipper = None;
+                run.routine.equip_ended(result, now);
+            }
+        }
+    }
+
     /// Moves the routine on and starts the goal it wants, if that changed (#53). `ended`:
     /// how a walk that just finished ended.
     #[allow(clippy::too_many_arguments)]
@@ -786,6 +840,9 @@ impl Runner {
                 "routine_goal",
                 json!({"goal": format!("{goal:?}"), "was": format!("{:?}", run.goal)}),
             );
+            // A gear step the routine no longer wants is let go.
+            run.equipper = None;
+            run.asked_inventory = None;
             // A walk the routine started and no longer wants is called off.
             if run.walking {
                 run.walking = false;
@@ -831,6 +888,18 @@ impl Runner {
                     }
                 }
                 Goal::Camp(_) => run.last_look = now,
+                Goal::Inventory => {
+                    pacer.push("i");
+                    run.asked_inventory = Some(now);
+                    run.inventory = InventoryReader::default();
+                }
+                Goal::Equip { item, how, buy } => {
+                    let mut e = Equipper::new(item, *how, *buy, GEAR_WAIT);
+                    for line in e.start(now) {
+                        pacer.push(line);
+                    }
+                    run.equipper = Some(e);
+                }
                 Goal::Wait => {}
             }
             self.watch_walk(walker, walk_seen);
@@ -844,6 +913,10 @@ impl Runner {
         {
             run.last_look = now;
             pacer.push("");
+        }
+        for note in run.routine.take_notes() {
+            self.event("routine_note", json!({"note": note}));
+            self.report(Report::RoutineNote(note));
         }
         let part = run.routine.part();
         if run.shown.as_ref() != Some(&part) {
@@ -1005,6 +1078,9 @@ impl Runner {
                 resting: false,
                 last_look: Instant::now(),
                 shown: None,
+                asked_inventory: None,
+                inventory: InventoryReader::default(),
+                equipper: None,
             });
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
@@ -1251,6 +1327,7 @@ impl Runner {
                         }
                         let ended = self.watch_walk(&mut walker, &mut walk_seen);
                         if let Some(run) = running.as_mut().filter(|_| driving && !unattended) {
+                            self.feed_gear(run, Some(&t.item), &mut pacer, now);
                             self.drive_routine(run, ended, &mut pacer, &mut walker, &mut walk_seen, &mut combat, &mut rester, last_vitals, room_now, now);
                         }
                         self.watch_states(&party, &rester, &combat, &mut seen);
@@ -1459,6 +1536,7 @@ impl Runner {
                         }
                         let ended = self.watch_walk(&mut walker, &mut walk_seen);
                         if let Some(run) = running.as_mut().filter(|_| seat.is_none() && !unattended) {
+                            self.feed_gear(run, None, &mut pacer, now);
                             self.drive_routine(run, ended, &mut pacer, &mut walker, &mut walk_seen, &mut combat, &mut rester, last_vitals, room_now, now);
                         }
                         self.watch_states(&party, &rester, &combat, &mut seen);
