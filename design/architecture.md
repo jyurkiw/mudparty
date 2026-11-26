@@ -1647,8 +1647,9 @@ Room names go a long way, but some rooms can only be named by number (user). A p
 resolved in this order:
 
 1. an alias from `places/<area>.local.yaml`;
-2. the compiled slug: `arena`. A name the game gives to more than one room gets its room
-   number in the slug: `narrow-path-2143`;
+2. the compiled slug: `weapons-shop`, or `dungeon:entrance` for another area's. A name an
+   area repeats gets its room number in the slug: `arena-2150`, and `arena` then names
+   both, an error that lists them;
 3. the game's own name, `"Newhaven, Arena"`, while only one room has it. A repeated name
    is an error that lists the rooms it could be;
 4. the key, `1/2150`, which always works.
@@ -1660,55 +1661,104 @@ its loops' rooms as `1/5` strings for the same reason (`LoopWaypoint.cs`).
 
 ### 14.4 The compiled room file
 
-`mudparty-server places compile [--area <name>]` reads `silvermere.db` read-only (the same
-tables the world-editor prototype reads, silvermere `tools/world-editor-proto/src/data.rs`)
-and writes one file per area:
+`mudparty-server places compile [--area <name>] [--root <data root>]` (#63) reads the
+`silvermere.db` that `mudparty.toml` names, read-only (the same tables the world-editor
+prototype reads, silvermere `tools/world-editor-proto/src/data.rs`), and writes one file
+per area into `places/`: 316 areas for the stock world's 26,720 rooms. From the stock
+world (`mp-data` `places.rs`, trimmed):
 
 ```yaml
-# Compiled from silvermere.db. Don't edit: names and notes go in newhaven.local.yaml.
+# Compiled from silvermere.db by `mudparty-server places compile`. Don't edit:
+# names and notes go in the area's .local.yaml beside it.
 schema: 1
 area: newhaven
-source: { silvermere_db: "E:/silvermere-data/silvermere.db", compiled: 2026-11-26T10:00:00Z }
+source:
+  silvermere_db: E:/silvermere-data/silvermere.db
 rooms:
-  arena:
+  adventurers-guild:
+    key: 1/2147
+    name: Newhaven, Adventurer's Guild
+    type: shop
+    exits:
+      south: narrow-road-2146
+    boss: Corwyn
+    shop: { name: Training Room, type: training, trains: any class }
+  arena-2150:
     key: 1/2150
-    name: "Newhaven, Arena"
+    name: Newhaven, Arena
+    type: arena
     levels: 1-3
     exits:
-      up: narrow-road
-      north: { to: dungeon-entrance, door: locked, bash: 30 }
-    lair: { group: 6, max: 2 }
-  small-cavern:
-    key: 1/2156
-    name: "Small Cavern"
-    lair: { group: 6, max: 1, regen: 2 }
+      north: { to: dungeon:entrance, kind: door, lock: locked, bash: 30 }
+      up: narrow-road-2146
+    spawns:
+      monsters: [giant rat, lashworm, filthbug, carrion beast, acid slime, kobold thief]
+      max: 2
+  narrow-road-2146:
+    key: 1/2146
+    name: Newhaven, Narrow Road
+    exits:
+      down: { to: arena-2150, kind: block_guard }
+      east: narrow-path
+      north: { to: adventurers-guild, kind: block_guard }
+      west: { to: healer, kind: level, levels: 1-3 }
   weapons-shop:
     key: 1/2141
-    name: "Newhaven, Weapons Shop"
-    shop: { name: Newhaven Weapon Shop, sells: { club: 0, quarterstaff: 0 } }   # copper
-  guild:
-    key: 1/2147
-    trainer: { shop: 38 }          # the Adventurer's Guild
+    name: Newhaven, Weapons Shop
+    type: shop
+    exits:
+      south: village-entrance
+    boss: Nathaniel
+    shop: { name: Newhaven Weapon Shop, type: specific, sells: [quarterstaff, club] }
 ```
 
-- **What it holds:** each room's key, name, level range, exits (kind, door or gate, lock
-  and bash bonus, level gates, the item or spell an exit needs), lair settings (monster
-  group, how many, regen delay, the monsters that can spawn there), shops (what they sell
-  and for how much) and trainers.
-- **Areas** follow MajorMUD's `Area, Room` names by default (`Newhaven, Arena` is in
-  `newhaven`). Rooms without a prefix (`Small Cavern`, `Dungeon, Entrance`) are grouped by
-  the local file, which can also define areas of its own.
-- **Slugs** come from the name after the area prefix; a repeated name takes its room
-  number (Newhaven has 14 rooms and 12 names).
+and in `places/dungeon.yaml`:
+
+```yaml
+  small-cavern-2156:
+    key: 1/2156
+    name: Small Cavern
+    type: lair
+    exits:
+      south: entrance
+    lair: { monsters: [cave bear], max: 1, respawn: 2m }
+```
+
+- **What it holds:** each room's key, name and type; an arena's player levels; its exits
+  by direction (a plain exit as a place; any other with its kind, and what the compiler
+  reads of its parameters: a door's or gate's lock, bash bonus and key, a level or
+  alignment range, a toll, the item, class or race an exit wants, the raw slots for the
+  rest); what spawns there; a lair's monsters, cap and respawn; the room's own monster
+  (`boss`); and its shop (type, what it sells, whom it trains).
+- **Areas** follow MajorMUD's `Area, Room` names, but most rooms have none (20,253 of the
+  stock world's). A room without one joins the area of the nearest room that has one, by
+  walking distance: Small Cavern, one step past `Dungeon, Entrance`, is in `dungeon`; the
+  Docks and Small Pier are in `newhaven`. A room no named room reaches goes in `map-<n>`.
+  The walk runs in key order, so the same world always gives the same areas.
+- **Slugs** come from the name after the area prefix (or the whole name); a name the area
+  repeats takes its room number. Newhaven has two `Newhaven, Arena` rooms (2150, and 2155,
+  a 1-1 arena below it) and two Narrow Roads, so its arena is `arena-2150`, and `arena`
+  wants an alias.
+- **Exits name places:** a slug in the same area, `area:slug` in another, or the key for a
+  room no area has.
+- **Spawns and respawns come from silvermere's rules** (`generate.rs`, `Request::for_room`;
+  `silvermere-rules` `spawn.rs`). A room's `mongroup` is the `montype` its monsters are
+  drawn from (-1 any), and its `minlevel`..`maxlevel` their `genindex` range, unless
+  `genmonster` names one monster. These are the same two fields an arena reads as its
+  players' levels: legacy fields read two ways, kept as they are. A lair fills when a
+  player walks in and nobody else is there, once `regendelay` minutes have passed since
+  its last kill (`respawn: 2m`), or the server's `regen_mins` when the room sets none
+  (`server default`). A unique monster (`maxalive` 1) also waits its `regenhrs`
+  (`unique_hours`). So the cave bear is tied to Small Cavern after all: group 6, index
+  66 to 66, which is the cave bear's.
 - **One format, any source.** A later source (a MegaMud `.mdb`, exploration) writes the
   same file, so scripts and the router never know where the facts came from. The world
   editor could read and write it too: the two share the format, not code.
-- **Recompiling never clobbers** the local file. A local entry that names a room the new
-  compile no longer has is an error.
-- **Not known yet: respawn times.** The data doesn't tie the cave bear to Small Cavern;
-  the room only says monster group 6, at most one, regen delay 2. When a respawn time can
-  be worked out from silvermere's spawning rules, the compiler writes it; until then a
-  script gives it (`respawn: 4m`).
+- **The local file** (`<area>.local.yaml`) holds `aliases:` for now
+  (`arena: 1/2150`, `road: narrow-road-2146`); tags, avoid marks and map pins come with
+  the router (#64) and the map (#69). Recompiling never touches it. An alias that names
+  no room is an error naming the file and the alias.
+- **Naming a room** (*§14.3*) is `mp-data` `Places::resolve`.
 
 `gamedata.sqlite` (*§7.5*) stays the router's fast index; the compiled file is the
 readable record scripts are written and checked against.

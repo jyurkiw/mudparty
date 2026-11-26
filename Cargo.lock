@@ -1466,6 +1466,7 @@ dependencies = [
 name = "mp-config"
 version = "0.1.0"
 dependencies = [
+ "mp-data",
  "mp-parse",
  "serde",
  "serde_norway",
@@ -1478,7 +1479,10 @@ dependencies = [
 name = "mp-data"
 version = "0.1.0"
 dependencies = [
+ "mp-silvermere",
  "rusqlite",
+ "serde",
+ "serde_norway",
  "sha2",
  "silvermere-db",
  "silvermere-engine",

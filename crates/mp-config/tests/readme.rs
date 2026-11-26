@@ -1,6 +1,7 @@
 //! The README's example files read as they say: every `toml` block is a whole
-//! `mudparty.toml`, and every `yaml` block a character file (`schema:`) or a
-//! `secrets.yaml` (`accounts:`). An example that drifts from the loaders fails here.
+//! `mudparty.toml`, and every `yaml` block a character file (`schema:`), a
+//! `secrets.yaml` (`accounts:`) or a places local file (`area:`). An example that drifts
+//! from the loaders fails here.
 
 use mp_config::{CharacterConfig, Secrets, ServerConfig};
 
@@ -37,10 +38,18 @@ fn every_yaml_file_in_the_readme_reads() {
     let found = blocks("yaml");
     assert!(!found.is_empty());
     for b in found {
-        let read = if b.starts_with("accounts:") {
-            Secrets::from_yaml(&b).map(|_| ())
+        let read: Result<(), String> = if b.starts_with("accounts:") {
+            Secrets::from_yaml(&b)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        } else if b.lines().any(|l| l.starts_with("area:")) {
+            serde_norway::from_str::<mp_data::places::Local>(&b)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         } else {
-            CharacterConfig::from_yaml(&b).map(|_| ())
+            CharacterConfig::from_yaml(&b)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         };
         if let Err(e) = read {
             panic!("{e}\nin:\n{b}");

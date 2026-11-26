@@ -291,6 +291,29 @@ Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists 
 setting. The server watches `characters/`, and a running bot picks up an edited file
 without restarting.
 
+## Places
+
+`mudparty-server places compile` writes `places/<area>.yaml` from the silvermere database
+`mudparty.toml` names, one file per area (`--area newhaven` for one). The files list each
+room's key, name, exits, spawns, lairs and shops, and scripts name rooms by them. Don't edit
+them: recompiling replaces them. Your own names for rooms go in `places/<area>.local.yaml`
+beside each, which recompiling never touches:
+
+```yaml
+schema: 1
+area: newhaven
+aliases:
+  arena: 1/2150            # a key, a slug, or the game's name while it's unique
+  road: narrow-road-2146
+  bear: dungeon:small-cavern-2156
+```
+
+A room is named by an alias, its slug (`weapons-shop`, or `dungeon:entrance` in another
+area), the game's own name while only one room has it (`Newhaven, Weapons Shop`), or its key
+(`1/2141`). A name that could be several rooms is an error that lists them. Section 14 of
+[the design](design/architecture.md#14-scripts-places-routes-routines-and-the-map-designed-2026-11-26)
+has the rest.
+
 ## Running
 
 ```powershell

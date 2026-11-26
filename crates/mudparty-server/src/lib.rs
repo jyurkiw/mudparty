@@ -879,6 +879,29 @@ pub fn log_rolls(logging: &Logging) -> StreamRolls {
     }
 }
 
+/// `mudparty-server places compile` (#63, design §14.4): writes `<root>/places/<area>.yaml`
+/// for every area of the silvermere database `mudparty.toml` names, or for `area` alone.
+/// The hand-written `<area>.local.yaml` files beside them are never touched. Returns each
+/// area written, with its room count.
+pub fn compile_places(root: &Path, area: Option<&str>) -> anyhow::Result<Vec<(String, usize)>> {
+    let config = load_server(&root.join("mudparty.toml"))?.value;
+    let db = root.join(&config.gamedata.silvermere_db);
+    let areas = mp_data::places::compile(&db)?;
+    if let Some(want) = area
+        && !areas.iter().any(|a| a.area == want)
+    {
+        anyhow::bail!("{} has no area {want:?}", db.display());
+    }
+    let dir = root.join("places");
+    std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
+    let mut written = Vec::new();
+    for a in areas.iter().filter(|a| area.is_none_or(|w| a.area == w)) {
+        a.write(&dir.join(format!("{}.yaml", a.area)))?;
+        written.push((a.area.clone(), a.rooms.len()));
+    }
+    Ok(written)
+}
+
 /// `1/2141` as `(1, 2141)`.
 fn room_key(text: &str) -> Option<(u32, u32)> {
     let (map, room) = text.trim().split_once('/')?;

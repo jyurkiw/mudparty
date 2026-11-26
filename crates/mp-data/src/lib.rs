@@ -6,6 +6,7 @@
 //! prints it) and each room's `mm_hash` (MegaMud's room hash, design §8.1).
 
 mod megamud;
+pub mod places;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
