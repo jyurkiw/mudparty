@@ -179,6 +179,29 @@ pub struct RoomExit {
     pub shows_as: ShowsAs,
 }
 
+/// One step of a walk: the direction to go, the room it reaches, and whether a door or
+/// gate stands in the way (which may need opening first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Step {
+    /// 0..9: N S E W NE NW SE SW U D.
+    pub dir: u8,
+    pub to_map: i64,
+    pub to_room: i64,
+    pub door: bool,
+}
+
+/// Exits a walker passes by walking: plain ones, doors and gates (opened if closed), map
+/// changes, level exits (the game refuses a character outside the range), and the types
+/// silvermere passes like a plain exit (ticket, user count, block guard, delay). Not:
+/// key, spell, item, toll, action, hidden, trap, text, remote, class, race, timed or
+/// alignment exits, which need more than a walk.
+fn walkable(exit_type: i64) -> bool {
+    matches!(exit_type, 0 | 7 | 8 | 11 | 15 | 17 | 18 | 19 | 21)
+}
+
+/// How many rooms a route search looks at before giving up.
+const ROUTE_LIMIT: usize = 20_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spell {
     pub number: i64,
@@ -579,6 +602,52 @@ impl GameData {
         .map_err(&e)?
         .collect::<Result<_, _>>()
         .map_err(&e)
+    }
+
+    /// The shortest walk from `from` to `to`, both `(map, room)`, over walkable exits;
+    /// `None` when there is none.
+    pub fn route(&self, from: (i64, i64), to: (i64, i64)) -> Result<Option<Vec<Step>>, DataError> {
+        use std::collections::{HashMap, VecDeque};
+        if from == to {
+            return Ok(Some(Vec::new()));
+        }
+        let mut came: HashMap<(i64, i64), ((i64, i64), Step)> = HashMap::new();
+        let mut queue = VecDeque::from([from]);
+        while let Some(here) = queue.pop_front() {
+            if came.len() > ROUTE_LIMIT {
+                break;
+            }
+            for e in self.exits(here.0, here.1)? {
+                let next = (e.to_map, e.to_room);
+                if !walkable(e.exit_type)
+                    || e.to_room == 0
+                    || next == from
+                    || came.contains_key(&next)
+                {
+                    continue;
+                }
+                let step = Step {
+                    dir: e.dir,
+                    to_map: e.to_map,
+                    to_room: e.to_room,
+                    door: matches!(e.exit_type, EXIT_DOOR | EXIT_GATE),
+                };
+                came.insert(next, (here, step));
+                if next == to {
+                    let mut steps = vec![step];
+                    let mut at = here;
+                    while at != from {
+                        let (prev, s) = came[&at];
+                        steps.push(s);
+                        at = prev;
+                    }
+                    steps.reverse();
+                    return Ok(Some(steps));
+                }
+                queue.push_back(next);
+            }
+        }
+        Ok(None)
     }
 
     /// The rooms with MegaMud hash `hash`, as `(map, room)`.

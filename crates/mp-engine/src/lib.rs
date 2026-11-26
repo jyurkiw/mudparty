@@ -8,6 +8,7 @@ mod party;
 mod remote;
 mod rest;
 mod session;
+mod walk;
 
 pub use combat::{Combat, CombatSettings};
 pub use login::{Login, LoginAction, LoginFailure, LoginSettings};
@@ -22,3 +23,4 @@ pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,
 };
+pub use walk::{WalkState, WalkStep, Walker};

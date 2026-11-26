@@ -216,6 +216,27 @@ pub enum Event {
     },
     PartyNone,
 
+    // ----- moving
+    /// A room display's `Obvious exits:` line: the move it follows has arrived.
+    ObviousExits,
+    /// `There is no exit in that direction!`
+    NoExit,
+    /// A closed door or gate in the way.
+    DoorClosed,
+    /// `The door is now open.`, or it was already.
+    DoorOpened,
+    /// `The door is locked.`
+    DoorLocked,
+    /// `You bashed the door open.`
+    BashedOpen,
+    /// `Your attempts to bash through fail!`
+    BashFailed,
+    /// Any other refusal of an exit (level, alignment, a spell or item it needs, timed),
+    /// as the game words it.
+    ExitRefused {
+        text: String,
+    },
+
     // ----- where and how far
     /// `/room`'s answer, `1/206` (a silvermere fork command).
     RoomKey {

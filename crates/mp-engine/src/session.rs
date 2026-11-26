@@ -34,6 +34,10 @@ use crate::remote::{
     status_reply, where_reply,
 };
 use crate::rest::{RestSettings, Rester};
+use crate::walk::{WalkState, Walker};
+
+/// How long a walk's line may go unanswered before the walker asks where it is again.
+const WALK_STEP_WAIT: Duration = Duration::from_secs(10);
 
 /// What a session needs to run.
 #[derive(Debug, Clone)]
@@ -186,6 +190,8 @@ pub enum Command {
     /// A line to send as a seated character (design §2, injection). It waits until the
     /// user has no half-typed line and the last line's prompt has come back.
     Inject(String),
+    /// Walk to this room, `(map, room)`, by the game data's exits (#52).
+    Goto { to: (u32, u32) },
 }
 
 /// What a session is doing.
@@ -258,6 +264,8 @@ pub enum Report {
     Queued(Vec<String>),
     /// MudPlay dropped: the character stays in the game, idle, under its engine.
     Unattended,
+    /// Where a walk stands (#52).
+    Walk(WalkState),
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -693,6 +701,20 @@ impl Runner {
         }
     }
 
+    /// Reports a walk's state when it changes, and lets a finished walk go.
+    fn watch_walk(&mut self, walker: &mut Option<Walker>, seen: &mut Option<WalkState>) {
+        let Some(w) = walker else { return };
+        let now = w.state();
+        if seen.as_ref() != Some(&now) {
+            self.event("walk", json!({"to": format!("{}/{}", w.destination().0, w.destination().1), "state": format!("{now:?}")}));
+            self.report(Report::Walk(now.clone()));
+            *seen = Some(now);
+        }
+        if w.done() {
+            *walker = None;
+        }
+    }
+
     /// Reports the party and rest states when they change.
     fn watch_states(
         &mut self,
@@ -827,6 +849,9 @@ impl Runner {
         let mut most_hp = 0;
         // Waiting for PROFILE's statline row, until then.
         let mut probe: Option<Instant> = None;
+        // A walk under way, and the state last reported.
+        let mut walker: Option<Walker> = None;
+        let mut walk_seen: Option<WalkState> = None;
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -1059,6 +1084,13 @@ impl Runner {
                             let acts = r.on_item(&t.item, now, fighting);
                             self.queue(&mut pacer, "rest", acts);
                         }
+                        if let Some(w) = &mut walker {
+                            let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
+                            for line in w.on_item(&t.item, now, fighting) {
+                                pacer.push(line);
+                            }
+                        }
+                        self.watch_walk(&mut walker, &mut walk_seen);
                         self.watch_states(&party, &rester, &combat, &mut seen);
                     }
                     if in_game
@@ -1155,6 +1187,28 @@ impl Runner {
                     Some(Command::Inject(line)) => {
                         self.decision("inject_dropped", json!({"line": line, "why": "no seat"}));
                     }
+                    Some(Command::Goto { to }) if in_game && logging_off.is_none() && seat.is_none() => {
+                        self.decision("goto", json!({"to": format!("{}/{}", to.0, to.1)}));
+                        match self.spec.rooms.clone() {
+                            Some(book) => {
+                                let mut w = Walker::new(to, book, WALK_STEP_WAIT);
+                                for line in w.start(Instant::now()) {
+                                    pacer.push(line);
+                                }
+                                walker = Some(w);
+                                walk_seen = None;
+                                self.watch_walk(&mut walker, &mut walk_seen);
+                            }
+                            None => self.report(Report::Walk(WalkState::Failed("no game data to plan a walk on".into()))),
+                        }
+                        if self.drain(&mut stream, &mut pacer).await.is_err() {
+                            return LinkEnd::Lost { was_in_game: true };
+                        }
+                    }
+                    Some(Command::Goto { to }) => {
+                        self.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "not in the game, or played in MudPlay"}));
+                        self.report(Report::Walk(WalkState::Failed("not able to walk now".into())));
+                    }
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
                     Some(Command::Logoff) => {
@@ -1226,6 +1280,13 @@ impl Runner {
                             let acts = p.on_tick(now);
                             self.queue(&mut pacer, "party", acts);
                         }
+                        if let Some(w) = &mut walker {
+                            let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
+                            for line in w.on_tick(now, fighting) {
+                                pacer.push(line);
+                            }
+                        }
+                        self.watch_walk(&mut walker, &mut walk_seen);
                         self.watch_states(&party, &rester, &combat, &mut seen);
                         if self.drain(&mut stream, &mut pacer).await.is_err() {
                             return LinkEnd::Lost { was_in_game: true };
@@ -1356,6 +1417,10 @@ async fn run_from(
                         }
                         Some(Command::Inject(line)) => {
                             r.decision("inject_dropped", json!({"line": line, "why": "reconnecting"}));
+                        }
+                        Some(Command::Goto { to }) => {
+                            r.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "reconnecting"}));
+                            r.report(Report::Walk(WalkState::Failed("reconnecting".into())));
                         }
                     }
                 }
