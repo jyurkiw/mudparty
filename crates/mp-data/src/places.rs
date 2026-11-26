@@ -815,6 +815,8 @@ struct Found {
     area: String,
     slug: String,
     name: String,
+    /// What its shop sells.
+    sells: Vec<String>,
 }
 
 /// Every area in a `places/` folder, with the local files' aliases, for naming rooms
@@ -861,6 +863,7 @@ impl Places {
                     area: a.area.clone(),
                     slug,
                     name: room.name,
+                    sells: room.shop.map(|s| s.sells).unwrap_or_default(),
                 });
             }
         }
@@ -886,6 +889,17 @@ impl Places {
             }
         }
         Ok(places)
+    }
+
+    /// The shops that sell `item` (case-blind), those in `area` first, then by key.
+    pub fn shops_selling(&self, item: &str, area: Option<&str>) -> Vec<(u32, u32)> {
+        let mut found: Vec<&Found> = self
+            .rooms
+            .iter()
+            .filter(|f| f.sells.iter().any(|s| s.eq_ignore_ascii_case(item.trim())))
+            .collect();
+        found.sort_by_key(|f| (area.is_none_or(|a| f.area != a), f.key));
+        found.iter().map(|f| f.key).collect()
     }
 
     /// The rooms of `area`, or `None` for an area no file has.

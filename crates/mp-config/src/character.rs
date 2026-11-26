@@ -60,6 +60,32 @@ pub struct CharacterConfig {
     /// character's own, or one written here.
     #[serde(default)]
     pub routine: Option<RoutineRef>,
+    /// What the character carries (#55). A routine's `gear` rule keeps it so.
+    #[serde(default)]
+    pub gear: Vec<Gear>,
+}
+
+/// One item of a character's gear.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gear {
+    /// The item's name, as the game lists it (`padded vest`).
+    pub item: String,
+    /// `wield` or `wear`.
+    #[serde(rename = "use")]
+    pub how: GearUse,
+    /// The shop to buy it at, a place; left out, a shop the compiled room files say sells
+    /// it.
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+/// How an item is put to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GearUse {
+    Wield,
+    Wear,
 }
 
 /// A character whose MudPlay has dropped stays in the game, idle, under its engine. It
@@ -492,6 +518,20 @@ impl CharacterConfig {
         }
         if self.rest.command.trim().is_empty() {
             return Err(ConfigError::at("rest.command", "a rest command is needed"));
+        }
+        for (i, g) in self.gear.iter().enumerate() {
+            if g.item.trim().is_empty() {
+                return Err(ConfigError::at(
+                    format!("gear[{i}].item"),
+                    "an item is needed",
+                ));
+            }
+            if g.at.as_ref().is_some_and(|a| a.trim().is_empty()) {
+                return Err(ConfigError::at(
+                    format!("gear[{i}].at"),
+                    "a place is needed",
+                ));
+            }
         }
         if let Some(RoutineRef::Inline(r)) = &self.routine {
             crate::routine::check(r).map_err(|e| e.under("routine"))?;

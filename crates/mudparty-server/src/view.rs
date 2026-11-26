@@ -247,6 +247,7 @@ impl Card {
                 }
                 self.walk = Some(text);
             }
+            Report::RoutineNote(note) => self.event(format!("routine: {note}")),
             Report::Routine(part) => {
                 let text = part.to_string();
                 self.event(format!("routine: {text}"));

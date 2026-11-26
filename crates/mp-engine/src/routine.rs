@@ -7,7 +7,11 @@
 //! - `hunt`: when due and its `when` holds, walk to the monster's spawn room, kill it if
 //!   it's there, and be done; due again `every` after the kill, or after the visit that
 //!   found it gone;
-//! - `camp`: walk to its room and stay, fighting what comes; always applies.
+//! - `camp`: walk to its room and stay, fighting what comes; always applies;
+//! - `gear` (#55): when the routine starts and after each rest, check the inventory, put
+//!   on what's carried but not in use, and buy what's missing at a shop that sells it. An
+//!   item it can't get (no money, can't use it, no shop, no way there) is skipped, and
+//!   said ([`Routine::take_notes`]).
 //!
 //! **Taking over.** A rule's `when` says when it starts; once started it runs until it's
 //! done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
@@ -19,13 +23,15 @@
 //! the routine how a walk or a rest ended. In 1.1 the party director (#59) hands out the
 //! same goals for several characters, so the goals stay few and plain.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use mp_config::{Pools, When};
+use mp_config::{GearUse, Pools, When};
 use mp_parse::Vitals;
 
 use crate::rest::below;
+use crate::shop::Carried;
 use crate::walk::{RouteRules, WalkState};
 
 /// A routine's rules, with their rooms looked up.
@@ -54,6 +60,18 @@ pub enum RuleSettings {
         at: (u32, u32),
         look_every: Duration,
     },
+    Gear {
+        items: Vec<GearSettings>,
+        when: When,
+    },
+}
+
+/// One item the character carries, and the shops that sell it, best first.
+#[derive(Debug, Clone)]
+pub struct GearSettings {
+    pub item: String,
+    pub how: GearUse,
+    pub shops: Vec<(u32, u32)>,
 }
 
 /// A monster with a known spawn room and respawn time.
@@ -76,6 +94,15 @@ pub enum Goal {
     Camp(Duration),
     /// Attack this monster (the name as the room shows it) until it's gone.
     Kill(String),
+    /// Look at the inventory, and tell the routine what's carried ([`Routine::inventory`]).
+    Inventory,
+    /// Put this item to use, buying it first if `buy`; tell the routine how it went
+    /// ([`Routine::equip_ended`]).
+    Equip {
+        item: String,
+        how: GearUse,
+        buy: bool,
+    },
     /// Nothing: waiting to try again, or paused.
     Wait,
 }
@@ -93,6 +120,9 @@ pub enum RoutinePart {
     Paused,
     /// No rule applies (a routine with no camp at the end).
     Idle,
+    CheckingGear,
+    ToShop(String),
+    Equipping(String),
 }
 
 impl fmt::Display for RoutinePart {
@@ -107,6 +137,9 @@ impl fmt::Display for RoutinePart {
             Self::Stuck(why) => write!(f, "stuck ({why}); trying again soon"),
             Self::Paused => f.write_str("paused"),
             Self::Idle => f.write_str("nothing to do"),
+            Self::CheckingGear => f.write_str("checking gear"),
+            Self::ToShop(item) => write!(f, "going to get {item}"),
+            Self::Equipping(item) => write!(f, "getting {item}"),
         }
     }
 }
@@ -140,6 +173,12 @@ enum Doing {
         /// A fight has started since the bot got here.
         started: bool,
     },
+    /// Waiting for the inventory.
+    Checking,
+    /// Walking to `shops[shop]` for `items[item]`.
+    ToShop { item: usize, shop: usize },
+    /// Buying (if `buy`) and putting on `items[item]`.
+    Equip { item: usize, buy: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +198,12 @@ pub struct Routine {
     paused: bool,
     /// What the bot looked like last.
     last: Seen,
+    /// The gear wants checking: at the start, and after each rest.
+    gear_due: bool,
+    /// Gear it couldn't get, not tried again.
+    skipped: BTreeSet<String>,
+    /// What the card should be told: items skipped, and why.
+    notes: Vec<String>,
 }
 
 /// The room's name for `monster`: the same name, or one that ends with it (`big cave
@@ -203,9 +248,97 @@ impl Routine {
             stuck: None,
             paused: false,
             last: Seen::default(),
+            gear_due: true,
+            skipped: BTreeSet::new(),
+            notes: Vec::new(),
         };
         r.pick(&Seen::default(), now, None);
         r
+    }
+
+    /// What has happened that the card should be told, oldest first; each note once.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
+    }
+
+    fn gear_items(&self, rule: usize) -> &[GearSettings] {
+        match &self.set.rules[rule] {
+            RuleSettings::Gear { items, .. } => items,
+            _ => &[],
+        }
+    }
+
+    fn skip(&mut self, rule: usize, item: usize, why: &str) {
+        let name = self.gear_items(rule)[item].item.clone();
+        self.notes.push(format!("skipped {name}: {why}"));
+        self.skipped.insert(name);
+    }
+
+    fn check_gear(&mut self, rule: usize) {
+        self.active = Some(Active {
+            rule,
+            doing: Doing::Checking,
+        });
+    }
+
+    /// The inventory the routine asked for: what the bot carries. The gear rule puts on
+    /// the first item carried but not in use, or goes for the first that's missing, or,
+    /// with nothing to do, is done until the next rest.
+    pub fn inventory(&mut self, carried: &[Carried], now: Instant) {
+        let Some(Active {
+            rule,
+            doing: Doing::Checking,
+        }) = self.active.clone()
+        else {
+            return;
+        };
+        for (i, g) in self.gear_items(rule).to_vec().iter().enumerate() {
+            if self.skipped.contains(&g.item) {
+                continue;
+            }
+            match carried
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(&g.item))
+            {
+                Some(c) if c.equipped => {}
+                Some(_) => {
+                    self.active = Some(Active {
+                        rule,
+                        doing: Doing::Equip {
+                            item: i,
+                            buy: false,
+                        },
+                    });
+                    return;
+                }
+                None if g.shops.is_empty() => self.skip(rule, i, "no shop in places/ sells it"),
+                None => {
+                    self.active = Some(Active {
+                        rule,
+                        doing: Doing::ToShop { item: i, shop: 0 },
+                    });
+                    return;
+                }
+            }
+        }
+        self.gear_due = false;
+        let last = self.last.clone();
+        self.pick(&last, now, None);
+    }
+
+    /// Buying and putting on the item the routine asked for ended: look again either way.
+    pub fn equip_ended(&mut self, result: Result<(), String>, _now: Instant) {
+        let Some(Active {
+            rule,
+            doing: Doing::Equip { item, .. },
+        }) = self.active.clone()
+        else {
+            return;
+        };
+        if let Err(why) = result {
+            self.skip(rule, item, &why);
+        }
+        self.check_gear(rule);
     }
 
     /// What the routine's walks keep out of.
@@ -223,6 +356,7 @@ impl Routine {
             RuleSettings::Rest { when, .. } => holds(when, s),
             RuleSettings::Hunt(h) => now >= self.due[i] && holds(&h.when, s),
             RuleSettings::Camp { .. } => true,
+            RuleSettings::Gear { when, .. } => self.gear_due && holds(when, s),
         }
     }
 
@@ -233,7 +367,10 @@ impl Routine {
             .find(|&i| self.applies(i, s, now))
             .map(|rule| Active {
                 rule,
-                doing: Doing::Walking,
+                doing: match self.set.rules[rule] {
+                    RuleSettings::Gear { .. } => Doing::Checking,
+                    _ => Doing::Walking,
+                },
             });
     }
 
@@ -261,6 +398,15 @@ impl Routine {
             (RuleSettings::Hunt(h), _) => Goal::Walk(h.at),
             (RuleSettings::Rest { until, .. }, _) => Goal::Rest(*until),
             (RuleSettings::Camp { look_every, .. }, _) => Goal::Camp(*look_every),
+            (RuleSettings::Gear { items, .. }, Doing::ToShop { item, shop }) => {
+                Goal::Walk(items[*item].shops[*shop])
+            }
+            (RuleSettings::Gear { items, .. }, Doing::Equip { item, buy }) => Goal::Equip {
+                item: items[*item].item.clone(),
+                how: items[*item].how,
+                buy: *buy,
+            },
+            (RuleSettings::Gear { .. }, _) => Goal::Inventory,
         }
     }
 
@@ -283,6 +429,13 @@ impl Routine {
                 RoutinePart::Killing(target.clone())
             }
             (RuleSettings::Hunt(h), _) => RoutinePart::Hunting(h.monster.clone()),
+            (RuleSettings::Gear { items, .. }, Doing::ToShop { item, .. }) => {
+                RoutinePart::ToShop(items[*item].item.clone())
+            }
+            (RuleSettings::Gear { items, .. }, Doing::Equip { item, .. }) => {
+                RoutinePart::Equipping(items[*item].item.clone())
+            }
+            (RuleSettings::Gear { .. }, _) => RoutinePart::CheckingGear,
         }
     }
 
@@ -317,7 +470,10 @@ impl Routine {
         {
             self.active = Some(Active {
                 rule: i,
-                doing: Doing::Walking,
+                doing: match self.set.rules[i] {
+                    RuleSettings::Gear { .. } => Doing::Checking,
+                    _ => Doing::Walking,
+                },
             });
             return;
         }
@@ -355,6 +511,24 @@ impl Routine {
         self.last = s.clone();
         let Some(a) = self.active.clone() else { return };
         match end {
+            // A shop it can't reach: the next that sells the item, or skip the item.
+            WalkState::Failed(why) if matches!(a.doing, Doing::ToShop { .. }) => {
+                let Doing::ToShop { item, shop } = a.doing else {
+                    return;
+                };
+                if shop + 1 < self.gear_items(a.rule)[item].shops.len() {
+                    self.active = Some(Active {
+                        rule: a.rule,
+                        doing: Doing::ToShop {
+                            item,
+                            shop: shop + 1,
+                        },
+                    });
+                } else {
+                    self.skip(a.rule, item, why);
+                    self.check_gear(a.rule);
+                }
+            }
             WalkState::Failed(why) => {
                 self.stuck = Some((why.clone(), now + self.set.retry));
                 self.active = None;
@@ -379,6 +553,14 @@ impl Routine {
                     }
                     None => self.hunted(a.rule, s, now),
                 },
+                RuleSettings::Gear { .. } => {
+                    if let Doing::ToShop { item, .. } = a.doing {
+                        self.active = Some(Active {
+                            rule: a.rule,
+                            doing: Doing::Equip { item, buy: true },
+                        });
+                    }
+                }
             },
             _ => {}
         }
@@ -392,6 +574,8 @@ impl Routine {
         {
             let done = a.rule;
             let last = self.last.clone();
+            // Rested: the gear is looked at again.
+            self.gear_due = true;
             self.pick(&last, now, Some(done));
         }
     }

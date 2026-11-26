@@ -237,6 +237,41 @@ pub enum Event {
         text: String,
     },
 
+    // ----- shops and gear (#55)
+    /// `You just bought <item> for <coins>.`
+    Bought {
+        item: String,
+    },
+    /// `You cannot afford <item>.`
+    CannotAfford {
+        item: String,
+    },
+    /// Any other refusal of a `buy` (not sold here, not known, too heavy), as worded.
+    BuyRefused {
+        text: String,
+    },
+    /// `You are now holding <item>.` (wield) or `You are now wearing <item>.` (wear).
+    Equipped {
+        item: String,
+    },
+    /// A refused `wield` or `wear`, as worded.
+    EquipRefused {
+        text: String,
+    },
+    /// The inventory's `You are carrying …` line. A long list wraps onto the lines after
+    /// it, up to the keys line.
+    Carrying {
+        items: String,
+    },
+    /// `You are carrying Nothing!`
+    CarryingNothing,
+    /// The inventory's keys line, `You have no keys.` or the list: the carried list is over.
+    KeysLine,
+    /// The inventory's `Wealth:` line, in copper farthings.
+    Wealth {
+        copper: i64,
+    },
+
     // ----- where and how far
     /// `/room`'s answer, `1/206` (a silvermere fork command).
     RoomKey {

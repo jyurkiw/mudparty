@@ -483,6 +483,113 @@ fn cases() -> Vec<Case> {
                 text: s("You do not have the appropriate item to go that direction!"),
             }],
         ),
+        // shops and gear (#55)
+        msg(
+            "shop_bought",
+            Msg::ShopBought {
+                item: s("club"),
+                coins: s(" 12 copper farthings"),
+            },
+            vec![E::Bought { item: s("club") }],
+        ),
+        msg(
+            "shop_cannot_afford",
+            Msg::ShopCannotAfford { item: s("club") },
+            vec![E::CannotAfford { item: s("club") }],
+        ),
+        msg(
+            "shop_unknown",
+            Msg::ShopUnknown { item: s("spork") },
+            vec![E::BuyRefused {
+                text: s("spork is not a known item."),
+            }],
+        ),
+        msg(
+            "shop_cannot_buy",
+            Msg::ShopCannotBuy { item: s("club") },
+            vec![E::BuyRefused {
+                text: s("You cannot buy club here!"),
+            }],
+        ),
+        msg(
+            "carry_too_much",
+            Msg::CarryTooMuch,
+            vec![E::BuyRefused {
+                text: s("You cannot carry that much!"),
+            }],
+        ),
+        msg(
+            "wield_ok",
+            Msg::WieldOk { item: s("club") },
+            vec![E::Equipped { item: s("club") }],
+        ),
+        msg(
+            "wear_ok",
+            Msg::WearOk {
+                item: s("padded vest"),
+            },
+            vec![E::Equipped {
+                item: s("padded vest"),
+            }],
+        ),
+        msg(
+            "wear_no_room",
+            Msg::WearNoRoom,
+            vec![E::EquipRefused {
+                text: s("You have no more room to wear that item!"),
+            }],
+        ),
+        msg(
+            "wear_forbidden",
+            Msg::WearForbidden,
+            vec![E::EquipRefused {
+                text: s("You may not wear that item!"),
+            }],
+        ),
+        msg(
+            "weapon_forbidden",
+            Msg::WeaponForbidden,
+            vec![E::EquipRefused {
+                text: s("You may not use that weapon."),
+            }],
+        ),
+        msg(
+            "wear_not_have_any",
+            Msg::WearNotHaveAny { name: s("club") },
+            vec![E::EquipRefused {
+                text: s("You do not have any club."),
+            }],
+        ),
+        msg(
+            "inv_carrying",
+            Msg::InvCarrying {
+                items: s("club (Weapon Hand), padded vest"),
+            },
+            vec![E::Carrying {
+                items: s("club (Weapon Hand), padded vest"),
+            }],
+        ),
+        msg(
+            "inv_carrying_nothing",
+            Msg::InvCarryingNothing,
+            vec![E::CarryingNothing],
+        ),
+        msg(
+            "inv_keys_list",
+            Msg::InvKeysList {
+                keys: s(" brass key"),
+            },
+            vec![E::KeysLine],
+        ),
+        msg("keys_none", Msg::KeysNone, vec![E::KeysLine]),
+        msg(
+            "inv_wealth",
+            Msg::InvWealth {
+                copper: 1234,
+                name: s("copper farthings"),
+            },
+            vec![E::Wealth { copper: 1234 }],
+        ),
         // the statline, as PROFILE shows it
         msg(
             "profile_statline",

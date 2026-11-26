@@ -1814,8 +1814,9 @@ do:
 ```
 
 - **Conditions** (`when:`): `hp_below`, `mp_below`, `hp_at_least`, `mp_at_least`; every
-  one given must hold. `level_below` comes with training (#56), `missing` with gear
-  (#55), and time windows later.
+  one given must hold. `level_below` comes with training (#56), and time windows later.
+  The `gear` rule needs no `missing` condition: it applies by itself when the gear wants
+  checking (*§14.7*).
 - **Taking over:** a rule's `when` says when it starts; once started it runs until it's
   done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
   (fleeing is #16). The lower rule keeps its state (a hunt its timer) and applies again
@@ -1892,9 +1893,26 @@ each is ready, as MudPlay's Auto-Lair does (`AutoLairScheduler.cs`, `LairTimerSt
 
 A `hunt` of one monster, as #61 built it, is a circuit of one lair.
 
-**Errands.** `gear` checks the inventory and buys what's missing; the router finds the
-nearest shop that sells each item, so `at:` is only needed to choose a shop. An item it
-can't get (no money, can't use it, can't reach the shop) is skipped and said on the card.
+**Errands.** `gear` (built in #55, `mp-engine` `shop.rs` and the routine's gear rule)
+keeps the character's `gear:` (`{ item, use: wield | wear, at }`):
+
+- It applies when the gear wants checking: when the routine starts, and after each rest.
+  It sends `i` and reads the carried list (`You are carrying ...`, wrapped at 79 columns,
+  up to the keys line): a worn item is named with its place (`padded vest (Torso)`), the
+  weapon with `(Weapon Hand)` or `(Two handed)`, duplicates with a count in front.
+- The first item carried but not in use is put on where the bot stands (`wield` or
+  `wear`); the first one missing is bought at a shop that sells it, and put on. Then it
+  looks again, rather than trusting what it did; with nothing left to do, it is done until
+  the next rest.
+- **Shops:** `at:` names one; otherwise the compiled room files' shops that sell the item,
+  those in the routine's `places` area first, then by key. A shop it can't walk to gives
+  way to the next. Choosing the nearest by route waits for the router to be asked for a
+  walk's length.
+- **An item it can't get** (`You cannot afford`, a refusal to sell or to wear or wield, no
+  shop selling it, no way to any) is skipped and said on the card (`Report::RoutineNote`),
+  and not tried again until the bot restarts.
+- A buy, wield or wear with no answer for 10 s is sent once more, then given up.
+
 `train` goes to a trainer while the next level is affordable and below `up_to` (#56).
 
 ### 14.8 A character under the new shape

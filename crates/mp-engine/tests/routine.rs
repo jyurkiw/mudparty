@@ -4,9 +4,10 @@
 
 use std::time::{Duration, Instant};
 
-use mp_config::{Amount, Pools, When};
+use mp_config::{Amount, GearUse, Pools, When};
 use mp_engine::{
-    Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen, WalkState,
+    Carried, GearSettings, Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings,
+    Seen, WalkState,
 };
 use mp_parse::{Rest, Vitals};
 
@@ -349,5 +350,173 @@ fn each_part_reads_for_the_card() {
     assert_eq!(
         RoutinePart::Stuck("no way".into()).to_string(),
         "stuck (no way); trying again soon"
+    );
+}
+
+// ----- gear (#55)
+
+const WEAPONS: (u32, u32) = (1, 2141);
+const ARMOUR: (u32, u32) = (1, 2142);
+const OTHER_ARMOUR: (u32, u32) = (1, 9999);
+
+fn gear_rule() -> RuleSettings {
+    RuleSettings::Gear {
+        items: vec![
+            GearSettings {
+                item: "club".into(),
+                how: GearUse::Wield,
+                shops: vec![WEAPONS],
+            },
+            GearSettings {
+                item: "padded vest".into(),
+                how: GearUse::Wear,
+                shops: vec![OTHER_ARMOUR, ARMOUR],
+            },
+        ],
+        when: When::default(),
+    }
+}
+
+/// Rest, keep the gear, camp.
+fn geared() -> Bot {
+    let mut set = settings(false);
+    set.rules.insert(1, gear_rule());
+    Bot::with(set)
+}
+
+fn item(name: &str, equipped: bool) -> Carried {
+    Carried {
+        name: name.into(),
+        count: 1,
+        equipped,
+    }
+}
+
+fn club(buy: bool) -> Goal {
+    Goal::Equip {
+        item: "club".into(),
+        how: GearUse::Wield,
+        buy,
+    }
+}
+
+fn vest() -> Goal {
+    Goal::Equip {
+        item: "padded vest".into(),
+        how: GearUse::Wear,
+        buy: true,
+    }
+}
+
+#[test]
+fn with_gear_it_checks_the_inventory_first() {
+    let b = geared();
+    assert_eq!(b.r.goal(), Goal::Inventory);
+    assert_eq!(b.r.part(), RoutinePart::CheckingGear);
+}
+
+#[test]
+fn it_buys_each_missing_item_then_goes_on_to_camp() {
+    let mut b = geared();
+    b.r.inventory(&[], b.at(1));
+    assert_eq!(b.r.goal(), Goal::Walk(WEAPONS));
+    assert_eq!(b.r.part(), RoutinePart::ToShop("club".into()));
+    assert_eq!(b.arrive(&seen(100, WEAPONS), 5), club(true));
+    assert_eq!(b.r.part(), RoutinePart::Equipping("club".into()));
+    b.r.equip_ended(Ok(()), b.at(6));
+    // It looks again rather than trusting what it did.
+    assert_eq!(b.r.goal(), Goal::Inventory);
+    b.r.inventory(&[item("club", true)], b.at(7));
+    assert_eq!(b.r.goal(), Goal::Walk(OTHER_ARMOUR));
+    b.arrive(&seen(100, OTHER_ARMOUR), 10);
+    b.r.equip_ended(Ok(()), b.at(11));
+    b.r.inventory(&[item("club", true), item("Padded Vest", true)], b.at(12));
+    // Nothing missing: on to the camp.
+    assert_eq!(b.r.goal(), Goal::Walk(CAMP));
+    assert_eq!(b.arrive(&seen(100, CAMP), 20), Goal::Camp(LOOK));
+}
+
+#[test]
+fn an_item_carried_but_not_in_use_is_put_on_where_it_stands() {
+    let mut b = geared();
+    b.r.inventory(&[item("club", false), item("padded vest", true)], b.at(1));
+    assert_eq!(b.r.goal(), club(false));
+}
+
+#[test]
+fn a_shop_it_cant_reach_gives_way_to_the_next() {
+    let mut b = geared();
+    b.r.inventory(&[item("club", true)], b.at(1));
+    assert_eq!(b.r.goal(), Goal::Walk(OTHER_ARMOUR));
+    b.r.walk_ended(
+        &WalkState::Failed("no way from 1/2150 to 1/9999 by walking".into()),
+        &seen(100, CAMP),
+        b.at(2),
+    );
+    assert_eq!(b.r.goal(), Goal::Walk(ARMOUR));
+    assert_eq!(b.arrive(&seen(100, ARMOUR), 5), vest());
+}
+
+#[test]
+fn an_item_it_cant_get_is_skipped_and_said() {
+    let mut b = geared();
+    b.r.inventory(&[], b.at(1));
+    b.arrive(&seen(100, WEAPONS), 5);
+    b.r.equip_ended(Err("can't afford club".into()), b.at(6));
+    assert_eq!(b.r.take_notes(), ["skipped club: can't afford club"]);
+    assert!(b.r.take_notes().is_empty());
+    b.r.inventory(&[], b.at(7));
+    // On to the vest; the club isn't tried again.
+    assert_eq!(b.r.goal(), Goal::Walk(OTHER_ARMOUR));
+    b.arrive(&seen(100, OTHER_ARMOUR), 10);
+    b.r.equip_ended(Ok(()), b.at(11));
+    b.r.inventory(&[item("padded vest", true)], b.at(12));
+    assert_eq!(b.r.goal(), Goal::Walk(CAMP));
+}
+
+#[test]
+fn an_item_no_shop_sells_is_skipped() {
+    let mut set = settings(false);
+    set.rules.insert(
+        1,
+        RuleSettings::Gear {
+            items: vec![GearSettings {
+                item: "quest sword".into(),
+                how: GearUse::Wield,
+                shops: Vec::new(),
+            }],
+            when: When::default(),
+        },
+    );
+    let mut b = Bot::with(set);
+    b.r.inventory(&[], b.at(1));
+    assert_eq!(
+        b.r.take_notes(),
+        ["skipped quest sword: no shop in places/ sells it"]
+    );
+    assert_eq!(b.r.goal(), Goal::Walk(CAMP));
+}
+
+#[test]
+fn after_a_rest_it_checks_its_gear_again() {
+    let mut b = geared();
+    b.r.inventory(&[item("club", true), item("padded vest", true)], b.at(1));
+    b.arrive(&seen(100, CAMP), 2);
+    assert_eq!(b.see(&seen(40, CAMP), 3), Goal::Walk(ROAD));
+    b.arrive(&seen(40, ROAD), 4);
+    b.r.rest_ended(b.at(60));
+    assert_eq!(b.r.goal(), Goal::Inventory);
+}
+
+#[test]
+fn the_gear_parts_read_for_the_card() {
+    assert_eq!(RoutinePart::CheckingGear.to_string(), "checking gear");
+    assert_eq!(
+        RoutinePart::ToShop("club".into()).to_string(),
+        "going to get club"
+    );
+    assert_eq!(
+        RoutinePart::Equipping("club".into()).to_string(),
+        "getting club"
     );
 }
