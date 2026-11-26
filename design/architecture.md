@@ -868,6 +868,9 @@ A bot walks to a room by itself: the first piece of 1.0 (*§12.2*).
 
 ### 6.11 The routine (#53)
 
+*The YAML described here (`places:`, `routine:` with fixed slots) is replaced by the
+shape in §14; the engine pieces below stay.*
+
 A solo bot's loop, the heart of 1.0 (*§12.2*): camp, retreat to rest, return, and timed
 hunts, from the character's `routine:` and `places:` (*§7.3*).
 
@@ -911,6 +914,9 @@ hunts, from the character's `routine:` and `places:` (*§7.3*).
   secrets.yaml                      passwords, git-ignored
   characters/<name>.yaml            one per bot character, plus the main character's
   paths/<group>/<name>.yaml         paths and loops (stored now, walked in a later step)
+  places/<area>.yaml                compiled room file, never edited (§14.4)
+  places/<area>.local.yaml          aliases, tags, avoid marks, map pins (§14.2)
+  routines/<name>.yaml              routines as rule lists (§14.6)
   gamedata/gamedata.sqlite          imported game data (read-only to clients)
   mudparty.sqlite                   the server's own history
   logs/                             §9
@@ -1101,6 +1107,9 @@ HHHHHHHH:flags:action                one row per step: the hashExits of the room
 graph whose rooms hash to the file's tokens, step by step.
 
 ### 8.2 The YAML path format
+
+*Loops as routine rules are designed in §14.7: waypoints routed at run time, with this
+step form kept for imports and for when the exact way matters.*
 
 ```yaml
 schema: 1
@@ -1548,6 +1557,10 @@ routine moves into the director, so #53 keeps it behind a narrow interface of go
 
 **1.2:** building the YAML in the web page (#58).
 
+**The YAML's shape** was settled on 2026-11-26 (*§14*): a compiled room file, one router
+with filters, routines as rule lists in their own files, and a map. 1.0 needs its first
+six build steps (*§14.12*).
+
 ## 13. TODO (after step 1)
 
 Each item is an issue in the **Later** milestone (#15–#24).
@@ -1590,3 +1603,296 @@ Each item is an issue in the **Later** milestone (#15–#24).
   item, monster and spell details for the sheets and the targeting rules, and live room
   state. Open read-only. The database is only as fresh as silvermere's last save, so
   anything read this way carries its own staleness, kept apart from the live sheets.
+
+## 14. Scripts: places, routes, routines and the map (designed 2026-11-26)
+
+The shape the YAML moves to, settled with the user while #55 was being built. It replaces
+the `places:` and `routine:` sections of a character's file (*§6.11*, PR #61) before
+shopping, training and the 1.1 director add more to them. Nothing has shipped, so the old
+form is replaced, not kept beside the new one.
+
+### 14.1 Why
+
+- **Scripts are written by hand as well as by the page.** The 1.2 web editor (#58) will
+  write most of them, but writing one by hand stays a first-class way to do it. The files
+  must read well, check well and explain their own mistakes.
+- **A character's file mixed four kinds of knowledge.** Who the character is (name,
+  login), how it reacts (combat, rest), facts about the world (room numbers, which shop
+  sells what, where a monster spawns) and what it does all day (the routine). The world
+  facts and the routine are the same for every Newhaven bot, yet each file repeated them.
+- **Fixed slots don't grow.** `camp`, `rest_at` and `hunts` meant a new slot for each new
+  behaviour: training, shopping, lair runs, the director's goals.
+- **Perfect information, for now** (user). With `silvermere.db` the room record is
+  complete, so mudparty is built on knowing the world exactly. Discovering rooms,
+  exploring and coping with a wrong or partial map wait until a source without a complete
+  record needs them (#20).
+
+### 14.2 The files
+
+```
+places/<area>.yaml            compiled from silvermere.db: never edited (§14.4)
+places/<area>.local.yaml      hand-written beside it: aliases, tags, avoid marks, map pins
+routines/<name>.yaml          a behaviour, reusable by any character (§14.6)
+characters/<name>.yaml        who, how it reacts, what it carries, which routine (§14.8)
+parties/<name>.yaml           1.1: the director's groups (#59)
+paths/<group>/<name>.yaml     loops imported from MegaMud .mp files (§8)
+```
+
+A character's file may still inline `places:` and `do:` for a one-off; the shared files
+are the usual way.
+
+### 14.3 Naming a room
+
+Room names go a long way, but some rooms can only be named by number (user). A place is
+resolved in this order:
+
+1. an alias from `places/<area>.local.yaml`;
+2. the compiled slug: `arena`. A name the game gives to more than one room gets its room
+   number in the slug: `narrow-path-2143`;
+3. the game's own name, `"Newhaven, Arena"`, while only one room has it. A repeated name
+   is an error that lists the rooms it could be;
+4. the key, `1/2150`, which always works.
+
+The long form `{ room: 1/2150, name: "Newhaven, Arena" }` names the room by number and
+checks the name: if the world is renumbered, `check` (*§14.9*) says the name no longer
+matches. The web editor writes this form, so a file it saved stays readable. MudPlay saves
+its loops' rooms as `1/5` strings for the same reason (`LoopWaypoint.cs`).
+
+### 14.4 The compiled room file
+
+`mudparty-server places compile [--area <name>]` reads `silvermere.db` read-only (the same
+tables the world-editor prototype reads, silvermere `tools/world-editor-proto/src/data.rs`)
+and writes one file per area:
+
+```yaml
+# Compiled from silvermere.db. Don't edit: names and notes go in newhaven.local.yaml.
+schema: 1
+area: newhaven
+source: { silvermere_db: "E:/silvermere-data/silvermere.db", compiled: 2026-11-26T10:00:00Z }
+rooms:
+  arena:
+    key: 1/2150
+    name: "Newhaven, Arena"
+    levels: 1-3
+    exits:
+      up: narrow-road
+      north: { to: dungeon-entrance, door: locked, bash: 30 }
+    lair: { group: 6, max: 2 }
+  small-cavern:
+    key: 1/2156
+    name: "Small Cavern"
+    lair: { group: 6, max: 1, regen: 2 }
+  weapons-shop:
+    key: 1/2141
+    name: "Newhaven, Weapons Shop"
+    shop: { name: Newhaven Weapon Shop, sells: { club: 0, quarterstaff: 0 } }   # copper
+  guild:
+    key: 1/2147
+    trainer: { shop: 38 }          # the Adventurer's Guild
+```
+
+- **What it holds:** each room's key, name, level range, exits (kind, door or gate, lock
+  and bash bonus, level gates, the item or spell an exit needs), lair settings (monster
+  group, how many, regen delay, the monsters that can spawn there), shops (what they sell
+  and for how much) and trainers.
+- **Areas** follow MajorMUD's `Area, Room` names by default (`Newhaven, Arena` is in
+  `newhaven`). Rooms without a prefix (`Small Cavern`, `Dungeon, Entrance`) are grouped by
+  the local file, which can also define areas of its own.
+- **Slugs** come from the name after the area prefix; a repeated name takes its room
+  number (Newhaven has 14 rooms and 12 names).
+- **One format, any source.** A later source (a MegaMud `.mdb`, exploration) writes the
+  same file, so scripts and the router never know where the facts came from. The world
+  editor could read and write it too: the two share the format, not code.
+- **Recompiling never clobbers** the local file. A local entry that names a room the new
+  compile no longer has is an error.
+- **Not known yet: respawn times.** The data doesn't tie the cave bear to Small Cavern;
+  the room only says monster group 6, at most one, regen delay 2. When a respawn time can
+  be worked out from silvermere's spawning rules, the compiler writes it; until then a
+  script gives it (`respawn: 4m`).
+
+`gamedata.sqlite` (*§7.5*) stays the router's fast index; the compiled file is the
+readable record scripts are written and checked against.
+
+### 14.5 The router
+
+Every move goes through one router: a weighted shortest path over the compiled exits.
+What a walk may use is decided by **filters that wrap each other**, as MudPlay does
+(`IRoomFilter`, `WalkAroundRoomsFilter`): a filter holds for every plan a walk makes,
+re-plans on the way included, rather than being a flag on one search.
+
+```yaml
+avoid:
+  rooms: [healer]                     # never walked through
+  areas: [sewers]
+  exits: [trap, toll]                 # exit kinds
+prefer_not: { dungeon-entrance: 20 }  # allowed, but costs 20 steps more
+```
+
+- The character's level gates exits by itself (level exits, the arena's 1-3).
+- `avoid` can be set on a routine, on one rule, or for one trip.
+- With perfect information `check` proves that every place a script names can be reached
+  at the character's level without crossing anything avoided, before the bot runs it.
+- The walker (*§6.10*) keeps carrying out the steps: doors, bashing, confirming each
+  room, pausing for a fight.
+
+### 14.6 Routines: a list of rules
+
+A routine is a list of rules, read top-down; the first that applies wins. The last rule
+is what the bot does when nothing else is due. It reads like the combat targeting list
+(*§6.4*), so a file has one way of reading.
+
+```yaml
+schema: 1
+name: newhaven-arena
+places: newhaven
+avoid: { rooms: [healer] }
+do:
+  - rest:    { at: narrow-road, when: { hp_below: 50% }, until: { hp: 100% } }
+  - gear:    { when: missing }
+  - train:   { at: guild, up_to: 3 }
+  - circuit: { lairs: [small-cavern], respawn: { small-cavern: 4m }, when: { hp_at_least: 80% } }
+  - camp:    { at: arena }
+```
+
+- **Conditions** (`when:`): `hp_below`, `mp_below`, `hp_at_least`, `level_below`,
+  `missing` (gear), and later time windows. A rule without `when:` always applies.
+- **Taking over:** a rule higher up that becomes due takes over from a lower one at a safe
+  point, never mid-fight (fleeing is #16). The lower rule keeps its state (a loop its
+  place, a circuit its timers) and picks up where it left off.
+- **Parameters:** a routine may name values a character can change:
+  `routine: { use: newhaven-arena, with: { rest_below: 60% } }`.
+- **The goals stay the interface** (*§6.11*): each rule hands the engines goals (walk,
+  rest, camp, kill, buy and equip, train), and the 1.1 director (#59) hands out the same
+  goals, with rules of its own (follow the leader, hold the group).
+- `@stop` and `@rego` pause and resume the whole routine, as now.
+
+### 14.7 Script shapes
+
+The activities a rule can run:
+
+| Shape | What it does |
+|---|---|
+| `camp` | Stay in a room and fight what comes, looking around now and then (built, *§6.11*). |
+| `loop` | A cycle of waypoints, or exact steps. |
+| `circuit` | Visit lairs as they respawn, ordered by travel cost. |
+| `sweep` | Visit every room of an area, least recently seen first, for wandering monsters. |
+| `errand` | Go, do something, come back: buy and equip (`gear`), `train`, heal, sell. |
+| `follow` | Stay with a leader: the game party, then the 1.1 director. |
+
+**Loops.** As MudPlay's v3 loops (`LoopWaypoint.cs`, which replaced v2's explicit steps):
+an ordered cycle of waypoints, each with an optional command to send on arrival, a delay
+before going on, and `no_rest` for a room too dangerous to sit in. The moves between
+waypoints are routed when the loop runs, so they follow the avoid filters and survive a
+map change.
+
+```yaml
+loop:
+  - arena
+  - { at: dungeon-entrance, no_rest: true }
+  - { at: small-cavern, command: search, delay: 2s }
+```
+
+Where the exact way matters (traps, one-way exits, MegaMud's own paths), `steps:` lists
+the moves, and `check` confirms each one reaches the room it should. MegaMud `.mp` imports
+(*§8*) come in as steps.
+
+**Circuits.** A list of lairs and their respawn times; the bot goes from lair to lair as
+each is ready, as MudPlay's Auto-Lair does (`AutoLairScheduler.cs`, `LairTimerStore.cs`):
+
+- **A lair's clock** starts at its last kill on Stock (at the entry, on Paradigm). It is
+  ready at clock start + respawn. A lair never seen this session is ready now.
+- **It repopulates when entered after it is ready**, so the bot must not step in early: it
+  waits in the lair's **wait-room**, the nearest neighbour that isn't itself a lair and
+  isn't avoided.
+- **Picking the next lair** scores each by *slack*, arrival time minus ready time
+  (counted to the wait-room). Positive slack is respawn time wasted; negative is time spent
+  waiting. The default picks the closest lair with slack of at least zero, else the one
+  whose fight can start soonest. A throughput option counts waiting as free.
+  Re-planning at every lair matters more than solving the whole tour, since which lairs
+  are ready changes while the bot travels.
+- **Bosses** can spawn early: on Stock at 87.5% of the timer, then surely at 100%
+  (`BossTimerMath.cs`). A circuit can head for the early window.
+- **Timers live in `mudparty.sqlite`**, so they survive a restart and a reconnect.
+- `idle:` says what to do when nothing is ready (`{ camp: arena }`); the default waits in
+  the next lair's wait-room.
+
+A `hunt` of one monster, as #61 built it, is a circuit of one lair.
+
+**Errands.** `gear` checks the inventory and buys what's missing; the router finds the
+nearest shop that sells each item, so `at:` is only needed to choose a shop. An item it
+can't get (no money, can't use it, can't reach the shop) is skipped and said on the card.
+`train` goes to a trainer while the next level is affordable and below `up_to` (#56).
+
+### 14.8 A character under the new shape
+
+```yaml
+schema: 1
+name: Ermias
+class: Warrior
+login: { account: Ermias }
+combat:
+  targeting: [kill_order, fight_back, { priority: ["*"] }]
+  melee: a
+rest:
+  until: { hp: 100% }
+gear:
+  - { item: club, use: wield }
+  - { item: padded vest, use: wear }
+routine: newhaven-arena
+```
+
+`gear:` says what the character carries; the routine's `gear` rule keeps it so.
+Targeting rules may be written as bare words when they take no value.
+
+### 14.9 Help for writing by hand
+
+- **A JSON Schema**, generated from the config types (`schemars`), so an editor with a YAML
+  extension (VS Code's, for one) completes keys, shows each field's doc and marks errors
+  as you type. `# yaml-language-server: $schema=...` at the top of a file, or the editor's
+  settings, points to it.
+- **`mudparty-server check <file>`** prints the file as the server reads it: defaults
+  filled in, places resolved to keys, the routine's rules in order. It also proves
+  reachability (*§14.5*) and checks long-form names (*§14.3*).
+- Errors name the file and the field, as now (*§7*).
+
+### 14.10 The map
+
+MudPlay has a graphical map (`Controls/MapControl.cs`, `Game/Map/BfsMapper.cs`), and the
+web page needs one too (user).
+
+- **Layout** as MudPlay's `RoomLayout`: each level a 2D grid, laid out by a breadth-first
+  walk from a room. Up and down exits are glyphs on a room, not a third axis. A room
+  MajorMUD's geometry won't fit (north then south doesn't always come back) is left out and
+  its exit drawn as a stub; a layout full of stubs is tried again from a more central
+  room. The world editor's `layout.rs` meets the same problem in 3D, moving a room to the
+  nearest free cell.
+- **Computed when drawn**, not stored in the room file, since it depends on which room is
+  the centre. The local file can pin a room's position where the automatic layout reads
+  badly.
+- **Built in three steps:**
+  1. *Read-only:* the area around a bot, every bot's position, and the route each is
+     walking.
+  2. *Overlays:* lairs with their timers, avoided rooms, shops and trainers, the loop or
+     circuit a bot is running.
+  3. *Editing (1.2, with #58):* click a room to make it a lair, a waypoint or avoided,
+     which is how MudPlay sets lairs and loops. The map becomes the script editor.
+
+### 14.11 Moving to it
+
+- PR #61's `places:` and `routine:` are replaced; the README and §6.11 follow the code.
+- #55's `gear:` lands as the `gear` errand, its shops found from the compiled file.
+- The engine pieces stay: the walker (*§6.10*), the goals and the session's wiring
+  (*§6.11*), the rest and combat engines.
+
+### 14.12 Build order
+
+1. The compiled room file and `places compile` (#63).
+2. The router and its filters (#64).
+3. Routines as rule lists in their own files, with shared places (#65).
+4. `check` and the JSON Schema (#66).
+5. Circuits (#67), replacing #61's hunts.
+6. Errands: gear (#55) and training (#56).
+7. Loops (#18) and sweeps (#68).
+8. The map: read-only (#69), overlays (#70), editing (#71).
+
+1.0 (*§12.2*) needs steps 1-6.
