@@ -63,6 +63,7 @@ fn spec(game: SocketAddr, store: Arc<Memory>) -> SessionSpec {
         inviter: None,
         statline_store: Some(store),
         statline_restore: true,
+        routine: None,
     }
 }
 

@@ -43,6 +43,7 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
         inviter: None,
         statline_store: None,
         statline_restore: true,
+        routine: None,
     }
 }
 

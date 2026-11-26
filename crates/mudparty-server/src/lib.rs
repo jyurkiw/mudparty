@@ -25,9 +25,9 @@ use mp_config::{
 };
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    AutoSwitch, CombatSettings, Command, Effect, Inviter, LoginSettings, Offline, PartySettings,
-    RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, Seat, SessionHandle, SessionSpec,
-    SessionState, Upstream, spawn, spawn_seated,
+    AutoSwitch, CombatSettings, Command, Effect, HuntSettings, Inviter, LoginSettings, Offline,
+    PartySettings, RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, RoutineSettings, Seat,
+    SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -48,6 +48,10 @@ const PARTY_RETRY: Duration = Duration::from_secs(30);
 const SICK_WAIT: Duration = Duration::from_secs(30);
 /// How long an edited character file must be quiet before it is read.
 const SETTLE: Duration = Duration::from_millis(300);
+/// How long after a failed walk a routine tries again (#53).
+const ROUTINE_RETRY: Duration = Duration::from_secs(30);
+/// How long a hunted monster may stand there unfought before the hunt gives up on it.
+const KILL_WAIT: Duration = Duration::from_secs(30);
 
 /// Something a bot did, for anyone watching.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +115,10 @@ pub enum Order {
     Join { leader: String },
     /// Walk to a room, written `map/room` (`1/2141`).
     Goto { room: String },
+    /// Pause movement and automation, the routine with them, as a `@stop`.
+    Pause,
+    /// Go on after a pause, as a `@rego`.
+    Resume,
 }
 
 /// Who a `wait` or `ok` from the web page is from, in `held_by`.
@@ -420,6 +428,8 @@ impl Server {
             Order::Wait => Command::Do(Effect::Wait(WEB.into())),
             Order::Ok => Command::Do(Effect::Ok(WEB.into())),
             Order::Join { leader } => Command::Do(Effect::Join(leader)),
+            Order::Pause => Command::Do(Effect::Stop(true)),
+            Order::Resume => Command::Do(Effect::Stop(false)),
             Order::Goto { room } => Command::Goto {
                 to: room_key(&room).ok_or_else(|| format!("{room:?} isn't a room like 1/2141"))?,
             },
@@ -649,6 +659,7 @@ impl Server {
                 .clone()
                 .map(|h| h as Arc<dyn mp_engine::StatlineStore>),
             statline_restore: c.statline_restore,
+            routine: routine_for(c),
             inviter: c.party.invite_by_injection.then(|| {
                 Arc::new(SeatInviter(self.me.lock().expect("me lock").clone())) as Arc<dyn Inviter>
             }),
@@ -898,6 +909,32 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
         // One rest command a round at most.
         retry: ROUND,
         sick_wait: SICK_WAIT,
+    })
+}
+
+/// A solo bot's loop (#53), its places looked up. The config loader has checked that each
+/// one is a room.
+fn routine_for(c: &CharacterConfig) -> Option<RoutineSettings> {
+    let r = c.routine.as_ref()?;
+    Some(RoutineSettings {
+        camp: c.place(&r.camp)?,
+        rest_at: c.place(&r.rest_at)?,
+        retreat: c.rest.start_when_any,
+        look_every: r.look_every,
+        hunts: r
+            .hunts
+            .iter()
+            .filter_map(|h| {
+                Some(HuntSettings {
+                    monster: h.monster.clone(),
+                    at: c.place(&h.at)?,
+                    every: h.every,
+                    min_hp: h.min_hp,
+                })
+            })
+            .collect(),
+        retry: ROUTINE_RETRY,
+        kill_wait: KILL_WAIT,
     })
 }
 

@@ -7,6 +7,7 @@ mod pacing;
 mod party;
 mod remote;
 mod rest;
+mod routine;
 mod session;
 mod walk;
 
@@ -19,6 +20,7 @@ pub use remote::{
     exp_reply, status_reply, where_reply,
 };
 pub use rest::{RestSettings, Rester};
+pub use routine::{Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, Seen};
 pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,

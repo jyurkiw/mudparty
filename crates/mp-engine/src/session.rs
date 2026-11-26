@@ -34,6 +34,7 @@ use crate::remote::{
     status_reply, where_reply,
 };
 use crate::rest::{RestSettings, Rester};
+use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen};
 use crate::walk::{WalkState, Walker};
 
 /// How long a walk's line may go unanswered before the walker asks where it is again.
@@ -82,6 +83,8 @@ pub struct SessionSpec {
     pub statline_store: Option<Arc<dyn StatlineStore>>,
     /// Put the saved statline back on an orderly logoff (`statline_restore`).
     pub statline_restore: bool,
+    /// A solo bot's loop (#53), or none. A seated or unattended character runs none.
+    pub routine: Option<RoutineSettings>,
 }
 
 /// Keeps a character's own statline while a bot has its own set (#34, design §6.1).
@@ -266,6 +269,21 @@ pub enum Report {
     Unattended,
     /// Where a walk stands (#52).
     Walk(WalkState),
+    /// Where the routine is (#53).
+    Routine(RoutinePart),
+}
+
+/// A routine and the goal the session is carrying out for it (#53).
+struct Running {
+    routine: Routine,
+    /// The goal under way; `None` until the first is started, or after a pause.
+    goal: Option<Goal>,
+    /// The walker under way was started for the routine.
+    walking: bool,
+    /// The rest under way was started for the routine.
+    resting: bool,
+    last_look: Instant,
+    shown: Option<RoutinePart>,
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -701,17 +719,135 @@ impl Runner {
         }
     }
 
-    /// Reports a walk's state when it changes, and lets a finished walk go.
-    fn watch_walk(&mut self, walker: &mut Option<Walker>, seen: &mut Option<WalkState>) {
-        let Some(w) = walker else { return };
+    /// Reports a walk's state when it changes, and lets a finished walk go, returning how
+    /// it ended.
+    fn watch_walk(
+        &mut self,
+        walker: &mut Option<Walker>,
+        seen: &mut Option<WalkState>,
+    ) -> Option<WalkState> {
+        let w = walker.as_ref()?;
         let now = w.state();
         if seen.as_ref() != Some(&now) {
             self.event("walk", json!({"to": format!("{}/{}", w.destination().0, w.destination().1), "state": format!("{now:?}")}));
             self.report(Report::Walk(now.clone()));
-            *seen = Some(now);
+            *seen = Some(now.clone());
         }
         if w.done() {
             *walker = None;
+            return Some(now);
+        }
+        None
+    }
+
+    /// Moves the routine on and starts the goal it wants, if that changed (#53). `ended`:
+    /// how a walk that just finished ended.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_routine(
+        &mut self,
+        run: &mut Running,
+        ended: Option<WalkState>,
+        pacer: &mut Pacer,
+        walker: &mut Option<Walker>,
+        walk_seen: &mut Option<WalkState>,
+        combat: &mut Option<Combat>,
+        rester: &mut Option<Rester>,
+        vitals: Option<Vitals>,
+        room: Option<(u32, u32)>,
+        now: Instant,
+    ) {
+        let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
+        let seen = Seen {
+            vitals,
+            fighting,
+            monsters: combat
+                .as_ref()
+                .map_or_else(Vec::new, |c| c.monsters().to_vec()),
+            room,
+            walking: walker.is_some(),
+        };
+        run.routine
+            .set_paused(self.auto.stopped || self.auto.all_off);
+        if let Some(end) = ended
+            && run.walking
+        {
+            run.walking = false;
+            run.routine.walk_ended(&end, &seen, now);
+        }
+        if run.resting && !rester.as_ref().is_some_and(Rester::resting) {
+            run.resting = false;
+            run.routine.rest_ended(now);
+        }
+        run.routine.update(&seen, now);
+        let goal = run.routine.goal();
+        if run.goal.as_ref() != Some(&goal) {
+            self.decision(
+                "routine_goal",
+                json!({"goal": format!("{goal:?}"), "was": format!("{:?}", run.goal)}),
+            );
+            // A walk the routine started and no longer wants is called off.
+            if run.walking {
+                run.walking = false;
+                *walker = None;
+                *walk_seen = None;
+                self.report(Report::Walk(WalkState::Failed("called off".into())));
+            }
+            match &goal {
+                Goal::Walk(to) => match self.spec.rooms.clone() {
+                    Some(book) => {
+                        let mut w = Walker::new(*to, book, WALK_STEP_WAIT);
+                        for line in w.start(now) {
+                            pacer.push(line);
+                        }
+                        *walker = Some(w);
+                        *walk_seen = None;
+                        run.walking = true;
+                    }
+                    None => run.routine.walk_ended(
+                        &WalkState::Failed("no game data to plan a walk on".into()),
+                        &seen,
+                        now,
+                    ),
+                },
+                Goal::Rest => match rester {
+                    Some(r) => {
+                        let acts = r.begin();
+                        self.queue(pacer, "rest", acts);
+                        run.resting = true;
+                    }
+                    None => run.routine.rest_ended(now),
+                },
+                Goal::Kill(target) => {
+                    if let Some(c) = combat {
+                        c.order_kill(target);
+                        if self.auto.fights() {
+                            for cmd in c.act(now) {
+                                self.decision("attack", json!({"command": cmd, "target": target}));
+                                pacer.push(cmd);
+                            }
+                        }
+                    }
+                }
+                Goal::Camp => run.last_look = now,
+                Goal::Wait => {}
+            }
+            self.watch_walk(walker, walk_seen);
+            run.goal = Some(goal);
+        }
+        // The camp's eyes: a bare Enter redraws the room, so the bot sees what arrived.
+        if run.goal == Some(Goal::Camp)
+            && !fighting
+            && walker.is_none()
+            && now.duration_since(run.last_look) >= run.routine.look_every()
+        {
+            run.last_look = now;
+            pacer.push("");
+        }
+        let part = run.routine.part();
+        if run.shown.as_ref() != Some(&part) {
+            self.event("routine", json!({"part": part.to_string()}));
+            self.report(Report::Routine(part.clone()));
+            run.shown = Some(part);
         }
     }
 
@@ -852,6 +988,22 @@ impl Runner {
         // A walk under way, and the state last reported.
         let mut walker: Option<Walker> = None;
         let mut walk_seen: Option<WalkState> = None;
+        // The room the game last said the bot is in.
+        let mut room_now: Option<(u32, u32)> = None;
+        // A solo bot's routine: a bot's own, never a seated character's.
+        let mut running = self
+            .spec
+            .routine
+            .clone()
+            .filter(|_| seat.is_none())
+            .map(|set| Running {
+                routine: Routine::new(set, Instant::now()),
+                goal: None,
+                walking: false,
+                resting: false,
+                last_look: Instant::now(),
+                shown: None,
+            });
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
         let mut shapes = Statline::silvermere_defaults();
@@ -869,6 +1021,10 @@ impl Runner {
         let remote = self.spec.remote.clone().map(Remote::new);
         let mut party = self.spec.party.clone().map(PartyJoin::new);
         let mut rester = self.spec.rest.clone().map(Rester::new);
+        // With a routine, the routine decides where to rest.
+        if let (Some(r), Some(_)) = (&mut rester, &running) {
+            r.set_auto_start(false);
+        }
         let mut pacer = Pacer::new(self.spec.pacing.clone());
         let mut seen = Watched::default();
         let mut in_game = false;
@@ -1033,6 +1189,7 @@ impl Runner {
                                 }
                             }
                             Item::Event(Event::RoomKey { map, room }) => {
+                                room_now = Some((*map, *room));
                                 self.report(Report::Room { map: *map, room: *room });
                                 self.answer(&mut pacer, |q| q != Query::Exp, Some((*map, *room)), &Doing::of(&combat, &rester, now));
                             }
@@ -1090,7 +1247,10 @@ impl Runner {
                                 pacer.push(line);
                             }
                         }
-                        self.watch_walk(&mut walker, &mut walk_seen);
+                        let ended = self.watch_walk(&mut walker, &mut walk_seen);
+                        if let Some(run) = running.as_mut().filter(|_| driving && !unattended) {
+                            self.drive_routine(run, ended, &mut pacer, &mut walker, &mut walk_seen, &mut combat, &mut rester, last_vitals, room_now, now);
+                        }
                         self.watch_states(&party, &rester, &combat, &mut seen);
                     }
                     if in_game
@@ -1130,6 +1290,7 @@ impl Runner {
                         // engine, and the session finds out where it is.
                         *seat = None;
                         unattended = true;
+                        running = None;
                         inject.queue.clear();
                         self.decision("unattended", json!({"hang_up_below": format!("{:?}", self.spec.hang_up_below)}));
                         self.event("unattended", json!({}));
@@ -1187,6 +1348,10 @@ impl Runner {
                     Some(Command::Inject(line)) => {
                         self.decision("inject_dropped", json!({"line": line, "why": "no seat"}));
                     }
+                    Some(Command::Goto { to }) if running.is_some() && !self.auto.stopped && !self.auto.all_off => {
+                        self.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "the routine is running"}));
+                        self.report(Report::Walk(WalkState::Failed("the routine is walking the bot: @stop it first".into())));
+                    }
                     Some(Command::Goto { to }) if in_game && logging_off.is_none() && seat.is_none() => {
                         self.decision("goto", json!({"to": format!("{}/{}", to.0, to.1)}));
                         match self.spec.rooms.clone() {
@@ -1197,6 +1362,10 @@ impl Runner {
                                 }
                                 walker = Some(w);
                                 walk_seen = None;
+                                if let Some(run) = &mut running {
+                                    // A walk by hand: not the routine's to follow.
+                                    run.walking = false;
+                                }
                                 self.watch_walk(&mut walker, &mut walk_seen);
                             }
                             None => self.report(Report::Walk(WalkState::Failed("no game data to plan a walk on".into()))),
@@ -1286,7 +1455,10 @@ impl Runner {
                                 pacer.push(line);
                             }
                         }
-                        self.watch_walk(&mut walker, &mut walk_seen);
+                        let ended = self.watch_walk(&mut walker, &mut walk_seen);
+                        if let Some(run) = running.as_mut().filter(|_| seat.is_none() && !unattended) {
+                            self.drive_routine(run, ended, &mut pacer, &mut walker, &mut walk_seen, &mut combat, &mut rester, last_vitals, room_now, now);
+                        }
                         self.watch_states(&party, &rester, &combat, &mut seen);
                         if self.drain(&mut stream, &mut pacer).await.is_err() {
                             return LinkEnd::Lost { was_in_game: true };

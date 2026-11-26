@@ -74,6 +74,7 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
         inviter: None,
         statline_store: None,
         statline_restore: true,
+        routine: None,
     }
 }
 

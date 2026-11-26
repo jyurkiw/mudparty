@@ -141,7 +141,10 @@ function card(m) {
       el("button", { disabled: m.running, onclick: () => order(m.name, { order: "start" }) }, "Start"),
       el("button", { disabled: !m.running, onclick: () => order(m.name, { order: "stop" }) }, "Stop"),
       el("button", { disabled: !inGame, onclick: () => order(m.name, { order: "wait" }) }, "Wait"),
-      el("button", { disabled: !inGame, onclick: () => order(m.name, { order: "ok" }) }, "Ok")),
+      el("button", { disabled: !inGame, onclick: () => order(m.name, { order: "ok" }) }, "Ok"),
+      a.stopped
+        ? el("button", { disabled: !inGame, onclick: () => order(m.name, { order: "resume" }) }, "Go on")
+        : el("button", { disabled: !inGame, onclick: () => order(m.name, { order: "pause" }) }, "Pause")),
     el("div", { class: "row" },
       toggle("combat", a.combat, "combat"), toggle("nuke", a.nuke, "nuke"),
       toggle("rest", a.rest, "rest"), toggle("all", !a.all_off, "all")),
@@ -161,6 +164,7 @@ function card(m) {
     el("div", {}, room),
     fight ? el("div", {}, "fighting " + fight) : null,
     m.party ? el("div", { class: "note" }, "party: " + m.party) : null,
+    m.routine ? el("div", { class: "note" }, "routine: " + m.routine) : null,
     m.walk ? el("div", { class: "note" }, m.walk) : null,
     m.driver === "unattended" ? el("div", { class: "note" }, "MudPlay left: staying online, idle") : null,
     m.last_position ? el("div", { class: "note" }, lastSeen(m.last_position)) : null,

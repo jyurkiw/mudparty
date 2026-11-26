@@ -110,6 +110,9 @@ pub struct Combat {
     nuke: bool,
     /// A `@wait` hold: no new fight is picked, though one going on goes on.
     hold: bool,
+    /// An `Also here:` line came since the last prompt: the room display being read has
+    /// its list.
+    also_here_seen: bool,
 }
 
 impl Combat {
@@ -128,7 +131,13 @@ impl Combat {
             mp: 0,
             nuke: true,
             hold: false,
+            also_here_seen: false,
         }
+    }
+
+    /// The monsters in the room, as the game last listed them.
+    pub fn monsters(&self) -> &[String] {
+        &self.roster
     }
 
     /// `@auto-nuke on|off`: with it off, the bot melees whatever its MP.
@@ -191,12 +200,17 @@ impl Combat {
     pub fn on_item(&mut self, item: &Item, now: Instant) -> Vec<String> {
         match item {
             Item::Event(Event::AlsoHere { names }) => {
+                self.also_here_seen = true;
                 self.roster = names
                     .iter()
                     .filter(|n| self.is_monster(n))
                     .cloned()
                     .collect();
             }
+            // A room display lists who else is here before its exits, and leaves the line
+            // out when nobody is: exits with no list since the last prompt mean an empty
+            // room (a move, or a look after the last monster died or left).
+            Item::Event(Event::ObviousExits) if !self.also_here_seen => self.roster.clear(),
             Item::Event(Event::MovesToAttack { who, target })
             | Item::Event(Event::MovesToCast { who, target, .. })
                 if self
@@ -228,6 +242,7 @@ impl Combat {
                 }
             }
             Item::Prompt(v) => {
+                self.also_here_seen = false;
                 self.mp = v.mp.unwrap_or(0);
                 return self.decide(now);
             }
