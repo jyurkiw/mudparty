@@ -5,15 +5,19 @@
 mod character;
 mod error;
 mod files;
+mod routine;
 mod server;
 mod units;
 
 pub use character::{
-    Amount, Automation, Avoid, BOT_STATLINE, Channel, CharacterConfig, Combat, Hunt, Login,
-    LoginStep, LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier,
-    Routine, Rule, StealthOpener, Tier, Unattended,
+    Amount, Automation, BOT_STATLINE, Channel, CharacterConfig, Combat, Login, LoginStep,
+    LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier, Rule,
+    StealthOpener, Tier, Unattended,
 };
 pub use error::ConfigError;
 pub use files::{Loaded, Secrets, load_character, load_server, revision};
+pub use routine::{
+    Avoid, CampRule, HuntRule, RestRule, Routine, RoutineRef, RuleSpec, When, load_routine,
+};
 pub use server::{Game, GameData, Listen, Logging, RollOverride, ServerConfig, Stale, StreamRoll};
 pub use units::{parse_duration, parse_size};

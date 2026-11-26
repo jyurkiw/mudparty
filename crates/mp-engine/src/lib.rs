@@ -20,7 +20,7 @@ pub use remote::{
     exp_reply, status_reply, where_reply,
 };
 pub use rest::{RestSettings, Rester};
-pub use routine::{Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, Seen};
+pub use routine::{Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen};
 pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,

@@ -287,3 +287,27 @@ fn begun_at_full_it_ends_at_the_next_prompt() {
     );
     assert!(!r.resting());
 }
+
+#[test]
+fn a_rest_begun_until_its_own_thresholds_stops_there() {
+    let t = Instant::now();
+    let mut r = Rester::new(RestSettings {
+        tell: None,
+        ..settings()
+    });
+    // A routine's rest rule: until 60% HP, below the 95% the character stops at.
+    r.begin_until(Pools {
+        hp: Some(Amount::Percent(60)),
+        mp: None,
+    });
+    assert_eq!(
+        r.on_item(&prompt(40, 5, Rest::Standing), t, false),
+        vec![rest()]
+    );
+    r.on_item(&prompt(60, 5, Rest::Resting), t, false);
+    assert!(!r.resting());
+    // The next rest is back to the character's own thresholds.
+    r.begin();
+    r.on_item(&prompt(60, 20, Rest::Resting), t, false);
+    assert!(r.resting());
+}

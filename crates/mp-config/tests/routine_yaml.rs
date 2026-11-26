@@ -1,126 +1,212 @@
-//! A character's `places:` and `routine:` (#53): the solo loop of camp, retreat, rest,
-//! return and timed hunts, with rooms named once and used by name.
+//! Routines as rule lists in their own files (#65, design §14.6): `routines/<name>.yaml`,
+//! read top-down, named from a character's file with parameters of its own, or written
+//! inline.
 
+use std::fs;
 use std::time::Duration;
 
-use mp_config::{Amount, CharacterConfig};
+use mp_config::{Amount, CharacterConfig, RoutineRef, RuleSpec, load_routine};
 
-const NEWHAVEN: &str = r#"
+const ARENA: &str = r#"
 schema: 1
-name: Ermias
-login:
-  account: Ermias
-rest:
-  start_when_any: { hp: 50% }
-  stop_when_all: { hp: 100% }
-places:
-  arena: 1/2150
-  road: 1/2146
-  cavern: 1/2156
-routine:
-  camp: arena
-  rest_at: road
-  look_every: 4s
-  hunts:
-    - monster: cave bear
-      at: cavern
+name: newhaven-arena
+places: newhaven
+params:
+  rest_below: 50%
+  bear_hp: 80%
+avoid:
+  rooms: [healer]
+  exits: [trap]
+prefer_not:
+  narrow-path: 5
+do:
+  - rest:
+      at: road
+      when: { hp_below: "${rest_below}" }
+      until: { hp: 100% }
+  - hunt:
+      monster: cave bear
+      at: dungeon:small-cavern-2156
       every: 4m
-      min_hp: 80%
+      when: { hp_at_least: "${bear_hp}" }
+  - camp:
+      at: arena
+      look_every: 4s
 "#;
 
-#[test]
-fn a_routine_reads_with_its_places_resolved() {
-    let c = CharacterConfig::from_yaml(NEWHAVEN).unwrap();
-    assert_eq!(c.place("arena"), Some((1, 2150)));
-    // A room may be written straight out, too.
-    assert_eq!(c.place("1/2141"), Some((1, 2141)));
-    assert_eq!(c.place("nowhere"), None);
-    let r = c.routine.as_ref().unwrap();
-    assert_eq!(r.camp, "arena");
-    assert_eq!(r.rest_at, "road");
-    assert_eq!(r.look_every, Duration::from_secs(4));
-    assert_eq!(r.hunts.len(), 1);
-    let h = &r.hunts[0];
-    assert_eq!(h.monster, "cave bear");
-    assert_eq!(c.place(&h.at), Some((1, 2156)));
-    assert_eq!(h.every, Duration::from_secs(240));
-    assert_eq!(h.min_hp, Some(Amount::Percent(80)));
+/// A data root's `routines/` folder holding `file` as `newhaven-arena.yaml`.
+fn routines(file: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("newhaven-arena.yaml"), file).unwrap();
+    dir
+}
+
+fn character(routine: &str) -> CharacterConfig {
+    CharacterConfig::from_yaml(&format!(
+        "schema: 1\nname: Ermias\nlogin:\n  account: Ermias\n{routine}"
+    ))
+    .unwrap()
 }
 
 #[test]
-fn a_file_without_a_routine_has_none() {
-    let c = CharacterConfig::from_yaml("schema: 1\nname: Ermias\n").unwrap();
-    assert!(c.routine.is_none());
-    assert!(c.places.is_empty());
+fn a_character_names_its_routine() {
+    let c = character("routine: newhaven-arena\n");
+    assert_eq!(
+        c.routine,
+        Some(RoutineRef::Named {
+            name: "newhaven-arena".into(),
+            with: Default::default(),
+        })
+    );
 }
 
 #[test]
-fn the_defaults_fill_in() {
-    let c = CharacterConfig::from_yaml(
-        "schema: 1\nname: Ermias\nrest:\n  start_when_any: { hp: 50% }\nroutine:\n  camp: 1/2150\n  rest_at: 1/2146\n",
+fn a_routine_file_reads_top_down_with_its_params_filled_in() {
+    let dir = routines(ARENA);
+    let c = character("routine: newhaven-arena\n");
+    let r = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap()).unwrap();
+    assert_eq!(r.name, "newhaven-arena");
+    assert_eq!(r.places.as_deref(), Some("newhaven"));
+    assert_eq!(r.avoid.rooms, ["healer"]);
+    assert_eq!(r.prefer_not.get("narrow-path"), Some(&5));
+    assert_eq!(r.rules.len(), 3);
+    let RuleSpec::Rest(rest) = &r.rules[0] else {
+        panic!("{:?}", r.rules[0])
+    };
+    assert_eq!(rest.at, "road");
+    assert_eq!(rest.when.hp_below, Some(Amount::Percent(50)));
+    assert_eq!(rest.until.and_then(|u| u.hp), Some(Amount::Percent(100)));
+    let RuleSpec::Hunt(hunt) = &r.rules[1] else {
+        panic!("{:?}", r.rules[1])
+    };
+    assert_eq!(hunt.monster, "cave bear");
+    assert_eq!(hunt.every, Duration::from_secs(240));
+    assert_eq!(hunt.when.hp_at_least, Some(Amount::Percent(80)));
+    let RuleSpec::Camp(camp) = &r.rules[2] else {
+        panic!("{:?}", r.rules[2])
+    };
+    assert_eq!(camp.at, "arena");
+    assert_eq!(camp.look_every, Duration::from_secs(4));
+}
+
+#[test]
+fn a_character_may_change_a_routines_params() {
+    let dir = routines(ARENA);
+    let c = character("routine:\n  use: newhaven-arena\n  with: { rest_below: 60% }\n");
+    let r = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap()).unwrap();
+    let RuleSpec::Rest(rest) = &r.rules[0] else {
+        panic!()
+    };
+    assert_eq!(rest.when.hp_below, Some(Amount::Percent(60)));
+}
+
+#[test]
+fn a_param_the_routine_doesnt_have_is_refused() {
+    let dir = routines(ARENA);
+    let c = character("routine:\n  use: newhaven-arena\n  with: { flee_below: 10% }\n");
+    let e = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("flee_below"), "{e}");
+}
+
+#[test]
+fn a_param_used_but_not_declared_is_refused() {
+    let dir = routines(&ARENA.replace("\"${bear_hp}\"", "\"${bear_health}\""));
+    let c = character("routine: newhaven-arena\n");
+    let e = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("bear_health"), "{e}");
+}
+
+#[test]
+fn a_routine_file_that_isnt_there_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = character("routine: newhaven-arena\n");
+    let e = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("newhaven-arena"), "{e}");
+}
+
+#[test]
+fn a_routine_may_be_written_inline() {
+    let c = character(
+        "routine:\n  do:\n    - rest: { at: 1/2146, when: { hp_below: 50% } }\n    - camp: { at: 1/2150 }\n",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let r = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap()).unwrap();
+    assert_eq!(r.name, "Ermias");
+    assert_eq!(r.rules.len(), 2);
+    let RuleSpec::Camp(camp) = &r.rules[1] else {
+        panic!()
+    };
+    assert_eq!(camp.look_every, Duration::from_secs(5));
+}
+
+#[test]
+fn an_inline_routine_is_checked_with_the_character() {
+    let e = CharacterConfig::from_yaml(
+        "schema: 1\nname: Ermias\nroutine:\n  do:\n    - rest: { at: road }\n",
     )
-    .unwrap();
-    let r = c.routine.unwrap();
-    assert_eq!(r.look_every, Duration::from_secs(5));
-    assert!(r.hunts.is_empty());
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("routine.do[0]"), "{e}");
 }
 
-fn error(yaml: &str) -> String {
-    CharacterConfig::from_yaml(yaml).unwrap_err().to_string()
-}
-
-#[test]
-fn an_unknown_place_is_named() {
-    let e = error(&NEWHAVEN.replace("rest_at: road", "rest_at: tavern"));
-    assert!(e.contains("routine.rest_at"), "{e}");
-    assert!(e.contains("tavern"), "{e}");
-    let e = error(&NEWHAVEN.replace("at: cavern", "at: lair"));
-    assert!(e.contains("routine.hunts[0].at"), "{e}");
+fn error_in(file: &str) -> String {
+    let dir = routines(file);
+    let c = character("routine: newhaven-arena\n");
+    load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap())
+        .unwrap_err()
+        .to_string()
 }
 
 #[test]
-fn a_place_must_be_a_room() {
-    let e = error(&NEWHAVEN.replace("arena: 1/2150", "arena: the arena"));
-    assert!(e.contains("places.arena"), "{e}");
+fn a_rule_after_one_that_always_applies_would_never_run() {
+    let e = error_in(
+        "schema: 1\nname: x\ndo:\n  - camp: { at: arena }\n  - rest: { at: road, when: { hp_below: 50% } }\n",
+    );
+    assert!(e.contains("do[1]"), "{e}");
+    assert!(e.contains("never"), "{e}");
 }
 
 #[test]
-fn a_routine_retreats_by_the_rest_thresholds() {
-    // Without a line to fall below, the bot would never leave the camp to rest.
-    let e = error(&NEWHAVEN.replace("start_when_any: { hp: 50% }", "command: rest"));
-    assert!(e.contains("rest.start_when_any"), "{e}");
+fn a_rest_rule_says_when() {
+    let e = error_in("schema: 1\nname: x\ndo:\n  - rest: { at: road }\n  - camp: { at: arena }\n");
+    assert!(e.contains("do[0]"), "{e}");
+    assert!(e.contains("when"), "{e}");
+}
+
+#[test]
+fn an_unknown_rule_or_condition_is_named() {
+    let e = error_in("schema: 1\nname: x\ndo:\n  - juggle: { at: road }\n");
+    assert!(e.contains("juggle"), "{e}");
+    let e =
+        error_in("schema: 1\nname: x\ndo:\n  - rest: { at: road, when: { feeling_low: true } }\n");
+    assert!(e.contains("feeling_low"), "{e}");
 }
 
 #[test]
 fn a_hunt_needs_a_monster_and_a_time() {
-    let e = error(&NEWHAVEN.replace("monster: cave bear", "monster: \"\""));
-    assert!(e.contains("routine.hunts[0].monster"), "{e}");
-    let e = error(&NEWHAVEN.replace("every: 4m", "every: 0s"));
-    assert!(e.contains("routine.hunts[0].every"), "{e}");
-    let e = error(&NEWHAVEN.replace("min_hp: 80%", "min_hp: 180%"));
-    assert!(e.contains("routine.hunts[0].min_hp"), "{e}");
-}
-
-#[test]
-fn a_routine_may_avoid_rooms_areas_and_exit_kinds() {
-    let c = CharacterConfig::from_yaml(&NEWHAVEN.replace(
-        "  look_every: 4s\n",
-        "  look_every: 4s\n  avoid:\n    rooms: [healer, 1/2190]\n    areas: [dungeon]\n    exits: [trap, toll]\n  prefer_not:\n    narrow-path: 20\n",
-    ))
-    .unwrap();
-    let r = c.routine.unwrap();
-    assert_eq!(r.avoid.rooms, ["healer", "1/2190"]);
-    assert_eq!(r.avoid.areas, ["dungeon"]);
-    assert_eq!(r.avoid.exits, ["trap", "toll"]);
-    assert_eq!(r.prefer_not.get("narrow-path"), Some(&20));
+    let e = error_in(&ARENA.replace("monster: cave bear", "monster: \"\""));
+    assert!(e.contains("do[1]"), "{e}");
+    let e = error_in(&ARENA.replace("every: 4m", "every: 0s"));
+    assert!(e.contains("every"), "{e}");
 }
 
 #[test]
 fn an_exit_kind_must_be_one_the_game_has() {
-    let e = error(&NEWHAVEN.replace(
-        "  look_every: 4s\n",
-        "  look_every: 4s\n  avoid:\n    exits: [trapdoor]\n",
-    ));
-    assert!(e.contains("routine.avoid.exits[0]"), "{e}");
-    assert!(e.contains("trapdoor"), "{e}");
+    let e = error_in(&ARENA.replace("exits: [trap]", "exits: [trapdoor]"));
+    assert!(e.contains("avoid.exits[0]"), "{e}");
+}
+
+#[test]
+fn targeting_rules_may_be_bare_words() {
+    let c = CharacterConfig::from_yaml(
+        "schema: 1\nname: Ermias\ncombat:\n  targeting: [kill_order, fight_back, { priority: [\"*\"] }]\n",
+    )
+    .unwrap();
+    assert_eq!(c.combat.targeting.len(), 3);
 }

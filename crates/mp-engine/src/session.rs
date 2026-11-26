@@ -811,9 +811,9 @@ impl Runner {
                         now,
                     ),
                 },
-                Goal::Rest => match rester {
+                Goal::Rest(until) => match rester {
                     Some(r) => {
-                        let acts = r.begin();
+                        let acts = r.begin_until(*until);
                         self.queue(pacer, "rest", acts);
                         run.resting = true;
                     }
@@ -830,17 +830,17 @@ impl Runner {
                         }
                     }
                 }
-                Goal::Camp => run.last_look = now,
+                Goal::Camp(_) => run.last_look = now,
                 Goal::Wait => {}
             }
             self.watch_walk(walker, walk_seen);
             run.goal = Some(goal);
         }
         // The camp's eyes: a bare Enter redraws the room, so the bot sees what arrived.
-        if run.goal == Some(Goal::Camp)
+        if let Some(Goal::Camp(every)) = run.goal
             && !fighting
             && walker.is_none()
-            && now.duration_since(run.last_look) >= run.routine.look_every()
+            && now.duration_since(run.last_look) >= every
         {
             run.last_look = now;
             pacer.push("");

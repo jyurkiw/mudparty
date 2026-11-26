@@ -1,9 +1,9 @@
 //! The README's example files read as they say: every `toml` block is a whole
 //! `mudparty.toml`, and every `yaml` block a character file (`schema:`), a
-//! `secrets.yaml` (`accounts:`) or a places local file (`area:`). An example that drifts
-//! from the loaders fails here.
+//! `secrets.yaml` (`accounts:`), a places local file (`area:`) or a routine file (`do:`).
+//! An example that drifts from the loaders fails here.
 
-use mp_config::{CharacterConfig, Secrets, ServerConfig};
+use mp_config::{CharacterConfig, RoutineRef, Secrets, ServerConfig, load_routine};
 
 /// The README's fenced blocks in `lang`, in order.
 fn blocks(lang: &str) -> Vec<String> {
@@ -44,6 +44,17 @@ fn every_yaml_file_in_the_readme_reads() {
                 .map_err(|e| e.to_string())
         } else if b.lines().any(|l| l.starts_with("area:")) {
             serde_norway::from_str::<mp_data::places::Local>(&b)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        } else if b.lines().any(|l| l.starts_with("do:")) {
+            // A routine file, read as the server reads one from routines/.
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("example.yaml"), &b).unwrap();
+            let named = RoutineRef::Named {
+                name: "example".into(),
+                with: Default::default(),
+            };
+            load_routine(dir.path(), "Example", &named)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         } else {

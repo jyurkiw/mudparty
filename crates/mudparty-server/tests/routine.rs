@@ -1,32 +1,52 @@
-//! A routine through the server (#53) in the stock world's Newhaven: a bot walks down to
-//! its camp in the arena, leaves for Narrow Road to rest when its HP falls, comes back, and
-//! pauses and goes on when told.
+//! A routine through the server (#53, #65) in the stock world's Newhaven: a bot runs a
+//! shared routine file over the compiled room files. It walks down to its camp in the
+//! arena, leaves for Narrow Road to rest when its HP falls, comes back, and pauses and goes
+//! on when told.
 
 use std::fs;
 use std::time::Duration;
 
 use mp_engine::{Report, RoutinePart, SessionState, WalkState};
 use mp_silvermere::{StockChar, StockSilvermere, WAIT};
-use mudparty_server::{BotEvent, Order, Server};
+use mudparty_server::{BotEvent, Order, Server, compile_places};
 use tokio::sync::broadcast;
 use tokio::time::{Instant, timeout};
 
+/// The routine, shared: any character may run it.
+const ARENA: &str = "schema: 1
+name: newhaven-arena
+places: newhaven
+params:
+  rest_below: 50%
+  look: 5s
+do:
+  - rest:
+      at: road
+      when: { hp_below: \"${rest_below}\" }
+      until: { hp: 100% }
+  - camp:
+      at: arena
+      look_every: \"${look}\"
+";
+
+/// The user's own names for two Newhaven rooms the compiled file can't name alone.
+const LOCAL: &str = "schema: 1
+area: newhaven
+aliases:
+  arena: arena-2150
+  road: narrow-road-2146
+";
+
+/// Ermias runs it, looking round every second so the test needn't wait.
 const ERMIAS: &str = "schema: 1
 name: Ermias
 login:
   account: Ermias
 automation:
   combat: false
-rest:
-  start_when_any: { hp: 50% }
-  stop_when_all: { hp: 100% }
-places:
-  arena: 1/2150
-  road: 1/2146
 routine:
-  camp: arena
-  rest_at: road
-  look_every: 1s
+  use: newhaven-arena
+  with: { look: 1s }
 ";
 
 /// Waits for a report `want` picks, running the game's clock (it runs only when told) as
@@ -99,6 +119,10 @@ async fn a_bot_camps_rests_up_the_stairs_and_comes_back() {
     .unwrap();
     fs::create_dir_all(root.join("characters")).unwrap();
     fs::write(root.join("characters/Ermias.yaml"), ERMIAS).unwrap();
+    fs::create_dir_all(root.join("routines")).unwrap();
+    fs::write(root.join("routines/newhaven-arena.yaml"), ARENA).unwrap();
+    compile_places(root, Some("newhaven")).unwrap();
+    fs::write(root.join("places/newhaven.local.yaml"), LOCAL).unwrap();
     fs::write(
         root.join("secrets.yaml"),
         "accounts:\n  Ermias: \"ermias1\"\n",

@@ -21,14 +21,16 @@ use anyhow::Context;
 use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
-    CharacterConfig, Logging, PartyRole, Secrets, ServerConfig, load_character, load_server,
+    CharacterConfig, Logging, PartyRole, RuleSpec, Secrets, ServerConfig, load_character,
+    load_routine, load_server,
 };
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     AutoSwitch, CombatSettings, Command, Effect, HuntSettings, Inviter, LoginSettings, Offline,
     PartySettings, RemoteSettings, Report, RestSettings, RoomBook, RoomInfo, RouteRules,
-    RoutineSettings, Seat, SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
+    RoutineSettings, RuleSettings, Seat, SessionHandle, SessionSpec, SessionState, Upstream, spawn,
+    spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -446,7 +448,7 @@ impl Server {
             Order::Pause => Command::Do(Effect::Stop(true)),
             Order::Resume => Command::Do(Effect::Stop(false)),
             Order::Goto { room, avoid } => Command::Goto {
-                to: self.place(None, &room)?,
+                to: self.place(&room, None)?,
                 rules: self.route_rules(None, &avoid, &[], &[], &BTreeMap::new())?,
             },
         };
@@ -956,20 +958,20 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
 }
 
 impl Server {
-    /// The room a place names: a key (`1/2150`), the character's own `places:`, or the
-    /// compiled room files (design §14.3).
-    fn place(&self, c: Option<&CharacterConfig>, name: &str) -> Result<(u32, u32), String> {
-        if let Some(k) = room_key(name).or_else(|| c.and_then(|c| c.place(name))) {
+    /// The room a place names (design §14.3): a key (`1/2150`), or a place in the compiled
+    /// room files, looked for first in `area`.
+    fn place(&self, name: &str, area: Option<&str>) -> Result<(u32, u32), String> {
+        if let Some(k) = room_key(name) {
             return Ok(k);
         }
-        self.places.resolve(name, None).map_err(|e| e.to_string())
+        self.places.resolve(name, area).map_err(|e| e.to_string())
     }
 
     /// What a walk keeps out of (#64): rooms and the rooms of areas, exit kinds by name, and
-    /// the rooms it would rather not walk through.
+    /// the rooms it would rather not walk through. Places are looked for first in `area`.
     fn route_rules(
         &self,
-        c: Option<&CharacterConfig>,
+        area: Option<&str>,
         rooms: &[String],
         areas: &[String],
         exits: &[String],
@@ -977,7 +979,7 @@ impl Server {
     ) -> Result<RouteRules, String> {
         let mut rules = RouteRules::default();
         for r in rooms {
-            rules.avoid_rooms.insert(self.place(c, r)?);
+            rules.avoid_rooms.insert(self.place(r, area)?);
         }
         for a in areas {
             let keys = self
@@ -992,46 +994,59 @@ impl Server {
             rules.avoid_kinds.insert(code);
         }
         for (r, cost) in prefer_not {
-            rules.prefer_not.insert(self.place(c, r)?, *cost);
+            rules.prefer_not.insert(self.place(r, area)?, *cost);
         }
         Ok(rules)
     }
 
-    /// A solo bot's loop (#53), its places looked up; an error names what didn't read.
+    /// A bot's routine (#65): its file read from `routines/` (or written inline), its
+    /// parameters filled in and its places looked up; an error names what didn't read.
     fn routine_for(&self, c: &CharacterConfig) -> Result<Option<RoutineSettings>, String> {
-        let Some(r) = c.routine.as_ref() else {
+        let Some(rr) = c.routine.as_ref() else {
             return Ok(None);
         };
-        let at = |field: &str, name: &str| {
-            self.place(Some(c), name)
-                .map_err(|e| format!("{}: routine.{field}: {e}", c.name))
+        let r =
+            load_routine(&self.root.join("routines"), &c.name, rr).map_err(|e| e.to_string())?;
+        let area = r.places.as_deref();
+        let at = |field: String, name: &str| {
+            self.place(name, area)
+                .map_err(|e| format!("routine {}: {field}: {e}", r.name))
         };
-        let mut hunts = Vec::new();
-        for (i, h) in r.hunts.iter().enumerate() {
-            hunts.push(HuntSettings {
-                monster: h.monster.clone(),
-                at: at(&format!("hunts[{i}].at"), &h.at)?,
-                every: h.every,
-                min_hp: h.min_hp,
+        let mut rules = Vec::new();
+        for (i, rule) in r.rules.iter().enumerate() {
+            let field = format!("do[{i}].at");
+            rules.push(match rule {
+                RuleSpec::Rest(rest) => RuleSettings::Rest {
+                    at: at(field, &rest.at)?,
+                    when: rest.when,
+                    // The character's own stop thresholds, unless the rule gives its own.
+                    until: rest.until.unwrap_or(c.rest.stop_when_all),
+                },
+                RuleSpec::Hunt(h) => RuleSettings::Hunt(HuntSettings {
+                    monster: h.monster.clone(),
+                    at: at(field, &h.at)?,
+                    every: h.every,
+                    when: h.when,
+                }),
+                RuleSpec::Camp(camp) => RuleSettings::Camp {
+                    at: at(field, &camp.at)?,
+                    look_every: camp.look_every,
+                },
             });
         }
         Ok(Some(RoutineSettings {
-            camp: at("camp", &r.camp)?,
-            rest_at: at("rest_at", &r.rest_at)?,
-            retreat: c.rest.start_when_any,
-            look_every: r.look_every,
-            hunts,
+            rules,
             retry: ROUTINE_RETRY,
             kill_wait: KILL_WAIT,
             route: self
                 .route_rules(
-                    Some(c),
+                    area,
                     &r.avoid.rooms,
                     &r.avoid.areas,
                     &r.avoid.exits,
                     &r.prefer_not,
                 )
-                .map_err(|e| format!("{}: routine.avoid: {e}", c.name))?,
+                .map_err(|e| format!("routine {}: avoid: {e}", r.name))?,
         }))
     }
 }
