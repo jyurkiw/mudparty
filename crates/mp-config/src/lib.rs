@@ -9,9 +9,9 @@ mod server;
 mod units;
 
 pub use character::{
-    Amount, Automation, BOT_STATLINE, Channel, CharacterConfig, Combat, Hunt, Login, LoginStep,
-    LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier, Routine, Rule,
-    StealthOpener, Tier, Unattended,
+    Amount, Automation, Avoid, BOT_STATLINE, Channel, CharacterConfig, Combat, Hunt, Login,
+    LoginStep, LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier,
+    Routine, Rule, StealthOpener, Tier, Unattended,
 };
 pub use error::ConfigError;
 pub use files::{Loaded, Secrets, load_character, load_server, revision};

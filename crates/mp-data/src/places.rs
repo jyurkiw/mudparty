@@ -240,6 +240,19 @@ const SHOP_KINDS: [&str; 13] = [
     "deed_shop",
 ];
 
+/// An `EXIT_` code's name as the room file writes it: `door`, `block_guard`, ...
+pub fn exit_kind_name(code: i64) -> String {
+    code_name(&EXIT_KINDS, code)
+}
+
+/// The `EXIT_` code of an exit kind's name, as the room file writes it.
+pub fn exit_kind_code(name: &str) -> Option<i64> {
+    EXIT_KINDS
+        .iter()
+        .position(|k| k.eq_ignore_ascii_case(name.trim()))
+        .and_then(|i| i64::try_from(i).ok())
+}
+
 fn code_name(table: &[&str], code: i64) -> String {
     usize::try_from(code)
         .ok()
@@ -873,6 +886,17 @@ impl Places {
             }
         }
         Ok(places)
+    }
+
+    /// The rooms of `area`, or `None` for an area no file has.
+    pub fn rooms_in(&self, area: &str) -> Option<Vec<(u32, u32)>> {
+        let keys: Vec<(u32, u32)> = self
+            .rooms
+            .iter()
+            .filter(|f| f.area == area.trim())
+            .map(|f| f.key)
+            .collect();
+        (!keys.is_empty()).then_some(keys)
     }
 
     /// The room `text` names, looking first in `area` (design §14.3): an alias, a key

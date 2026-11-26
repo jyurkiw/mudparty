@@ -276,6 +276,9 @@ routine:
   camp: arena
   rest_at: road
   look_every: 5s       # the default
+  avoid:               # never walked through; rooms are places, as everywhere
+    rooms: [1/2190]    # the Healer
+    exits: [trap]      # exit kinds, as the room files name them
   hunts:
     - monster: cave bear   # "big cave bear" counts too
       at: cavern
@@ -381,9 +384,10 @@ session has seen stands in for it, so points are the surer choice there.
 On the page, each character has a card showing HP and MP, room, what it's doing and
 against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the
 combat, nuke, rest and all switches, a kill box, a command line to the game, and a "Go"
-box that walks the bot to a room (written `map/room`, like `1/2141`). The bot plans its
-route from the game data, confirms each room as it goes, opens doors and bashes locked
-ones, and waits out a fight on the way.
+box that walks the bot to a room: a key like `1/2141`, or a place from the compiled room
+files (`weapons-shop`; see [Places](#places)). The bot plans its route from the game data,
+confirms each room as it goes, opens doors and bashes locked ones, plans round an exit the
+game refuses, and waits out a fight on the way.
 
 In the game, a player on a bot's `remote.allow` list can command it by telepath or
 gangpath: `/Ermias @help` lists the commands.

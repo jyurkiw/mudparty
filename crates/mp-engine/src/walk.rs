@@ -15,9 +15,11 @@
 //!   door's bonus against a 0-100 roll, two ticks a try, and one try in four does 1-4
 //!   damage. It locks again after a while.
 //! - Level, alignment, timed and other gated exits refuse with their own lines
-//!   ([`Event::ExitRefused`]); a walk can't get past those.
+//!   ([`Event::ExitRefused`]). The walker marks the exit refused and plans round it
+//!   (#64); with no way round, the walk ends with the game's words.
 //! - Moving mid-fight would flee, so the walker waits while the bot fights.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,21 @@ pub struct WalkStep {
     pub dir: u8,
     pub to: (u32, u32),
     pub door: bool,
+}
+
+/// What a walk may not use, and what it would rather not (#64, design §14.5). A walk
+/// plans every time with the same rules, re-plans included, and adds to them the exits
+/// the game refuses on the way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteRules {
+    /// Rooms never walked into.
+    pub avoid_rooms: BTreeSet<(u32, u32)>,
+    /// silvermere `EXIT_` codes never taken (7 door, 9 trap, 4 toll, ...).
+    pub avoid_kinds: BTreeSet<i64>,
+    /// Exits refused on this walk: `(room, direction)`.
+    pub refused: BTreeSet<((u32, u32), u8)>,
+    /// Rooms walked through only when the way round is longer than this many steps more.
+    pub prefer_not: BTreeMap<(u32, u32), u32>,
 }
 
 /// Where a walk stands.
@@ -102,6 +119,9 @@ pub struct Walker {
     /// Bashes at the door in the way.
     bashes: u32,
     state: WalkState,
+    rules: RouteRules,
+    /// The room the game last said the bot is in, on this walk.
+    here: Option<(u32, u32)>,
 }
 
 impl Walker {
@@ -120,7 +140,15 @@ impl Walker {
             replans: 0,
             bashes: 0,
             state: WalkState::Locating,
+            rules: RouteRules::default(),
+            here: None,
         }
+    }
+
+    /// The walk keeps to `rules` in every plan it makes.
+    pub fn with_rules(mut self, rules: RouteRules) -> Self {
+        self.rules = rules;
+        self
     }
 
     pub fn state(&self) -> WalkState {
@@ -162,22 +190,18 @@ impl Walker {
 
     /// Plans from `here` and takes the first step.
     fn plan_from(&mut self, here: (u32, u32), now: Instant) -> Vec<String> {
+        self.here = Some(here);
         if here == self.to {
             return self.arrived();
         }
-        match self.book.route(here, self.to) {
-            Some(plan) if !plan.is_empty() => {
+        match self.book.route(here, self.to, &self.rules) {
+            Ok(plan) if !plan.is_empty() => {
                 self.plan = plan;
                 self.at = 0;
                 self.step(now)
             }
-            _ => {
-                let (m, r) = (here, self.to);
-                self.fail(format!(
-                    "no way from {}/{} to {}/{} by walking",
-                    m.0, m.1, r.0, r.1
-                ))
-            }
+            Ok(_) => self.arrived(),
+            Err(why) => self.fail(why),
         }
     }
 
@@ -215,6 +239,7 @@ impl Walker {
             (Phase::Confirm, Event::RoomKey { map, room }) => {
                 self.unanswered = 0;
                 let here = (*map, *room);
+                self.here = Some(here);
                 if here == self.plan[self.at].to {
                     self.at += 1;
                     if self.at == self.plan.len() {
@@ -241,7 +266,25 @@ impl Walker {
                 let dir = DIRECTIONS[usize::from(self.plan[self.at].dir) % 10];
                 vec![format!("open {dir}")]
             }
-            (Phase::Move | Phase::Open, Event::ExitRefused { text }) => self.fail(text.clone()),
+            (Phase::Move | Phase::Open, Event::ExitRefused { text }) => {
+                // Barred for this walk: plan round it from here, or give the game's words.
+                let Some(here) = self.here else {
+                    return self.fail(text.clone());
+                };
+                self.rules.refused.insert((here, self.plan[self.at].dir));
+                self.replans += 1;
+                if self.replans > RETRIES {
+                    return self.fail(text.clone());
+                }
+                match self.book.route(here, self.to, &self.rules) {
+                    Ok(plan) if !plan.is_empty() => {
+                        self.plan = plan;
+                        self.at = 0;
+                        self.step(now)
+                    }
+                    _ => self.fail(text.clone()),
+                }
+            }
             (Phase::Open, Event::DoorOpened)
             | (Phase::Bash, Event::BashedOpen | Event::DoorOpened) => {
                 self.bashes = 0;

@@ -144,7 +144,8 @@ async fn a_bot_camps_rests_up_the_stairs_and_comes_back() {
             .order(
                 "Ermias",
                 Order::Goto {
-                    room: "1/2141".into()
+                    room: "1/2141".into(),
+                    avoid: Vec::new(),
                 }
             )
             .is_ok()

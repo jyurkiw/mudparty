@@ -6,7 +6,7 @@ use std::fs;
 
 use mp_engine::{Report, SessionState, WalkState};
 use mp_silvermere::{StockChar, StockSilvermere, WAIT};
-use mudparty_server::{BotEvent, Order, Server};
+use mudparty_server::{BotEvent, Order, Server, compile_places};
 use tokio::sync::broadcast;
 use tokio::time::{Instant, timeout};
 
@@ -37,7 +37,23 @@ async fn walk(
     rx: &mut broadcast::Receiver<BotEvent>,
     room: &str,
 ) -> WalkState {
-    let r = server.order("Ermias", Order::Goto { room: room.into() });
+    walk_avoiding(server, rx, room, &[]).await
+}
+
+/// Orders a walk that keeps out of `avoid`, and waits for its end.
+async fn walk_avoiding(
+    server: &std::sync::Arc<Server>,
+    rx: &mut broadcast::Receiver<BotEvent>,
+    room: &str,
+    avoid: &[&str],
+) -> WalkState {
+    let r = server.order(
+        "Ermias",
+        Order::Goto {
+            room: room.into(),
+            avoid: avoid.iter().map(|a| (*a).to_owned()).collect(),
+        },
+    );
     assert!(r.is_ok(), "{r:?}");
     let Report::Walk(end) = until(rx, |r| {
         matches!(r, Report::Walk(WalkState::Arrived | WalkState::Failed(_)))
@@ -73,6 +89,8 @@ async fn a_bot_walks_newhaven_by_the_game_data() {
     .unwrap();
     fs::create_dir_all(dir.path().join("characters")).unwrap();
     fs::write(dir.path().join("characters/Ermias.yaml"), ERMIAS).unwrap();
+    // The compiled room file, so rooms can be named.
+    compile_places(dir.path(), Some("newhaven")).unwrap();
     fs::write(
         dir.path().join("secrets.yaml"),
         "accounts:\n  Ermias: \"ermias1\"\n",
@@ -105,17 +123,41 @@ async fn a_bot_walks_newhaven_by_the_game_data() {
     assert_eq!(walk(&server, &mut rx, "1/2156").await, WalkState::Arrived);
     assert_eq!(walk(&server, &mut rx, "1/2150").await, WalkState::Arrived);
 
-    // Orders it can't carry out are answered.
-    assert!(
-        server
-            .order(
-                "Ermias",
-                Order::Goto {
-                    room: "the moon".into()
-                }
-            )
-            .is_err()
+    // By the compiled room file's names (#63), and round what is avoided (#64): there's no
+    // way to the shops but along the Narrow Path, so the walk says what's in the way.
+    assert_eq!(
+        walk(&server, &mut rx, "weapons-shop").await,
+        WalkState::Arrived
     );
+    assert_eq!(
+        walk(&server, &mut rx, "arena-2150").await,
+        WalkState::Arrived
+    );
+    match walk_avoiding(&server, &mut rx, "weapons-shop", &["narrow-path"]).await {
+        WalkState::Failed(why) => {
+            assert!(why.contains("avoided"), "{why}");
+            assert!(why.contains("Narrow Path"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let card = server
+        .party()
+        .into_iter()
+        .find(|c| c.name == "Ermias")
+        .unwrap();
+    assert_eq!(card.room.map(|r| r.room), Some(2150));
+
+    // Orders it can't carry out are answered.
+    for room in ["the moon", "arena"] {
+        let r = server.order(
+            "Ermias",
+            Order::Goto {
+                room: room.into(),
+                avoid: Vec::new(),
+            },
+        );
+        assert!(r.is_err(), "{room}: {r:?}");
+    }
     server.shutdown().await;
     sm.stop().await.unwrap();
 }

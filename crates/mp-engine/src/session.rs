@@ -35,7 +35,7 @@ use crate::remote::{
 };
 use crate::rest::{RestSettings, Rester};
 use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen};
-use crate::walk::{WalkState, Walker};
+use crate::walk::{RouteRules, WalkState, Walker};
 
 /// How long a walk's line may go unanswered before the walker asks where it is again.
 const WALK_STEP_WAIT: Duration = Duration::from_secs(10);
@@ -193,8 +193,9 @@ pub enum Command {
     /// A line to send as a seated character (design §2, injection). It waits until the
     /// user has no half-typed line and the last line's prompt has come back.
     Inject(String),
-    /// Walk to this room, `(map, room)`, by the game data's exits (#52).
-    Goto { to: (u32, u32) },
+    /// Walk to this room, `(map, room)`, by the game data's exits (#52), keeping to
+    /// `rules` (#64).
+    Goto { to: (u32, u32), rules: RouteRules },
 }
 
 /// What a session is doing.
@@ -795,7 +796,8 @@ impl Runner {
             match &goal {
                 Goal::Walk(to) => match self.spec.rooms.clone() {
                     Some(book) => {
-                        let mut w = Walker::new(*to, book, WALK_STEP_WAIT);
+                        let mut w = Walker::new(*to, book, WALK_STEP_WAIT)
+                            .with_rules(run.routine.route_rules().clone());
                         for line in w.start(now) {
                             pacer.push(line);
                         }
@@ -1348,15 +1350,15 @@ impl Runner {
                     Some(Command::Inject(line)) => {
                         self.decision("inject_dropped", json!({"line": line, "why": "no seat"}));
                     }
-                    Some(Command::Goto { to }) if running.is_some() && !self.auto.stopped && !self.auto.all_off => {
+                    Some(Command::Goto { to, .. }) if running.is_some() && !self.auto.stopped && !self.auto.all_off => {
                         self.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "the routine is running"}));
                         self.report(Report::Walk(WalkState::Failed("the routine is walking the bot: @stop it first".into())));
                     }
-                    Some(Command::Goto { to }) if in_game && logging_off.is_none() && seat.is_none() => {
-                        self.decision("goto", json!({"to": format!("{}/{}", to.0, to.1)}));
+                    Some(Command::Goto { to, rules }) if in_game && logging_off.is_none() && seat.is_none() => {
+                        self.decision("goto", json!({"to": format!("{}/{}", to.0, to.1), "rules": format!("{rules:?}")}));
                         match self.spec.rooms.clone() {
                             Some(book) => {
-                                let mut w = Walker::new(to, book, WALK_STEP_WAIT);
+                                let mut w = Walker::new(to, book, WALK_STEP_WAIT).with_rules(rules);
                                 for line in w.start(Instant::now()) {
                                     pacer.push(line);
                                 }
@@ -1374,7 +1376,7 @@ impl Runner {
                             return LinkEnd::Lost { was_in_game: true };
                         }
                     }
-                    Some(Command::Goto { to }) => {
+                    Some(Command::Goto { to, .. }) => {
                         self.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "not in the game, or played in MudPlay"}));
                         self.report(Report::Walk(WalkState::Failed("not able to walk now".into())));
                     }
@@ -1590,7 +1592,7 @@ async fn run_from(
                         Some(Command::Inject(line)) => {
                             r.decision("inject_dropped", json!({"line": line, "why": "reconnecting"}));
                         }
-                        Some(Command::Goto { to }) => {
+                        Some(Command::Goto { to, .. }) => {
                             r.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "reconnecting"}));
                             r.report(Report::Walk(WalkState::Failed("reconnecting".into())));
                         }

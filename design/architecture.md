@@ -856,10 +856,11 @@ A bot walks to a room by itself: the first piece of 1.0 (*§12.2*).
      try in four does 1-4 damage. The door locks again later. Newhaven's arena door to
      the cave bear is locked.
   5. Any other refusal (`ExitRefused`: level, alignment, timed, a spell or item needed)
-     ends the walk with the game's words.
+     marks that exit refused for the walk, which plans round it (#64, *§14.5*); with no
+     way round, it ends the walk with the game's words.
   6. A fight pauses it; once over, it finds where it is and goes on.
   7. A line with no answer for 10 s is asked again, three times.
-- **In the session**, `Command::Goto { to }` starts a walk (in the game, not seated). Its
+- **In the session**, `Command::Goto { to, rules }` starts a walk (in the game, not seated). Its
   progress is `Report::Walk(WalkState)`. The page has a "Go" box (`goto` order, room as
   `1/2141`), and the card shows the walk.
 - **Not yet:** tracking the room between walks (a party drag or a flee leaves the last
@@ -1778,10 +1779,28 @@ avoid:
 prefer_not: { dungeon-entrance: 20 }  # allowed, but costs 20 steps more
 ```
 
-- The character's level gates exits by itself (level exits, the arena's 1-3).
-- `avoid` can be set on a routine, on one rule, or for one trip.
-- With perfect information `check` proves that every place a script names can be reached
-  at the character's level without crossing anything avoided, before the bot runs it.
+- **Built in #64** (`mp-data` `GameData::route_with`, `RouteRules`): Dijkstra over the
+  walkable exits. Each step costs one, plus a room's `prefer_not`. Ties go to the exit
+  found first, in direction order, so a world and its rules always give the same walk.
+  The rules are a plain set held by the walk rather than wrapped filters: rooms and the
+  rooms of areas avoided, exit kinds avoided, exits the game refused, and the costs. A
+  walk and a routine's rules come together by joining the sets.
+- **With no walk, the error says what's in the way.** The router plans once more without
+  the rules and names the first room, exit kind or refused exit on that walk:
+  `every way from Newhaven, Arena (1/2150) to Newhaven, Weapons Shop (1/2141) is barred:
+  the shortest goes through Newhaven, Narrow Path (1/2143), which is avoided`.
+- **Exits the game refuses** (a level exit, an alignment or timed one) are added to the
+  walk's rules, and it plans round them from where it stands, up to three times, before
+  ending with the game's words (*§6.10*). That gates exits by level without knowing the
+  character's level. Knowing it and planning round level exits beforehand waits for a
+  level the session keeps (#56).
+- **Where it's set:** a routine's `avoid:` and `prefer_not:` (the current routine, until
+  #65 moves them onto routines and rules), and the page's Go order's `avoid`, for one
+  trip. Rooms are places (a key, the character's `places:`, or the compiled room files);
+  areas are compiled areas; exit kinds are the room files' names. They are looked up
+  when the bot starts, so one that doesn't read stops the bot with its name.
+- With perfect information `check` (#66) will prove that every place a script names can
+  be reached without crossing anything avoided, before the bot runs it.
 - The walker (*§6.10*) keeps carrying out the steps: doors, bashing, confirming each
   room, pausing for a fight.
 

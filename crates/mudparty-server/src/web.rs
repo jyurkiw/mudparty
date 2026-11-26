@@ -5,7 +5,7 @@
 //!   running bots, on connecting and then on each change, at most four a second;
 //! - page → server `order`: `{ "name": <character>, "order": <what>, ... }`, where `order`
 //!   is `start`, `stop`, `toggle` (`switch`, `on`), `command` (`text`), `kill` (`target`),
-//!   `wait`, `ok`, `join` (`leader`), `goto` (`room`, `1/2141`), `pause` or `resume`. See [`Order`]. For a character played in MudPlay,
+//!   `wait`, `ok`, `join` (`leader`), `goto` (`room`: a key or a place, and `avoid`: places), `pause` or `resume`. See [`Order`]. For a character played in MudPlay,
 //!   `command` injects, as `inject` (`text`) does;
 //! - server → page `result`: the answer to each order, `ok` and a `message`.
 //!
