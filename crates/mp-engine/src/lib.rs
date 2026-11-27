@@ -22,7 +22,8 @@ pub use remote::{
 };
 pub use rest::{RestSettings, Rester};
 pub use routine::{
-    GearSettings, Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen,
+    CircuitSettings, GearSettings, Goal, LairClocks, LairSettings, Routine, RoutinePart,
+    RoutineSettings, RuleSettings, Seen,
 };
 pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,

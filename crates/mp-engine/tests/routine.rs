@@ -1,20 +1,32 @@
-//! The routine (#53, #65), as pure logic: a list of rules read top-down, the first that
-//! applies wins. It hands the session one goal at a time (walk, rest, camp, kill), which the
-//! bot's engines carry out, so the 1.1 director can hand out the same goals.
+//! The routine (#53, #65, #67), as pure logic: a list of rules read top-down, the first
+//! that applies wins. It hands the session one goal at a time (walk, rest, camp, kill),
+//! which the bot's engines carry out, so the 1.1 director can hand out the same goals.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mp_config::{Amount, GearUse, Pools, When};
+use mp_config::{Amount, GearUse, Pick, Pools, When};
 use mp_engine::{
-    Carried, GearSettings, Goal, HuntSettings, Routine, RoutinePart, RoutineSettings, RuleSettings,
-    Seen, WalkState,
+    Carried, CircuitSettings, GearSettings, Goal, LairSettings, RoomBook, RoomInfo, RouteRules,
+    Routine, RoutinePart, RoutineSettings, RuleSettings, Seen, WalkState, WalkStep,
 };
 use mp_parse::{Rest, Vitals};
 
 const CAMP: (u32, u32) = (1, 2150);
 const ROAD: (u32, u32) = (1, 2146);
+/// A room near the cavern that isn't a lair: where the bot waits for the cavern to fill.
+const OUTSIDE: (u32, u32) = (1, 9156);
 const CAVERN: (u32, u32) = (1, 2156);
-const EVERY: Duration = Duration::from_secs(240);
+/// Two more lairs for the order a circuit takes them in, each with its wait-room: one near
+/// the camp, one far.
+const NEAR: (u32, u32) = (1, 3000);
+const NEAR_WAIT: (u32, u32) = (1, 3001);
+const FAR: (u32, u32) = (1, 4000);
+const FAR_WAIT: (u32, u32) = (1, 4001);
+const RESPAWN: Duration = Duration::from_secs(240);
+/// How long the routine reckons a step takes.
+const STEP: Duration = Duration::from_secs(2);
 const RETRY: Duration = Duration::from_secs(30);
 const KILL_WAIT: Duration = Duration::from_secs(30);
 const LOOK: Duration = Duration::from_secs(5);
@@ -38,16 +50,94 @@ fn hp_below(p: i32) -> When {
     }
 }
 
-fn bear() -> RuleSettings {
-    RuleSettings::Hunt(HuntSettings {
-        monster: "cave bear".into(),
-        at: CAVERN,
-        every: EVERY,
+/// Steps between rooms, either way; a pair it doesn't list has no way between.
+#[derive(Debug)]
+struct Steps(BTreeMap<(Room, Room), usize>);
+
+type Room = (u32, u32);
+
+impl RoomBook for Steps {
+    fn room(&self, _map: u32, _room: u32) -> Option<RoomInfo> {
+        None
+    }
+
+    fn route(
+        &self,
+        from: (u32, u32),
+        to: (u32, u32),
+        _rules: &RouteRules,
+    ) -> Result<Vec<WalkStep>, String> {
+        let n = if from == to {
+            0
+        } else {
+            *self
+                .0
+                .get(&(from, to))
+                .or_else(|| self.0.get(&(to, from)))
+                .ok_or("no way")?
+        };
+        Ok(vec![
+            WalkStep {
+                dir: 0,
+                to,
+                door: false,
+            };
+            n
+        ])
+    }
+}
+
+/// The camp is 2 steps from the room outside the cavern and 3 from the cavern; the road is
+/// 1 from the camp. The near lair's wait-room is 2 steps from the camp, the far one's 6.
+fn book() -> Arc<dyn RoomBook> {
+    let mut m = BTreeMap::new();
+    for (a, b, n) in [
+        (CAMP, OUTSIDE, 2),
+        (OUTSIDE, CAVERN, 1),
+        (CAMP, CAVERN, 3),
+        (ROAD, CAMP, 1),
+        (ROAD, OUTSIDE, 3),
+        (CAMP, NEAR_WAIT, 2),
+        (CAMP, FAR_WAIT, 6),
+        (NEAR_WAIT, NEAR, 1),
+        (FAR_WAIT, FAR, 1),
+        (NEAR, FAR_WAIT, 5),
+        (NEAR_WAIT, FAR_WAIT, 5),
+        (FAR, NEAR_WAIT, 5),
+    ] {
+        m.insert((a, b), n);
+    }
+    Arc::new(Steps(m))
+}
+
+fn lair(at: (u32, u32), name: &str, wait_at: (u32, u32)) -> LairSettings {
+    LairSettings {
+        at,
+        name: name.into(),
+        wait_at,
+        respawn: RESPAWN,
+    }
+}
+
+fn cavern() -> LairSettings {
+    lair(CAVERN, "Small Cavern", OUTSIDE)
+}
+
+fn circuit(lairs: Vec<LairSettings>, wait: Duration, pick: Pick) -> RuleSettings {
+    RuleSettings::Circuit(CircuitSettings {
+        lairs,
         when: When {
             hp_at_least: Some(Amount::Percent(80)),
             ..Default::default()
         },
+        wait,
+        pick,
     })
+}
+
+/// The cave bear's cavern, a circuit of one lair.
+fn bear() -> RuleSettings {
+    circuit(vec![cavern()], Duration::ZERO, Pick::Soonest)
 }
 
 fn camp() -> RuleSettings {
@@ -64,11 +154,18 @@ fn settings(hunts: bool) -> RoutineSettings {
         rules.push(bear());
     }
     rules.push(camp());
+    with_rules(rules)
+}
+
+fn with_rules(rules: Vec<RuleSettings>) -> RoutineSettings {
     RoutineSettings {
         rules,
         retry: RETRY,
         kill_wait: KILL_WAIT,
         route: Default::default(),
+        rooms: Some(book()),
+        step_time: STEP,
+        lair_clocks: None,
     }
 }
 
@@ -103,6 +200,18 @@ impl Bot {
         let t0 = Instant::now();
         Self {
             r: Routine::new(set, t0),
+            t0,
+        }
+    }
+    /// A routine whose lairs were last cleared `ago` seconds before it starts.
+    fn cleared(set: RoutineSettings, ago: &[((u32, u32), u64)]) -> Self {
+        let t0 = Instant::now() + Duration::from_secs(1000);
+        let clocks = ago
+            .iter()
+            .map(|&(lair, secs)| (lair, t0 - Duration::from_secs(secs)))
+            .collect();
+        Self {
+            r: Routine::with_clocks(set, clocks, t0),
             t0,
         }
     }
@@ -207,25 +316,30 @@ fn the_first_rule_that_applies_wins() {
 }
 
 #[test]
-fn a_hunt_waits_for_enough_hp_then_goes() {
+fn a_circuit_waits_for_enough_hp_then_goes() {
     let mut b = Bot::new(true);
     b.arrive(&seen(70, CAMP), 1);
-    // Due from the start, but 70% is under the hunt's 80%.
+    // The cavern has never been seen, so it's ready; but 70% is under the rule's 80%.
     assert_eq!(b.see(&seen(70, CAMP), 2), Goal::Camp(LOOK));
+    // Ready now: straight in.
     assert_eq!(b.see(&seen(90, CAMP), 3), Goal::Walk(CAVERN));
-    assert_eq!(b.r.part(), RoutinePart::Hunting("cave bear".into()));
+    assert_eq!(b.r.part(), RoutinePart::ToLair("Small Cavern".into()));
+}
+
+fn with(monsters: &[&str], s: Seen) -> Seen {
+    Seen {
+        monsters: monsters.iter().map(|m| (*m).to_owned()).collect(),
+        ..s
+    }
 }
 
 #[test]
-fn a_hunt_kills_the_monster_and_goes_back_until_it_is_due_again() {
+fn a_lair_is_cleared_and_visited_again_once_it_has_filled() {
     let mut b = Bot::new(true);
     b.arrive(&seen(100, CAMP), 1);
     assert_eq!(b.see(&seen(100, CAMP), 2), Goal::Walk(CAVERN));
-    // The cavern's display named a big cave bear: that one is the target.
-    let bear = Seen {
-        monsters: vec!["big cave bear".into()],
-        ..seen(100, CAVERN)
-    };
+    // It filled as the bot walked in.
+    let bear = with(&["big cave bear"], seen(100, CAVERN));
     assert_eq!(b.arrive(&bear, 10), Goal::Kill("big cave bear".into()));
     assert_eq!(b.r.part(), RoutinePart::Killing("big cave bear".into()));
     let fight = Seen {
@@ -233,23 +347,46 @@ fn a_hunt_kills_the_monster_and_goes_back_until_it_is_due_again() {
         ..bear.clone()
     };
     assert_eq!(b.see(&fight, 15), Goal::Kill("big cave bear".into()));
-    // Dead: gone from the room, and the fight over. The camp applies again.
-    assert_eq!(b.see(&seen(60, CAVERN), 40), Goal::Walk(CAMP));
-    assert_eq!(b.arrive(&seen(60, CAMP), 45), Goal::Camp(LOOK));
-    // Due again four minutes after the kill, not before.
-    assert_eq!(b.see(&seen(100, CAMP), 40 + 239), Goal::Camp(LOOK));
-    assert_eq!(b.see(&seen(100, CAMP), 40 + 240), Goal::Walk(CAVERN));
+    // Dead: the lair is clear, its clock starts, and the camp applies again.
+    assert_eq!(b.see(&seen(100, CAVERN), 40), Goal::Walk(CAMP));
+    assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(40))]);
+    assert_eq!(b.r.take_cleared(), []);
+    assert_eq!(b.arrive(&seen(100, CAMP), 45), Goal::Camp(LOOK));
+    // Ready at 40 + 240. The room outside is 2 steps, 4 seconds, away, so it sets off
+    // at 276 to be there as the lair fills, and waits there rather than step in early.
+    assert_eq!(b.see(&seen(100, CAMP), 275), Goal::Camp(LOOK));
+    assert_eq!(b.see(&seen(100, CAMP), 276), Goal::Walk(OUTSIDE));
+    assert_eq!(b.r.part(), RoutinePart::ToLair("Small Cavern".into()));
+    assert_eq!(b.arrive(&seen(100, OUTSIDE), 278), Goal::Wait);
+    assert_eq!(b.r.part(), RoutinePart::WaitingFor("Small Cavern".into()));
+    assert_eq!(b.see(&seen(100, OUTSIDE), 279), Goal::Wait);
+    assert_eq!(b.see(&seen(100, OUTSIDE), 280), Goal::Walk(CAVERN));
 }
 
 #[test]
-fn a_monster_that_isnt_there_is_looked_for_again_later() {
+fn every_monster_in_the_lair_is_killed_before_it_counts_as_cleared() {
+    let mut b = Bot::new(true);
+    b.arrive(&seen(100, CAMP), 1);
+    b.see(&seen(100, CAMP), 2);
+    let both = with(&["cave bear", "kobold"], seen(100, CAVERN));
+    assert_eq!(b.arrive(&both, 10), Goal::Kill("cave bear".into()));
+    let one_left = with(&["kobold"], seen(100, CAVERN));
+    assert_eq!(b.see(&one_left, 20), Goal::Kill("kobold".into()));
+    assert_eq!(b.r.take_cleared(), []);
+    assert_eq!(b.see(&seen(100, CAVERN), 30), Goal::Walk(CAMP));
+    assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(30))]);
+}
+
+#[test]
+fn an_empty_lair_starts_its_clock_at_the_visit() {
     let mut b = Bot::new(true);
     b.arrive(&seen(100, CAMP), 1);
     b.see(&seen(100, CAMP), 2);
     assert_eq!(b.arrive(&seen(100, CAVERN), 10), Goal::Walk(CAMP));
+    assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(10))]);
     b.arrive(&seen(100, CAMP), 15);
-    assert_eq!(b.see(&seen(100, CAMP), 10 + 239), Goal::Camp(LOOK));
-    assert_eq!(b.see(&seen(100, CAMP), 10 + 240), Goal::Walk(CAVERN));
+    assert_eq!(b.see(&seen(100, CAMP), 10 + 235), Goal::Camp(LOOK));
+    assert_eq!(b.see(&seen(100, CAMP), 10 + 236), Goal::Walk(OUTSIDE));
 }
 
 #[test]
@@ -257,42 +394,107 @@ fn a_kill_that_never_starts_is_given_up() {
     let mut b = Bot::new(true);
     b.arrive(&seen(100, CAMP), 1);
     b.see(&seen(100, CAMP), 2);
-    let bear = Seen {
-        monsters: vec!["cave bear".into()],
-        ..seen(100, CAVERN)
-    };
+    let bear = with(&["cave bear"], seen(100, CAVERN));
     assert_eq!(b.arrive(&bear, 10), Goal::Kill("cave bear".into()));
     assert_eq!(b.see(&bear, 10 + 29), Goal::Kill("cave bear".into()));
     assert_eq!(b.see(&bear, 10 + 30), Goal::Walk(CAMP));
+    assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(40))]);
 }
 
 #[test]
-fn low_hp_on_a_hunt_goes_to_rest_and_the_hunt_waits() {
+fn low_hp_in_a_lair_goes_to_rest_and_the_lair_waits() {
     let mut b = Bot::new(true);
     b.arrive(&seen(100, CAMP), 1);
     b.see(&seen(100, CAMP), 2);
-    let bear = Seen {
-        monsters: vec!["cave bear".into()],
-        ..seen(100, CAVERN)
-    };
+    let bear = with(&["cave bear"], seen(100, CAVERN));
     b.arrive(&bear, 10);
     let losing = Seen {
         fighting: true,
-        monsters: vec!["cave bear".into()],
-        ..seen(30, CAVERN)
+        ..with(&["cave bear"], seen(30, CAVERN))
     };
     // Mid-fight it stays (fleeing is #16); once the fight is off, it goes to rest.
     assert_eq!(b.see(&losing, 20), Goal::Kill("cave bear".into()));
-    let off = Seen {
-        monsters: vec!["cave bear".into()],
-        ..seen(30, CAVERN)
-    };
+    let off = with(&["cave bear"], seen(30, CAVERN));
     assert_eq!(b.see(&off, 21), Goal::Walk(ROAD));
     b.arrive(&seen(30, ROAD), 25);
     b.r.rest_ended(b.at(100));
-    // The bear wasn't killed, so the hunt is still due: rested, it goes again.
-    let rested = seen(100, ROAD);
-    assert_eq!(b.see(&rested, 101), Goal::Walk(CAVERN));
+    // The bear wasn't killed, so the lair's clock didn't start: rested, it goes again.
+    assert_eq!(b.r.take_cleared(), []);
+    assert_eq!(b.see(&seen(100, ROAD), 101), Goal::Walk(CAVERN));
+}
+
+#[test]
+fn clocks_from_before_the_start_carry_on() {
+    // Cleared 100 s before this run began (kept in mudparty.sqlite): ready in 140 s.
+    let mut b = Bot::cleared(settings(true), &[(CAVERN, 100)]);
+    assert_eq!(b.arrive(&seen(100, CAMP), 1), Goal::Camp(LOOK));
+    assert_eq!(b.see(&seen(100, CAMP), 135), Goal::Camp(LOOK));
+    assert_eq!(b.see(&seen(100, CAMP), 136), Goal::Walk(OUTSIDE));
+}
+
+/// A circuit of the far lair, then the near one, above the camp.
+fn two_lairs(wait: Duration, pick: Pick) -> RoutineSettings {
+    with_rules(vec![
+        circuit(
+            vec![
+                lair(FAR, "Far Lair", FAR_WAIT),
+                lair(NEAR, "Near Lair", NEAR_WAIT),
+            ],
+            wait,
+            pick,
+        ),
+        camp(),
+    ])
+}
+
+#[test]
+fn the_closest_ready_lair_goes_first_and_it_plans_again_at_each() {
+    let mut b = Bot::with(two_lairs(Duration::ZERO, Pick::Soonest));
+    // Both ready: the near one first, though the far one is listed first.
+    assert_eq!(b.see(&seen(100, CAMP), 1), Goal::Walk(NEAR));
+    // Cleared; from there the far one is the one ready.
+    assert_eq!(b.arrive(&seen(100, NEAR), 5), Goal::Walk(FAR));
+    assert_eq!(b.arrive(&seen(100, FAR), 17), Goal::Walk(CAMP));
+}
+
+#[test]
+fn a_lair_that_wont_be_ready_gives_way_to_one_that_will() {
+    // The near one was cleared a minute ago; the far one is ready.
+    let mut b = Bot::cleared(two_lairs(Duration::ZERO, Pick::Soonest), &[(NEAR, 60)]);
+    assert_eq!(b.see(&seen(100, CAMP), 1), Goal::Walk(FAR));
+}
+
+#[test]
+fn with_none_ready_it_waits_for_the_one_whose_fight_starts_soonest() {
+    // From the camp the near lair's wait-room is 4 s away and the lair ready in 50 s; the
+    // far one's 12 s away and ready in 30 s. The far fight can start first.
+    let ago = [(NEAR, 190), (FAR, 210)];
+    let mut b = Bot::cleared(two_lairs(Duration::from_secs(60), Pick::Soonest), &ago);
+    assert_eq!(b.see(&seen(100, CAMP), 0), Goal::Walk(FAR_WAIT));
+    assert_eq!(b.r.part(), RoutinePart::ToLair("Far Lair".into()));
+    // Not willing to wait at all, it camps instead.
+    let mut b = Bot::cleared(two_lairs(Duration::ZERO, Pick::Soonest), &ago);
+    assert_eq!(b.see(&seen(100, CAMP), 0), Goal::Walk(CAMP));
+}
+
+#[test]
+fn throughput_counts_waiting_as_free() {
+    let ago = [(NEAR, 190), (FAR, 210)];
+    let mut b = Bot::cleared(two_lairs(Duration::from_secs(60), Pick::Throughput), &ago);
+    assert_eq!(b.see(&seen(100, CAMP), 0), Goal::Walk(NEAR_WAIT));
+}
+
+#[test]
+fn a_lair_it_cant_walk_to_is_left_out() {
+    let mut b = Bot::with(with_rules(vec![
+        circuit(
+            vec![lair((9, 1), "Nowhere", (9, 2))],
+            Duration::ZERO,
+            Pick::Soonest,
+        ),
+        camp(),
+    ]));
+    assert_eq!(b.see(&seen(100, CAMP), 1), Goal::Walk(CAMP));
 }
 
 #[test]
@@ -344,8 +546,12 @@ fn each_part_reads_for_the_card() {
     assert_eq!(RoutinePart::Camping.to_string(), "camping");
     assert_eq!(RoutinePart::ToRest.to_string(), "going to rest");
     assert_eq!(
-        RoutinePart::Hunting("cave bear".into()).to_string(),
-        "hunting cave bear"
+        RoutinePart::ToLair("Small Cavern".into()).to_string(),
+        "going to Small Cavern"
+    );
+    assert_eq!(
+        RoutinePart::WaitingFor("Small Cavern".into()).to_string(),
+        "waiting for Small Cavern to fill"
     );
     assert_eq!(
         RoutinePart::Stuck("no way".into()).to_string(),

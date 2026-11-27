@@ -11,7 +11,7 @@ pub mod proxy;
 pub mod view;
 pub mod web;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,16 +22,16 @@ use anyhow::Context;
 use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
-    CharacterConfig, Logging, PartyRole, Place, RuleSpec, Secrets, ServerConfig, load_character,
-    load_routine, load_server,
+    CharacterConfig, CircuitRule, Logging, PartyRole, Place, RuleSpec, Secrets, ServerConfig,
+    load_character, load_routine, load_server, parse_duration,
 };
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    AutoSwitch, CombatSettings, Command, Effect, GearSettings, HuntSettings, Inviter,
-    LoginSettings, Offline, PartySettings, RemoteSettings, Report, RestSettings, RoomBook,
-    RoomInfo, RouteRules, RoutineSettings, RuleSettings, Seat, SessionHandle, SessionSpec,
-    SessionState, Upstream, spawn, spawn_seated,
+    AutoSwitch, CircuitSettings, CombatSettings, Command, Effect, GearSettings, Inviter,
+    LairClocks, LairSettings, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
+    RestSettings, RoomBook, RoomInfo, RouteRules, RoutineSettings, RuleSettings, Seat,
+    SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -56,8 +56,10 @@ const SICK_WAIT: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_millis(300);
 /// How long after a failed walk a routine tries again (#53).
 const ROUTINE_RETRY: Duration = Duration::from_secs(30);
-/// How long a hunted monster may stand there unfought before the hunt gives up on it.
+/// How long a monster in a lair may stand there unfought before the circuit gives up on it.
 const KILL_WAIT: Duration = Duration::from_secs(30);
+/// How long a routine reckons a step of a walk takes, moving and confirming the room (#67).
+const STEP_TIME: Duration = Duration::from_secs(2);
 
 /// Something a bot did, for anyone watching.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1062,6 +1064,58 @@ pub(crate) fn route_rules(
     Ok(rules)
 }
 
+/// A circuit's lairs looked up (#67): each one's room and name, the room it's waited for in
+/// (the nearest that isn't a lair, keeping out of `avoid`), and its respawn time, the rule's
+/// own or else the compiled room file's. An error gives the field under the rule, and why.
+pub(crate) fn circuit_lairs(
+    places: &Places,
+    area: Option<&str>,
+    c: &CircuitRule,
+    avoid: &BTreeSet<(u32, u32)>,
+) -> Result<Vec<LairSettings>, (String, String)> {
+    let mut lairs = Vec::new();
+    for (j, l) in c.lairs.iter().enumerate() {
+        let field = format!("lairs[{j}]");
+        let at = place(places, l, area).map_err(|e| (field.clone(), e))?;
+        let name = places
+            .name_of(at)
+            .map_or_else(|| format!("{}/{}", at.0, at.1), str::to_owned);
+        let respawn = match c.respawn.get(&l.as_key()) {
+            Some(d) => *d,
+            None => {
+                let give = format!("give one under the rule's respawn: (`{}: 4m`)", l.as_key());
+                match places.lair_respawn(at) {
+                    None => {
+                        return Err((
+                            field,
+                            format!("{name} isn't a lair in places/, so how long it takes to fill isn't known: {give}"),
+                        ));
+                    }
+                    Some(text) => parse_duration(text).map_err(|_| {
+                        (
+                            field.clone(),
+                            format!("{name} fills at the game's default time, which places/ doesn't know: {give}"),
+                        )
+                    })?,
+                }
+            }
+        };
+        let wait_at = places.wait_room(at, avoid).ok_or_else(|| {
+            (
+                field.clone(),
+                format!("nowhere to wait outside {name}: every room near it is a lair or avoided"),
+            )
+        })?;
+        lairs.push(LairSettings {
+            at,
+            name,
+            wait_at,
+            respawn,
+        });
+    }
+    Ok(lairs)
+}
+
 /// The router's rules for a walk: the engine's, with the character's level when known.
 pub(crate) fn data_rules(rules: &RouteRules, level: Option<u32>) -> mp_data::RouteRules {
     let key = |(m, r): (u32, u32)| (i64::from(m), i64::from(r));
@@ -1091,6 +1145,15 @@ impl Server {
         let at = |field: String, p: &Place| {
             place(&self.places, p, area).map_err(|e| format!("routine {}: {field}: {e}", r.name))
         };
+        let route = route_rules(
+            &self.places,
+            area,
+            &r.avoid.rooms,
+            &r.avoid.areas,
+            &r.avoid.exits,
+            &r.prefer_not,
+        )
+        .map_err(|e| format!("routine {}: avoid: {e}", r.name))?;
         let mut rules = Vec::new();
         for (i, rule) in r.rules.iter().enumerate() {
             let field = format!("do[{i}].at");
@@ -1101,11 +1164,12 @@ impl Server {
                     // The character's own stop thresholds, unless the rule gives its own.
                     until: rest.until.unwrap_or(c.rest.stop_when_all),
                 },
-                RuleSpec::Hunt(h) => RuleSettings::Hunt(HuntSettings {
-                    monster: h.monster.clone(),
-                    at: at(field, &h.at)?,
-                    every: h.every,
-                    when: h.when,
+                RuleSpec::Circuit(circuit) => RuleSettings::Circuit(CircuitSettings {
+                    lairs: circuit_lairs(&self.places, area, circuit, &route.avoid_rooms)
+                        .map_err(|(f, e)| format!("routine {}: do[{i}].{f}: {e}", r.name))?,
+                    when: circuit.when,
+                    wait: circuit.wait,
+                    pick: circuit.pick,
                 }),
                 RuleSpec::Camp(camp) => RuleSettings::Camp {
                     at: at(field, &camp.at)?,
@@ -1140,15 +1204,10 @@ impl Server {
             rules,
             retry: ROUTINE_RETRY,
             kill_wait: KILL_WAIT,
-            route: route_rules(
-                &self.places,
-                area,
-                &r.avoid.rooms,
-                &r.avoid.areas,
-                &r.avoid.exits,
-                &r.prefer_not,
-            )
-            .map_err(|e| format!("routine {}: avoid: {e}", r.name))?,
+            route,
+            rooms: Some(Arc::new(GameRooms(Arc::clone(&self.gamedata)))),
+            step_time: STEP_TIME,
+            lair_clocks: self.history.clone().map(|h| h as Arc<dyn LairClocks>),
         }))
     }
 }

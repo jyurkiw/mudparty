@@ -29,6 +29,15 @@ impl Place {
     pub fn is_blank(&self) -> bool {
         matches!(self, Self::Named(n) if n.trim().is_empty())
     }
+
+    /// The place as a map key names it: the name as written, or the long form's room
+    /// number, `1/2156`.
+    pub fn as_key(&self) -> String {
+        match self {
+            Self::Named(n) => n.trim().to_owned(),
+            Self::Room { map, room, .. } => format!("{map}/{room}"),
+        }
+    }
 }
 
 /// A place written as this name.

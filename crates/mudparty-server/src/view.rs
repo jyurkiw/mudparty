@@ -49,7 +49,7 @@ pub struct Card {
     pub queued: Vec<String>,
     /// Where a walk stands: `walking to 1/2141, step 2 of 4`, `arrived`, `walk failed: …`.
     pub walk: Option<String>,
-    /// Where the routine is: `camping`, `going to rest`, `hunting cave bear` (#53).
+    /// Where the routine is: `camping`, `going to rest`, `going to Small Cavern` (#53).
     pub routine: Option<String>,
     /// Where it was last known to be, for a rescue (from `mudparty.sqlite`).
     pub last_position: Option<Position>,

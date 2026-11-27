@@ -5,7 +5,7 @@
 use std::fs;
 use std::time::Duration;
 
-use mp_config::{Amount, CharacterConfig, RoutineRef, RuleSpec, load_routine};
+use mp_config::{Amount, CharacterConfig, Pick, RoutineRef, RuleSpec, load_routine};
 
 const ARENA: &str = r#"
 schema: 1
@@ -24,10 +24,11 @@ do:
       at: road
       when: { hp_below: "${rest_below}" }
       until: { hp: 100% }
-  - hunt:
-      monster: cave bear
-      at: dungeon:small-cavern-2156
-      every: 4m
+  - circuit:
+      lairs: [dungeon:small-cavern-2156]
+      respawn:
+        dungeon:small-cavern-2156: 4m
+      wait: 30s
       when: { hp_at_least: "${bear_hp}" }
   - camp:
       at: arena
@@ -76,12 +77,17 @@ fn a_routine_file_reads_top_down_with_its_params_filled_in() {
     assert_eq!(rest.at, "road");
     assert_eq!(rest.when.hp_below, Some(Amount::Percent(50)));
     assert_eq!(rest.until.and_then(|u| u.hp), Some(Amount::Percent(100)));
-    let RuleSpec::Hunt(hunt) = &r.rules[1] else {
+    let RuleSpec::Circuit(circuit) = &r.rules[1] else {
         panic!("{:?}", r.rules[1])
     };
-    assert_eq!(hunt.monster, "cave bear");
-    assert_eq!(hunt.every, Duration::from_secs(240));
-    assert_eq!(hunt.when.hp_at_least, Some(Amount::Percent(80)));
+    assert_eq!(circuit.lairs, ["dungeon:small-cavern-2156"]);
+    assert_eq!(
+        circuit.respawn.get("dungeon:small-cavern-2156"),
+        Some(&Duration::from_secs(240))
+    );
+    assert_eq!(circuit.wait, Duration::from_secs(30));
+    assert_eq!(circuit.pick, Pick::Soonest);
+    assert_eq!(circuit.when.hp_at_least, Some(Amount::Percent(80)));
     let RuleSpec::Camp(camp) = &r.rules[2] else {
         panic!("{:?}", r.rules[2])
     };
@@ -189,11 +195,37 @@ fn an_unknown_rule_or_condition_is_named() {
 }
 
 #[test]
-fn a_hunt_needs_a_monster_and_a_time() {
-    let e = error_in(&ARENA.replace("monster: cave bear", "monster: \"\""));
-    assert!(e.contains("do[1]"), "{e}");
-    let e = error_in(&ARENA.replace("every: 4m", "every: 0s"));
-    assert!(e.contains("every"), "{e}");
+fn a_circuit_needs_lairs_and_times_for_them() {
+    let e = error_in(&ARENA.replace("lairs: [dungeon:small-cavern-2156]", "lairs: []"));
+    assert!(e.contains("do[1].lairs"), "{e}");
+    let e = error_in(&ARENA.replace("small-cavern-2156: 4m", "small-cavern-2156: 0s"));
+    assert!(e.contains("do[1].respawn"), "{e}");
+    // A respawn time for a room that isn't one of its lairs is a slip.
+    let e = error_in(&ARENA.replace(
+        "        dungeon:small-cavern-2156: 4m",
+        "        dungeon:small-cavern-2156: 4m\n        arena: 2m",
+    ));
+    assert!(e.contains("do[1].respawn.arena"), "{e}");
+    assert!(e.contains("isn't one of the circuit's lairs"), "{e}");
+}
+
+#[test]
+fn a_circuit_may_count_waiting_as_free() {
+    let dir = routines(&ARENA.replace("wait: 30s", "wait: 30s\n      pick: throughput"));
+    let c = character("routine: newhaven-arena\n");
+    let r = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap()).unwrap();
+    let RuleSpec::Circuit(circuit) = &r.rules[1] else {
+        panic!()
+    };
+    assert_eq!(circuit.pick, Pick::Throughput);
+}
+
+#[test]
+fn a_hunt_is_now_a_circuit_of_one_lair() {
+    let e = error_in(
+        "schema: 1\nname: x\ndo:\n  - hunt: { monster: cave bear, at: cavern, every: 4m }\n",
+    );
+    assert!(e.contains("circuit"), "{e}");
 }
 
 #[test]

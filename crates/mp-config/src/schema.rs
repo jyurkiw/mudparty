@@ -49,6 +49,14 @@ pub(crate) fn duration(_: &mut schemars::SchemaGenerator) -> Schema {
     })
 }
 
+/// Names to durations: `{ small-cavern: 4m }`.
+pub(crate) fn durations(g: &mut schemars::SchemaGenerator) -> Schema {
+    json_schema!({
+        "type": "object",
+        "additionalProperties": duration(g).to_value()
+    })
+}
+
 /// A parameter's value: `50%`, `20`, `4m`, `true`.
 pub(crate) fn scalars(_: &mut schemars::SchemaGenerator) -> Schema {
     json_schema!({

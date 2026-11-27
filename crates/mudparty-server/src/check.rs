@@ -10,7 +10,8 @@
 //!   place of its last rule (where the bot is when nothing else is due), keeping to the
 //!   routine's `avoid` and `prefer_not` and, given a level, to the level exits that let the
 //!   character through (*§14.5*). Between them, every place reaches every other. With a gear
-//!   rule, so can a shop for each item.
+//!   rule, so can a shop for each item; with a circuit, each lair and the room the bot waits
+//!   in for it (#67), whose respawn time is printed as the server takes it.
 //! - **Renumbered:** a room by number whose `name` isn't the world's any more.
 //!
 //! The game data is opened as the server opens it, imported from `silvermere.db` first when
@@ -28,7 +29,7 @@ use mp_data::GameData;
 use mp_data::places::{Local, Places};
 use mp_engine::RouteRules;
 
-use crate::{data_rules, open_gamedata, place};
+use crate::{circuit_lairs, data_rules, open_gamedata, place};
 
 /// What `check` makes of a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,12 +312,37 @@ impl World<'_> {
         let area = r.places.clone();
         let area = area.as_deref();
         let mut spots: Vec<(String, (u32, u32))> = Vec::new();
+        // Circuits whose lairs all name rooms, for their wait-rooms once the avoided rooms
+        // are known.
+        let mut circuits = Vec::new();
         for (i, rule) in r.rules.iter_mut().enumerate() {
             let at = match rule {
                 RuleSpec::Rest(x) => &mut x.at,
-                RuleSpec::Hunt(h) => &mut h.at,
                 RuleSpec::Camp(c) => &mut c.at,
                 RuleSpec::Gear(_) => continue,
+                RuleSpec::Circuit(c) => {
+                    // Respawn times are keyed by the lair as written, which becomes its
+                    // room number in the long form.
+                    let given = std::mem::take(&mut c.respawn);
+                    let mut all = true;
+                    for (j, l) in c.lairs.iter_mut().enumerate() {
+                        let key = l.as_key();
+                        let field = format!("{prefix}do[{i}].lairs[{j}]");
+                        match self.resolve(out, file, &field, l, area) {
+                            Some(k) => {
+                                if let Some(d) = given.get(&key) {
+                                    c.respawn.insert(format!("{}/{}", k.0, k.1), *d);
+                                }
+                                spots.push((field, k));
+                            }
+                            None => all = false,
+                        }
+                    }
+                    if all {
+                        circuits.push(i);
+                    }
+                    continue;
+                }
             };
             let field = format!("{prefix}do[{i}].at");
             if let Some(k) = self.resolve(out, file, &field, at, area) {
@@ -354,8 +380,37 @@ impl World<'_> {
                 Err(e) => out.add(file, &format!("{prefix}prefer_not.{name}"), &e),
             }
         }
+        // Each lair's wait-room, and its respawn time as the server would take it.
+        for i in circuits {
+            let RuleSpec::Circuit(c) = &mut r.rules[i] else {
+                continue;
+            };
+            match circuit_lairs(self.places, area, c, &rules.avoid_rooms) {
+                Ok(lairs) => {
+                    for (j, l) in lairs.iter().enumerate() {
+                        c.respawn
+                            .entry(format!("{}/{}", l.at.0, l.at.1))
+                            .or_insert(l.respawn);
+                        spots.push((format!("{prefix}do[{i}].lairs[{j}]"), l.wait_at));
+                    }
+                }
+                Err((f, why)) => out.add(file, &format!("{prefix}do[{i}].{f}"), &why),
+            }
+        }
+        // Where the bot is when nothing else is due: the last rule's place.
+        let hub = r
+            .rules
+            .iter()
+            .rev()
+            .filter_map(|rule| match rule {
+                RuleSpec::Rest(x) => Some(&x.at),
+                RuleSpec::Camp(c) => Some(&c.at),
+                RuleSpec::Circuit(c) => c.lairs.last(),
+                RuleSpec::Gear(_) => None,
+            })
+            .find_map(|p| place(self.places, p, area).ok())?;
         let reach = Reach {
-            hub: spots.last()?.1,
+            hub,
             rules: data_rules(&rules, self.level),
         };
         for (field, k) in &spots {

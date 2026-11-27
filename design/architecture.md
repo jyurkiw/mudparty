@@ -893,7 +893,7 @@ hunts, from the character's `routine:` and `places:` (*§7.3*).
   4. A hunt due, HP at least its `min_hp`, no fight: walk to its room. The monster there
      (its name, or a name ending with it: `big cave bear`) is killed; then back to camp.
      It's due again `every` after the kill, or after a visit that found it gone. A monster
-     left unfought for 30 s is given up on.
+     left unfought for 30 s is given up on. *Hunts became circuits in #67 (§14.7).*
   5. A walk that fails waits 30 s, then starts again from the camp (or the rest).
 - **Pausing.** `@stop` (the page's Pause) pauses the routine with the rest of the bot and
   calls its walk off; `@rego` (Go on) picks it up where it was. While it runs, a `goto`
@@ -902,8 +902,9 @@ hunts, from the character's `routine:` and `places:` (*§7.3*).
   line out when the room is empty, so the combat engine now empties its roster at
   `Obvious exits:` with no `Also here:` since the last prompt.
 - **Only bots.** A seated character, or one whose MudPlay has dropped, runs no routine.
-- **Not yet:** training (#56) and shopping (#55), which join the loop as parts of their
-  own; an @ command to send the bot to a part; keeping hunt times across a reconnect.
+- **Not yet:** training (#56), which joins the loop as a rule of its own; an @ command to
+  send the bot to a part. Shopping came as the `gear` rule (#55), and lair times kept
+  across a reconnect with circuits (#67).
 
 ## 7. Data model
 
@@ -1537,7 +1538,8 @@ non-MVP parts left out:
 
 All of it is configured in hand-written YAML. Several such bots may run at once, each on
 its own. The pieces: walking (#52, *§6.10*), the routine (#53), shopping (#55), training
-(#56) and login steps (#33).
+(#56) and login steps (#33). A walk that can stall in a long session (#78) must be fixed
+or explained before the goal's test, which is one.
 
 **1.1** is what the user is really after: **one bot controlling several characters in
 concert**, the party director (#59). A director in the server sets goals for each
@@ -1823,7 +1825,7 @@ do:
   checking (*§14.7*).
 - **Taking over:** a rule's `when` says when it starts; once started it runs until it's
   done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
-  (fleeing is #16). The lower rule keeps its state (a hunt its timer) and applies again
+  (fleeing is #16). The lower rule keeps its state (a circuit its lairs' clocks) and applies again
   once its `when` holds.
 - **Parameters:** a routine declares them with their defaults under `params:` and uses
   them as `${name}`; a character changes them:
@@ -1833,7 +1835,7 @@ do:
   only those it declares.
 - **Built in #65** (`mp-config` `routine.rs`, `mp-engine` `routine.rs`): the rules `rest`
   (`at`, `when`, `until`, the character's `rest.stop_when_all` when left out), `hunt`
-  (`monster`, `at`, `every`, `when`; #67 makes it a circuit) and `camp` (`at`,
+  (`monster`, `at`, `every`, `when`; #67 made it a circuit) and `camp` (`at`,
   `look_every`). A routine file has `schema`, `name`, `places` (the area its places are
   looked for in first), `params`, `avoid`, `prefer_not` and `do`. It is checked when read:
   a rule below one that always applies (a camp) would never run, and a rest says when.
@@ -1896,6 +1898,52 @@ each is ready, as MudPlay's Auto-Lair does (`AutoLairScheduler.cs`, `LairTimerSt
   the next lair's wait-room.
 
 A `hunt` of one monster, as #61 built it, is a circuit of one lair.
+
+**Built in #67** (`mp-config` `CircuitRule`, `mp-engine` `routine.rs`, `mudparty-server`
+`circuit_lairs` and `history.rs`):
+
+```yaml
+- circuit:
+    lairs: [bear]            # places
+    respawn: { bear: 4m }    # by the lair as written; the room file's time when left out
+    wait: 1m                 # how long it will wait outside for a lair; none by default
+    pick: soonest            # or throughput
+    when: { hp_at_least: 80% }
+```
+
+- **In a rule list, `idle:` is the rules below.** The circuit applies when its `when` holds
+  and some lair will be ready by the time the bot gets to its wait-room, waiting up to
+  `wait`. When none is, the rules below run (the camp), and the circuit applies again once
+  one will be. So a one-lair circuit above a camp is #61's hunt, set off early enough to
+  arrive as the lair fills.
+- **Picking:** `soonest` takes the nearest lair ready on arrival, else the one whose fight
+  can start first; `throughput` the nearest within `wait`, waiting counted as free.
+  It plans again after every lair, from where the bot stands.
+- **Travel** is reckoned from the router's route to the wait-room, 2 s a step (moving and
+  confirming the room with `/room`), and kept per pair of rooms. A lair it can't walk to is
+  left out.
+- **The wait-room** is the nearest room by exits that isn't a lair itself, never through an
+  avoided room (`Places::wait_room`). In the stock world the cave bear's Small Cavern opens
+  only onto the Dungeon Entrance, a lair of rats (`1m`), so the bear is waited for in the
+  arena: the bot walks through the rats' lair each time, filling it on the way, as a
+  player would. A lair with nowhere to wait is an error when the bot starts, and in `check`.
+- **In the lair** every monster it shows is killed in turn (a kill order each), and the
+  lair is clear once none is left. That starts its clock, as a visit that finds it empty
+  does. A monster left unfought for 30 s is given up on, which starts the clock too. A
+  lair whose fight was cut short (a rest above took over) isn't cleared, so it's still
+  ready afterwards.
+- **Respawn times:** the room file's `lair.respawn` when the rule gives none. silvermere
+  counts it in whole minutes from the kill's minute (`regen_blocked`), so a lair can be a
+  minute late; an empty visit then starts its clock again. A room that isn't a lair needs
+  a time given, as does a lair at the game's default (`server default`), which the room
+  file doesn't know.
+- **Clocks** are the world's, not a character's: `mudparty.sqlite`'s `lairs` table keeps
+  when each was last cleared, by any bot (`LairClocks`). The session reads them when the
+  routine starts and writes each lair as it's cleared.
+- **The card** shows `going to Small Cavern`, `waiting for Small Cavern to fill` and
+  `killing cave bear`.
+- **Not built:** bosses' early window (a leftover issue), and a circuit's own `idle:`
+  rule.
 
 **Errands.** `gear` (built in #55, `mp-engine` `shop.rs` and the routine's gear rule)
 keeps the character's `gear:` (`{ item, use: wield | wear, at }`):
