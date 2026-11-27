@@ -2155,3 +2155,217 @@ web page needs one too (user).
 8. The map: read-only (#69), overlays (#70), editing (#71).
 
 1.0 (*§12.2*) needs steps 1-6.
+
+## 15. The party's money: sheets, a banker, bank runs and shopping (designed 2026-11-27)
+
+The user's next web work, after the first party test on a real server: each character's
+stats and inventory on the page, and the party's money handled as a player would. One
+member holds the money, banks it and does the shopping, because shop prices depend on the
+buyer's charm.
+
+### 15.1 Why one member holds the money
+
+silvermere's prices (`silvermere-rules` `economy.rs`, Stock's formulas):
+
+- **Buying** costs `cost × (100 + markup)% × (110 − charm/5)%`: 110% of the list price at
+  charm 0, 100% at 50, 90% at 100.
+- **Selling** pays `cost × (charm/2 + 25)%`: 25% at charm 0, 50% at 50, 75% at 100.
+
+So the party's highest-charm member should do all its buying and selling. A shop's `list`
+shows the prices, and its `(You can't use)` and `(Too powerful)` flags, for whoever looks.
+A character may buy an item it can't use, so the banker can buy for every class.
+
+Moving money and items, the rules this design relies on (silvermere `commands/inventory.rs`,
+`commands/bank.rs`):
+
+- **`give <n> <currency> to <player>`** needs both in one room. `n` is at most 32,767 (a
+  16-bit amount), and the game moves only what the receiver can carry: 3 coins of a type
+  weigh 1, against carrying capacity (48 per point of strength). It says how many went:
+  `You gave Bob 10 copper` to the giver, and `Alice gave you 10 copper` to the receiver.
+  A player who has set NORECEIVE refuses: `Bob refuses your offer.`
+- **`give <item> to <player>`**: `You just gave <item> to <who>.` and
+  `<who> just gave you <item>.` It's refused if the receiver can't carry it.
+- Giving, depositing and withdrawing all **end a rest**.
+- **Coins on the floor** show in the room as `You notice 3 silver nobles, 12 copper
+  farthings here.`, and are picked up with `get <currency>` or `get <n> <currency>`
+  (`You picked up 9 copper farthings`).
+- **Banks** are shops of type `bank` (the compiled room files show them as
+  `shop: { type: bank }`).
+  - `deposit <n>` and `withdraw <n>` count in copper value, not coins, at most nine digits.
+  - The book is the account's, kept separately at each bank. `bankbook` shows it.
+  - After every deposit or withdrawal the purse is changed up into the fewest coins
+    (`economy::normalise`): 3,000 copper becomes 3 gold. So one visit can cut a purse's
+    weight a hundredfold.
+
+### 15.2 The party file
+
+A party file now, holding only what the money needs. The 1.2 director (#59) grows it
+into its groups (*§14.2*: `parties/<name>.yaml`).
+
+```yaml
+# parties/main.yaml
+schema: 1
+name: main
+members: [Artemis, Braven, Grond, Tzarst]
+money:
+  banker: highest_charm     # or a member's name
+  keep: 0                   # what each other member keeps, in money (below)
+  banker_keeps: 5 gold      # what the banker carries after a bank run, for shopping
+  bank_at: newhaven-bank    # optional: the bank to use; else any bank the party is in
+```
+
+- **`members`** are character files. The main character can be one, and so can bots.
+  A character may be in one party.
+- **`banker`** is a member's name, or `highest_charm`: the member whose status sheet
+  (*§15.3*) shows the most charm, ties going to the first listed. A member with no sheet
+  yet isn't counted until it has one. The page shows who it is and why.
+- **`keep`** is what each other member holds back (0: give everything). **`banker_keeps`**
+  is what the banker carries out of the bank, so it can shop.
+- **Money** is written as coins: `5 gold`, `120 silver`, `2 platinum 50 gold`, or a bare
+  number of copper. The coins are silvermere's: runic (100 platinum), platinum (100 gold),
+  gold (10 silver), silver (10 copper), copper.
+- **A banker you play in MudPlay** (the main character): bots give to it by themselves,
+  since giving needs nothing from the receiver. Its own steps (depositing, withdrawing,
+  buying, giving items) go into your session as injected lines only when you press the
+  page's button for them, never by themselves, since you're at the keyboard.
+- `check` reads a party file like the others: members that have no character file, a
+  banker who isn't a member, money that doesn't read.
+
+### 15.3 Sheets: stats, inventory and wealth
+
+The character sheets of *§6.9* (#10), built now:
+
+- **Status** (`st`): the six stats (charm among them), level, experience, HP, mana, AC and
+  DR, and the rest *§6.9* lists.
+- **Spells.**
+- **Inventory** (`i`): carried items, keys, **wealth** and **encumbrance**. The carried
+  list and `Wealth:` are already read for gear (#55).
+- **Appearance** (`look <self>`): what's worn and where.
+
+They refresh as *§6.9* says: all at login and on the Refresh button; one part after a
+change; never in combat. The parts added for money:
+
+- **Wealth** is kept as coins by type, as `Wealth:` gives it, with its weight
+  (`coins/3` per type) and the carrying capacity from strength. So the server knows how
+  many more coins each member can take.
+- A money move (a give, a deposit, a purchase) refreshes Inventory once it's done.
+
+**On the page** a sheet opens from each card. Its tabs:
+- Stats;
+- Spells;
+- Inventory and equipment, with weight and wealth.
+
+Item actions on the sheet:
+- **give to** another member;
+- **equip**, **remove**, and **drop**;
+- **sell**: the item goes to the banker, who sells it at its own price.
+
+Each action goes through the bot's pacing as an order, as the page's other buttons do, and
+the sheet refreshes after it.
+
+**A party panel** shows the money:
+- the banker, and why it was chosen;
+- each member's coins, weight, and how much more it can carry;
+- the banked total at each bank seen (`bankbook`);
+- what the members' gear lists want, priced at the banker's charm where a shop's list has
+  been seen;
+- the Bank run and Shop buttons (*§15.5*, *§15.6*), with whether each can happen here.
+
+### 15.4 Giving to the banker
+
+Every other member gives its coins above `keep` to the banker, by itself, when:
+
+- they're in the same room, and the banker is in the game;
+- no one in the room is fighting (no target, no `*Combat Engaged*` running);
+- the member isn't resting, since a give ends a rest. It gives after the rest.
+
+How:
+- **Highest coin first**, which moves the most value for the least weight: one `give <n>
+  <currency> to <banker>` a currency, `n` at most 32,767.
+- The game caps each give at what the banker can carry. The bot reads `You gave …` for
+  what went, and keeps the rest.
+- **When the banker is full** (the server knows from its sheet), members stop giving until
+  it has room. The panel shows the coins still out with members, and that a bank run is
+  due.
+- A refusal (`Bob refuses your offer.`, or `Why would you want to give to that?` when
+  the banker isn't there after all) is said on the card and not tried again until something changes: the banker comes back, or the file
+  changes.
+- Giving waits behind a routine's own steps and a walk: it happens between them, never
+  mid-walk.
+
+The banker gives nothing back by itself in 1.1. A member that needs money (to train, or
+for the healer) gets it from a page order, *give money to*. A float for training fees is
+`keep`.
+
+### 15.5 Bank runs
+
+A bank run happens when the banker is in a bank room. The leader brings the party there:
+the party follows its leader, and in 1.1 that's usually you. A run can start three ways:
+
+- by itself, whenever the banker enters a bank, if it has money above `banker_keeps` or
+  members have coins out;
+- from the panel's **Bank run** button;
+- `@bank` from an allowed player.
+
+The run:
+
+1. The banker deposits everything above `banker_keeps` (`deposit <copper value>`). Its
+   purse is changed up into the fewest coins as it does.
+2. Members in the room give their coins above `keep` to the banker (*§15.4*). Its purse
+   now has room again.
+3. Again from 1, until no member in the room holds more than `keep`, or a round moves
+   nothing. A bank run can take several deposits when the party holds more coins than one
+   character can carry, as it may after a long script.
+4. If the members' gear lists want things (*§15.6*), the banker withdraws what they'll
+   cost at its prices, plus `banker_keeps`.
+5. `bankbook`, for the panel's banked total.
+
+A member not in the bank room keeps its coins until the next run. Its card says so.
+
+### 15.6 Shopping
+
+The wants are each member's `gear:` (#55). An item missing from its inventory and
+equipment sheets is wanted. When the banker is in a shop room:
+
+1. The banker sends `list`. The rows give each item's price at the banker's charm, and
+   the panel keeps them per shop.
+2. For each wanted item this shop sells, cheapest want first, the banker buys it, if it
+   can pay.
+3. It gives the item to its owner if the owner is in the room. Otherwise the banker keeps
+   it until they next share a room, and the panel shows it as held for that member.
+4. The owner puts it on, as the gear errand does with an item carried but not in use
+   (`wield`, `wear`, `light`).
+5. An item it can't afford is said on the panel, with its price and what's in the bank.
+
+Like a bank run, shopping starts by itself when the banker enters a shop that sells
+something wanted, or from the panel's **Shop** button, or `@shop`. A routine bot's own
+`gear` rule (*§14.7*) keeps working for a bot in no party. A bot in a party with a banker
+asks the banker instead, rather than buy at its own charm.
+
+**Selling**, from an item's *sell* action: the member gives it to the banker, who sells
+it at the next shop that buys it (`sell <item>`), and the coins join the party's.
+Selling loot by itself waits for a rule saying what to keep.
+
+### 15.7 Not decided
+
+- **Picking up coins after a kill** (#102). Nothing does yet, and this design leaves it out.
+  Options: the banker if it's in the room, else whoever is; or the leader only. Until then
+  coins on the floor are picked up by hand.
+- **Walking the party to town.** In 1.1 the leader does it. The 1.2 director (#59) could
+  send the party to a bank or a shop by itself, when the banker is full or wants are
+  waiting.
+- **Which bank:** books are kept per bank. A party that banks in two towns has two
+  balances. `bank_at` names one; without it the panel shows each.
+
+### 15.8 Build order
+
+1. The sheets (#10): status, inventory, wealth and encumbrance, and the sheet page,
+   view only.
+2. The party file and the banker (`highest_charm` from the sheets), with the party panel
+   (#97).
+3. Giving to the banker (#98).
+4. Bank runs (#99).
+5. Shopping by the banker, and selling (#100).
+6. The sheet's item actions (#101).
+
+They're web interface work, in 1.1 with #95's. Picking up coins is #102 (Later).
