@@ -3,8 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use mp_engine::{Login, LoginAction as A, LoginFailure as F, LoginSettings};
-use mp_parse::{Event, Item, Rest, Vitals};
+use mp_engine::{Login, LoginAction as A, LoginFailure as F, LoginSettings, ScriptStep};
+use mp_parse::{Event, Item, Rest, Traced, Vitals};
 
 fn settings(takeover: bool) -> LoginSettings {
     LoginSettings {
@@ -12,6 +12,7 @@ fn settings(takeover: bool) -> LoginSettings {
         password: "hunter22".into(),
         takeover,
         step_timeout: Duration::from_secs(30),
+        script: None,
     }
 }
 
@@ -165,7 +166,7 @@ fn a_step_that_waits_too_long_times_out_naming_what_it_waited_for() {
     assert_eq!(
         l.on_tick(t0 + Duration::from_secs(31)),
         [A::Failed(F::Timeout {
-            waiting_for: "the username prompt"
+            waiting_for: "the username prompt".into()
         })]
     );
 }
@@ -179,7 +180,7 @@ fn progress_resets_the_timeout() {
     assert_eq!(
         l.on_tick(t0 + Duration::from_secs(51)),
         [A::Failed(F::Timeout {
-            waiting_for: "the password prompt"
+            waiting_for: "the password prompt".into()
         })]
     );
 }
@@ -206,4 +207,124 @@ fn a_finished_login_does_nothing_more() {
 fn the_password_never_shows_when_the_settings_are_printed() {
     let shown = format!("{:?}", settings(true));
     assert!(!shown.contains("hunter22"), "{shown}");
+}
+
+// ----- a dialogue written in the character's file (#33)
+
+fn step(wait: &str, send: &str) -> ScriptStep {
+    ScriptStep {
+        wait: wait.into(),
+        send: send.into(),
+    }
+}
+
+/// A login of the user's own: a name, a secret word, a key to go on.
+fn scripted() -> LoginSettings {
+    LoginSettings {
+        script: Some(vec![
+            step("Enter your name:", "{account}"),
+            step("Secret word:", "{password}"),
+            step("Press any key", ""),
+        ]),
+        ..settings(true)
+    }
+}
+
+/// A line read, as the reader gives it: `item`, from the text `plain`.
+fn line(item: Item, plain: &str) -> Traced {
+    Traced {
+        item,
+        plain: plain.into(),
+    }
+}
+
+fn text(plain: &str) -> Traced {
+    line(Item::Text(plain.into()), plain)
+}
+
+fn run_script(lines: &[Traced]) -> Vec<A> {
+    let t0 = Instant::now();
+    let mut l = Login::new(scripted(), t0);
+    lines.iter().flat_map(|t| l.on_traced(t, t0)).collect()
+}
+
+#[test]
+fn a_written_dialogue_is_followed_step_by_step() {
+    let got = run_script(&[
+        text("Welcome, traveller."),
+        text("Enter your name: "),
+        text("Secret word: "),
+        text("Press any key to go on."),
+        line(prompt(35), "[HP=35]:"),
+    ]);
+    assert_eq!(
+        got,
+        [
+            A::Send("ermias".into()),
+            // The password is never logged.
+            A::SendSecret("hunter22".into()),
+            A::Send("".into()),
+            A::InGame,
+        ]
+    );
+}
+
+#[test]
+fn each_step_waits_for_its_own_text_in_turn() {
+    // The second step's text before the first's: nothing yet.
+    assert_eq!(run_script(&[text("Secret word: ")]), []);
+    // A game prompt before the last step isn't the game yet.
+    assert_eq!(
+        run_script(&[text("Enter your name: "), line(prompt(35), "[HP=35]:")]),
+        [A::Send("ermias".into())]
+    );
+}
+
+#[test]
+fn the_credential_guard_holds_in_a_written_dialogue() {
+    let got = run_script(&[
+        text("Enter your name: "),
+        text("Secret word: "),
+        text("Secret word: "),
+    ]);
+    assert_eq!(got.last(), Some(&A::Failed(F::AskedAgain("password"))));
+    assert_eq!(
+        got.iter().filter(|a| matches!(a, A::SendSecret(_))).count(),
+        1
+    );
+    let got = run_script(&[text("Enter your name: "), text("Enter your name: ")]);
+    assert_eq!(got.last(), Some(&A::Failed(F::AskedAgain("username"))));
+}
+
+#[test]
+fn the_games_refusals_stop_a_written_dialogue_too() {
+    let got = run_script(&[
+        text("Enter your name: "),
+        text("Secret word: "),
+        line(ev(Event::InvalidCredentials), "Invalid Credentials"),
+    ]);
+    assert_eq!(got.last(), Some(&A::Failed(F::InvalidCredentials)));
+}
+
+#[test]
+fn a_written_step_that_waits_too_long_names_its_text() {
+    let t0 = Instant::now();
+    let mut l = Login::new(scripted(), t0);
+    l.on_traced(&text("Enter your name: "), t0);
+    assert_eq!(
+        l.on_tick(t0 + Duration::from_secs(31)),
+        [A::Failed(F::Timeout {
+            waiting_for: "`Secret word:`".into()
+        })]
+    );
+}
+
+#[test]
+fn a_login_tells_the_reader_what_it_waits_for() {
+    let t0 = Instant::now();
+    assert_eq!(
+        Login::new(scripted(), t0).waits(),
+        ["Enter your name:", "Secret word:", "Press any key"]
+    );
+    assert!(Login::new(settings(true), t0).waits().is_empty());
 }

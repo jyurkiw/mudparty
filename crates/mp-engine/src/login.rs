@@ -10,12 +10,17 @@
 //! | `[MAJORMUD]:` | `E` |
 //! | a game prompt | done |
 //!
+//! A character's file may write its own dialogue instead (`login.steps`, #33): each step
+//! waits for its text, in a finished line or the line waiting for an answer, and sends its
+//! line with `{account}` and `{password}` filled in. The game's refusals, the credential
+//! guard and the step timeout hold as for silvermere's dialogue.
+//!
 //! Pure logic: parsed items and a clock in, actions out, so it is tested without sockets.
 
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use mp_parse::{Event, Item};
+use mp_parse::{Event, Item, Traced};
 
 /// What the login needs. Printing it never shows the password.
 #[derive(Clone)]
@@ -26,6 +31,17 @@ pub struct LoginSettings {
     pub takeover: bool,
     /// How long a step may wait for the game before the login fails.
     pub step_timeout: Duration,
+    /// A dialogue of the character's own, in place of silvermere's (#33).
+    pub script: Option<Vec<ScriptStep>>,
+}
+
+/// One step of a written login: wait for `wait`, then send `send`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptStep {
+    pub wait: String,
+    /// `{account}` and `{password}` are filled in; a line with the password is never
+    /// logged.
+    pub send: String,
 }
 
 impl fmt::Debug for LoginSettings {
@@ -35,6 +51,7 @@ impl fmt::Debug for LoginSettings {
             .field("password", &"********")
             .field("takeover", &self.takeover)
             .field("step_timeout", &self.step_timeout)
+            .field("script", &self.script)
             .finish()
     }
 }
@@ -54,7 +71,7 @@ pub enum LoginFailure {
     /// The game asked again for something already given: the credential guard.
     AskedAgain(&'static str),
     Timeout {
-        waiting_for: &'static str,
+        waiting_for: String,
     },
 }
 
@@ -116,6 +133,8 @@ pub struct Login {
     settings: LoginSettings,
     step: Step,
     since: Instant,
+    /// The written step waited for next.
+    next: usize,
 }
 
 impl Login {
@@ -124,7 +143,85 @@ impl Login {
             settings,
             step: Step::Username,
             since: now,
+            next: 0,
         }
+    }
+
+    /// The texts a written login waits for, for the reader to report a waiting line
+    /// that ends with one ([`mp_parse::Reader::set_waits`]); none for silvermere's.
+    pub fn waits(&self) -> Vec<String> {
+        self.settings
+            .script
+            .iter()
+            .flatten()
+            .map(|s| s.wait.trim().to_owned())
+            .collect()
+    }
+
+    /// The next item the game sent, with the text it was read from: a written login reads
+    /// the text, silvermere's the item.
+    pub fn on_traced(&mut self, t: &Traced, now: Instant) -> Vec<LoginAction> {
+        if self.settings.script.is_none() {
+            return self.on_item(&t.item, now);
+        }
+        self.on_script(t, now)
+    }
+
+    /// What a step's send gives away: the password, the account name, or neither.
+    fn credential(send: &str) -> Option<&'static str> {
+        if send.contains("{password}") {
+            Some("password")
+        } else if send.contains("{account}") {
+            Some("username")
+        } else {
+            None
+        }
+    }
+
+    fn on_script(&mut self, t: &Traced, now: Instant) -> Vec<LoginAction> {
+        use LoginAction as A;
+        if self.step == Step::Done {
+            return Vec::new();
+        }
+        let steps = self.settings.script.clone().unwrap_or_default();
+        // The game's refusals stop any dialogue.
+        if let Item::Event(e) = &t.item
+            && let Some(f) = refusal(e)
+        {
+            return self.fail(f);
+        }
+        if self.next == steps.len() {
+            if matches!(t.item, Item::Prompt(_)) {
+                self.step = Step::Done;
+                return vec![A::InGame];
+            }
+            return Vec::new();
+        }
+        let text = t.plain.as_str();
+        let here = |s: &ScriptStep| text.contains(s.wait.trim());
+        if here(&steps[self.next]) {
+            let s = &steps[self.next];
+            self.next += 1;
+            self.since = now;
+            let line = s
+                .send
+                .replace("{account}", &self.settings.account)
+                .replace("{password}", &self.settings.password);
+            return vec![if s.send.contains("{password}") {
+                A::SendSecret(line)
+            } else {
+                A::Send(line)
+            }];
+        }
+        // The credential guard: a step that gave the name or the password asked for again.
+        if let Some(what) = steps[..self.next]
+            .iter()
+            .filter(|s| here(s))
+            .find_map(|s| Self::credential(&s.send))
+        {
+            return self.fail(LoginFailure::AskedAgain(what));
+        }
+        Vec::new()
     }
 
     /// Logged in, or stopped.
@@ -169,12 +266,10 @@ impl Login {
                 out.extend(self.fail(LoginFailure::AlreadyLoggedOn));
                 out
             }
-            Item::Event(Event::InvalidCredentials) => self.fail(LoginFailure::InvalidCredentials),
-            Item::Event(Event::AccountLocked { minutes }) => {
-                self.fail(LoginFailure::AccountLocked { minutes: *minutes })
+            Item::Event(e) if refusal(e).is_some() => {
+                let f = refusal(e).expect("a refusal");
+                self.fail(f)
             }
-            Item::Event(Event::NoPassword) => self.fail(LoginFailure::NoPassword),
-            Item::Event(Event::TakeoverFailed) => self.fail(LoginFailure::TakeoverFailed),
             Item::Event(Event::MainMenu) if step == Step::Menus => {
                 self.since = now;
                 vec![A::Send("M".into())]
@@ -194,9 +289,26 @@ impl Login {
     /// The clock moved on: a step that waited past `step_timeout` fails.
     pub fn on_tick(&mut self, now: Instant) -> Vec<LoginAction> {
         if self.step != Step::Done && now.duration_since(self.since) > self.settings.step_timeout {
-            let waiting_for = self.step.waiting_for();
+            let waiting_for = match &self.settings.script {
+                Some(steps) => match steps.get(self.next) {
+                    Some(s) => format!("`{}`", s.wait.trim()),
+                    None => "the game prompt".to_owned(),
+                },
+                None => self.step.waiting_for().to_owned(),
+            };
             return self.fail(LoginFailure::Timeout { waiting_for });
         }
         Vec::new()
+    }
+}
+
+/// A line of the game's that stops any login.
+fn refusal(e: &Event) -> Option<LoginFailure> {
+    match e {
+        Event::InvalidCredentials => Some(LoginFailure::InvalidCredentials),
+        Event::AccountLocked { minutes } => Some(LoginFailure::AccountLocked { minutes: *minutes }),
+        Event::NoPassword => Some(LoginFailure::NoPassword),
+        Event::TakeoverFailed => Some(LoginFailure::TakeoverFailed),
+        _ => None,
     }
 }

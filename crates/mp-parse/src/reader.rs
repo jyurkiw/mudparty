@@ -37,6 +37,9 @@ pub struct Reader {
     statlines: Vec<Statline>,
     /// How much of the unfinished line's plain text has been reported already.
     reported: usize,
+    /// Texts a written login waits for (#33): a waiting line that ends with one is
+    /// reported as text, as a known prompt is.
+    waits: Vec<String>,
 }
 
 impl Reader {
@@ -52,7 +55,18 @@ impl Reader {
             lines: Extractor::new(),
             statlines,
             reported: 0,
+            waits: Vec::new(),
         }
+    }
+
+    /// Reports a waiting line once it ends with any of `waits`, as a login written in the
+    /// character's file needs (#33); none, as before.
+    pub fn set_waits(&mut self, waits: Vec<String>) {
+        self.waits = waits
+            .into_iter()
+            .map(|w| w.trim().to_owned())
+            .filter(|w| !w.is_empty())
+            .collect();
     }
 
     /// Reads prompts with `statline` alone from now on, as after a bot sets its own.
@@ -104,7 +118,13 @@ impl Reader {
         {
             return Some(Item::Prompt(v));
         }
-        classify(text).map(Item::Event)
+        classify(text).map(Item::Event).or_else(|| {
+            let end = text.trim_end();
+            self.waits
+                .iter()
+                .any(|w| end.ends_with(w.as_str()))
+                .then(|| Item::Text(text.to_owned()))
+        })
     }
 
     /// A finished line's text: a prompt and what follows it, or one line.
