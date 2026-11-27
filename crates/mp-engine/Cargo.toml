@@ -13,6 +13,7 @@ mp-telnet = { path = "../mp-telnet" }
 mp-parse = { path = "../mp-parse" }
 mp-log = { path = "../mp-log" }
 mp-config = { path = "../mp-config" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 

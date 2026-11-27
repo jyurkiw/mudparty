@@ -382,6 +382,81 @@ keys = ["inv_wealth"]
 re = '^Wealth: (?P<copper>\d+) '
 numbers = ["copper"]
 
+[[pattern]]
+event = "Encumbrance"
+keys = ["inv_encumbrance"]
+re = '^Encumbrance: (?P<cur>\d+)/(?P<max>\d+) - (?P<level>.+?) \[(?P<pct>-?\d+)%\]$'
+numbers = ["cur", "max", "pct"]
+
+# ----- the status display, `st` (#10) -------------------------------------------------
+# silvermere display/status.rs: fields padded to their widths, a stat's red `*` when it
+# differs from its base (a space otherwise, once the colours are gone).
+
+[[pattern]]
+event = "StName"
+keys = ["st_name"]
+re = '^Name: (?P<name>.+?)\s+Lives/CP:\s*(?P<lives>-?\d+)/(?P<cp>-?\d+)\s*$'
+numbers = ["lives", "cp"]
+
+[[pattern]]
+event = "StRace"
+keys = ["st_race"]
+re = '^Race: (?P<race>.+?)\s+Exp: (?P<exp>\d+)\s+Perception:\s*(?P<perception>-?\d+)\s*$'
+numbers = ["exp", "perception"]
+
+[[pattern]]
+event = "StClass"
+keys = ["st_class"]
+re = '^Class: (?P<class>.+?)\s+Level: (?P<level>\d+)\s+Stealth:\s*(?P<stealth>-?\d+)\s*$'
+numbers = ["level", "stealth"]
+
+[[pattern]]
+event = "StHits"
+keys = ["st_hits"]
+re = '^Hits:\s*(?P<hp>-?\d+)/(?P<max_hp>-?\d+)\s+Armour Class:\s*(?P<ac>-?\d+)/(?P<dr>-?\d+)\s+Thievery:\s*(?P<thievery>-?\d+)\s*$'
+numbers = ["hp", "max_hp", "ac", "dr", "thievery"]
+
+[[pattern]]
+event = "StMagic"
+keys = ["st_mana", "st_kai"]
+re = '^(?P<kind>Mana|Kai):\s*(?P<marked>\*)?\s*(?P<mp>-?\d+)/(?P<max_mp>-?\d+)\s+(?:Spellcasting:\s*(?P<spellcasting>-?\d+)\s+)?Traps:\s*(?P<traps>-?\d+)\s*$'
+numbers = ["mp", "max_mp", "spellcasting", "traps"]
+
+[[pattern]]
+event = "StTraps"
+keys = ["st_traps"]
+re = '^\s*Traps:\s*(?P<traps>-?\d+)\s*$'
+numbers = ["traps"]
+
+[[pattern]]
+event = "StPicklocks"
+keys = ["st_picklocks"]
+re = '^\s*Picklocks:\s*(?P<picklocks>-?\d+)\s*$'
+numbers = ["picklocks"]
+
+[[pattern]]
+event = "StStrength"
+keys = ["st_str"]
+re = '^Strength:\s*(?P<strength_marked>\*)?\s*(?P<strength>\d+)\s+Agility:\s*(?P<agility_marked>\*)?\s*(?P<agility>\d+)\s+Tracking:\s*(?P<tracking>-?\d+)\s*$'
+numbers = ["strength", "agility", "tracking"]
+
+[[pattern]]
+event = "StIntellect"
+keys = ["st_int"]
+re = '^Intellect:\s*(?P<intellect_marked>\*)?\s*(?P<intellect>\d+)\s+Health:\s*(?P<health_marked>\*)?\s*(?P<health>\d+)\s+Martial Arts:\s*(?P<martial_arts>-?\d+)\s*$'
+numbers = ["intellect", "health", "martial_arts"]
+
+[[pattern]]
+event = "StWillpower"
+keys = ["st_wil"]
+re = '^Willpower:\s*(?P<willpower_marked>\*)?\s*(?P<willpower>\d+)\s+Charm:\s*(?P<charm_marked>\*)?\s*(?P<charm>\d+)\s+MagicRes:\s*(?P<magic_res>-?\d+)\s*$'
+numbers = ["willpower", "charm", "magic_res"]
+
+[[pattern]]
+event = "StPoisoned"
+keys = ["st_poisoned"]
+re = '^You are Poisoned!$'
+
 # ----- training (#56) -----------------------------------------------------------------
 
 # The fee is ` <n> <coin>` words, or ` nothing`; only the level matters.

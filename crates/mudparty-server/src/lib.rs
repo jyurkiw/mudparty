@@ -132,6 +132,8 @@ pub enum Order {
     Pause,
     /// Go on after a pause, as a `@rego`.
     Resume,
+    /// Read its sheets again (#10): `st` and `i`, once it isn't fighting or resting.
+    Refresh,
 }
 
 /// Who a `wait` or `ok` from the web page is from, in `held_by`.
@@ -443,6 +445,7 @@ impl Server {
             Order::Join { leader } => Command::Do(Effect::Join(leader)),
             Order::Pause => Command::Do(Effect::Stop(true)),
             Order::Resume => Command::Do(Effect::Stop(false)),
+            Order::Refresh => Command::RefreshSheet,
             Order::Goto { room, avoid } => Command::Goto {
                 to: place(&self.places, &Place::Named(room), None)?,
                 rules: route_rules(

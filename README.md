@@ -571,6 +571,14 @@ files (`weapons-shop`; see [Places](#places)). The bot plans its route from the 
 confirms each room as it goes, opens doors and bashes locked ones, plans round an exit the
 game refuses, and waits out a fight on the way.
 
+Each card's **Sheet** button opens the character's sheet, with its level, charm and money
+on the card beside it. The **Stats** tab is the game's `st`, laid out and coloured as the
+game prints it. The **Inventory** tab is its `i`: coins, items and where they're worn,
+`Wealth:` and `Encumbrance:`, with what the coins are worth and how many more it can carry.
+A bot reads both after logging in, and **Refresh** reads them again once it isn't fighting
+or resting. They also fill whenever the output comes, as from `@do st`. The sheet is kept
+while the character is offline, until the server stops.
+
 In the game, a player on a bot's `remote.allow` list can command it by telepath or
 gangpath: `/Ermias @help` lists the commands.
 

@@ -853,6 +853,23 @@ to the next prompt. The wire text is from silvermere's catalogue:
   record goes in the decision log (*§9.2*).
 - **Kept** in `mudparty.sqlite` (*§7.6*), so the sheets survive restarts and show as
   "as of <time>" while a character is offline.
+- **As built, part 1 (#10):** the Status and Inventory parts.
+  - `mp-parse` reads each `st` line (`StName` … `StWillpower`, `StPoisoned`, each stat's
+    red star as `marked`) and the inventory's `Encumbrance:` line.
+  - `mp-engine` `sheet.rs`'s `SheetReader` builds the parts from whatever output comes,
+    whoever asked: a `Status`, and an `Inventory` with the coins by type (taken out of the
+    carried list, which names them first), the items with where they're worn, `Wealth:`,
+    and the weight line. From those it works out the coins' value, their weight (3 coins
+    of a type weigh 1) and how many more fit (*§15.3*).
+  - The session sends `st` and `i` once its statline is set after login, and on the
+    page's `refresh` order (`Command::RefreshSheet`). Never in a fight or a rest, since
+    `i` stands a resting character up; a seated character's sheet fills from what its
+    player types.
+  - The card keeps the parts (`Card.sheet`) and the page shows them in a modal from each
+    card's Sheet button, drawn as the game draws `st` and `i`.
+  - **Not yet:** Spells, Appearance and Items; the keys; keeping sheets in
+    `mudparty.sqlite` with their age; refreshing after a change (a level, a buy, an equip);
+    the main character's Refresh by injection; the parsed-fields-over-text view.
 
 ---
 

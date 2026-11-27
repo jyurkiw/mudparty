@@ -1640,6 +1640,7 @@ dependencies = [
  "mp-silvermere",
  "mp-telnet",
  "regex",
+ "serde",
  "serde_json",
  "silvermere-text",
  "tempfile",

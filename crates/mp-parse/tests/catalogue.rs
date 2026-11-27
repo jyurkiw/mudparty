@@ -654,6 +654,178 @@ fn cases() -> Vec<Case> {
             },
             vec![E::Wealth { copper: 1234 }],
         ),
+        msg(
+            "inv_encumbrance",
+            Msg::InvEncumbrance {
+                cur: s("520"),
+                max: s("3792"),
+                colour: s("\u{1b}[37m"),
+                level: s("None"),
+                pct: 13,
+            },
+            vec![E::Encumbrance {
+                cur: 520,
+                max: 3792,
+                level: s("None"),
+                pct: 13,
+            }],
+        ),
+        // the status display, `st` (#10)
+        msg(
+            "st_name",
+            Msg::StName {
+                name: s("Kasimir Drakemoor            "),
+                lives: s("    9"),
+                cp: s("12   "),
+            },
+            vec![E::StName {
+                name: s("Kasimir Drakemoor"),
+                lives: 9,
+                cp: 12,
+            }],
+        ),
+        msg(
+            "st_race",
+            Msg::StRace {
+                race: s("Kang       "),
+                exp: s("1712           "),
+                perception: s("   33"),
+            },
+            vec![E::StRace {
+                race: s("Kang"),
+                exp: 1712,
+                perception: 33,
+            }],
+        ),
+        msg(
+            "st_class",
+            Msg::StClass {
+                class: s("Witchunter"),
+                level: s("2    "),
+                stealth: s("    0"),
+            },
+            vec![E::StClass {
+                class: s("Witchunter"),
+                level: 2,
+                stealth: 0,
+            }],
+        ),
+        msg(
+            "st_hits",
+            Msg::StHits {
+                hp: s("   48"),
+                maxhp: s("56   "),
+                ac: s(" 19"),
+                dr: s("1 "),
+                thievery: s("    0"),
+            },
+            vec![E::StHits {
+                hp: 48,
+                max_hp: 56,
+                ac: 19,
+                dr: 1,
+                thievery: 0,
+            }],
+        ),
+        msg(
+            "st_mana",
+            Msg::StMana {
+                mark: s("\u{1b}[1;31m*\u{1b}[0;36m"),
+                mana: s("   9"),
+                maxmana: s("9    "),
+                spellcast: s("40   "),
+                traps: s("    0"),
+            },
+            vec![E::StMagic {
+                kind: s("Mana"),
+                marked: true,
+                mp: 9,
+                max_mp: 9,
+                spellcasting: Some(40),
+                traps: 0,
+            }],
+        ),
+        msg(
+            "st_kai",
+            Msg::StKai {
+                mark: s("\u{1b}[36m "),
+                mana: s("   3"),
+                maxmana: s("3    "),
+                traps: s("    0"),
+            },
+            vec![E::StMagic {
+                kind: s("Kai"),
+                marked: false,
+                mp: 3,
+                max_mp: 3,
+                spellcasting: None,
+                traps: 0,
+            }],
+        ),
+        msg(
+            "st_traps",
+            Msg::StTraps { traps: s("    7") },
+            vec![E::StTraps { traps: 7 }],
+        ),
+        msg(
+            "st_picklocks",
+            Msg::StPicklocks {
+                picklocks: s("   12"),
+            },
+            vec![E::StPicklocks { picklocks: 12 }],
+        ),
+        msg(
+            "st_str",
+            Msg::StStr {
+                mark1: s("\u{1b}[36m "),
+                stat1: s("79   "),
+                mark2: s("\u{1b}[1;31m*\u{1b}[0;36m"),
+                stat2: s("42   "),
+                stat3: s("    0"),
+            },
+            vec![E::StStrength {
+                strength: 79,
+                strength_marked: false,
+                agility: 42,
+                agility_marked: true,
+                tracking: 0,
+            }],
+        ),
+        msg(
+            "st_int",
+            Msg::StInt {
+                mark1: s("\u{1b}[36m "),
+                stat1: s("40   "),
+                mark2: s("\u{1b}[36m "),
+                stat2: s("64   "),
+                stat3: s("    0"),
+            },
+            vec![E::StIntellect {
+                intellect: 40,
+                intellect_marked: false,
+                health: 64,
+                health_marked: false,
+                martial_arts: 0,
+            }],
+        ),
+        msg(
+            "st_wil",
+            Msg::StWil {
+                mark1: s("\u{1b}[36m "),
+                stat1: s("40   "),
+                mark2: s("\u{1b}[1;31m*\u{1b}[0;36m"),
+                stat2: s("30   "),
+                stat3: s("   30"),
+            },
+            vec![E::StWillpower {
+                willpower: 40,
+                willpower_marked: false,
+                charm: 30,
+                charm_marked: true,
+                magic_res: 30,
+            }],
+        ),
+        msg("st_poisoned", Msg::StPoisoned, vec![E::StPoisoned]),
         // training (#56)
         msg(
             "trained",

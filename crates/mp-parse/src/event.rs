@@ -42,6 +42,12 @@ fn padded<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     Ok(String::deserialize(d)?.trim_end().to_owned())
 }
 
+/// A stat's mark: the game's red `*` for a value that differs from its base. The group is
+/// there only when the star is.
+fn star<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(String::deserialize(d)? == "*")
+}
+
 /// `(Warrior)   `, or a class cut to 12 (`(Necromancer`): the class name.
 fn class_name<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let raw = String::deserialize(d)?;
@@ -278,6 +284,95 @@ pub enum Event {
     Wealth {
         copper: i64,
     },
+    /// The inventory's last line: `Encumbrance: 520/3792 - None [13%]`, the weight carried
+    /// (coins included), the most that can be, and how heavy that is.
+    Encumbrance {
+        cur: i64,
+        max: i64,
+        level: String,
+        pct: i64,
+    },
+
+    // ----- the status display, `st` (#10)
+    /// `Name: <first last>    Lives/CP:  <lives>/<cp>`, its first line.
+    StName {
+        name: String,
+        lives: i64,
+        cp: i64,
+    },
+    /// `Race: <race> Exp: <exp> Perception: <n>`.
+    StRace {
+        race: String,
+        exp: i64,
+        perception: i64,
+    },
+    /// `Class: <class> Level: <n> Stealth: <n>`.
+    StClass {
+        class: String,
+        level: i64,
+        stealth: i64,
+    },
+    /// `Hits: <hp>/<max> Armour Class: <ac>/<dr> Thievery: <n>`.
+    StHits {
+        hp: i64,
+        max_hp: i64,
+        ac: i64,
+        dr: i64,
+        thievery: i64,
+    },
+    /// `Mana: <mp>/<max> Spellcasting: <n> Traps: <n>`, or `Kai: <mp>/<max> Traps: <n>`.
+    /// `marked`: the red star of a character with the Mana ability.
+    StMagic {
+        kind: String,
+        #[serde(default, deserialize_with = "star")]
+        marked: bool,
+        mp: i64,
+        max_mp: i64,
+        #[serde(default)]
+        spellcasting: Option<i64>,
+        traps: i64,
+    },
+    /// `Traps: <n>` alone: the magery line of a class without magic.
+    StTraps {
+        traps: i64,
+    },
+    /// `Picklocks: <n>`.
+    StPicklocks {
+        picklocks: i64,
+    },
+    /// `Strength: <n> Agility: <n> Tracking: <n>`. A stat is `marked` (the game's red star)
+    /// when it differs from its base value.
+    StStrength {
+        strength: i64,
+        #[serde(default, deserialize_with = "star")]
+        strength_marked: bool,
+        agility: i64,
+        #[serde(default, deserialize_with = "star")]
+        agility_marked: bool,
+        tracking: i64,
+    },
+    /// `Intellect: <n> Health: <n> Martial Arts: <n>`.
+    StIntellect {
+        intellect: i64,
+        #[serde(default, deserialize_with = "star")]
+        intellect_marked: bool,
+        health: i64,
+        #[serde(default, deserialize_with = "star")]
+        health_marked: bool,
+        martial_arts: i64,
+    },
+    /// `Willpower: <n> Charm: <n> MagicRes: <n>`: the status display's last stats line.
+    StWillpower {
+        willpower: i64,
+        #[serde(default, deserialize_with = "star")]
+        willpower_marked: bool,
+        charm: i64,
+        #[serde(default, deserialize_with = "star")]
+        charm_marked: bool,
+        magic_res: i64,
+    },
+    /// `You are Poisoned!`, in the status display.
+    StPoisoned,
 
     // ----- training (#56)
     /// `You hand over <coins> and you receive training to attain level <n>.`
