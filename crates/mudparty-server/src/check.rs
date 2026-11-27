@@ -179,7 +179,7 @@ impl World<'_> {
                             rest.until = Some(c.rest.stop_when_all);
                         }
                     }
-                    reach = self.walks(out, &rfile, prefix, &mut r);
+                    reach = self.walks(out, &rfile, prefix, &mut r, c.class.as_deref());
                     area = r.places.clone();
                     gear_rule = r.rules.iter().any(|x| matches!(x, RuleSpec::Gear(_)));
                     c.routine = Some(RoutineRef::Inline(Box::new(r)));
@@ -261,7 +261,7 @@ impl World<'_> {
                 String::new()
             }
             Ok(mut r) => {
-                self.walks(out, file, "", &mut r);
+                self.walks(out, file, "", &mut r, None);
                 r.to_yaml()
             }
         }
@@ -308,6 +308,7 @@ impl World<'_> {
         file: &Path,
         prefix: &str,
         r: &mut Routine,
+        class: Option<&str>,
     ) -> Option<Reach> {
         let area = r.places.clone();
         let area = area.as_deref();
@@ -315,11 +316,20 @@ impl World<'_> {
         // Circuits whose lairs all name rooms, for their wait-rooms once the avoided rooms
         // are known.
         let mut circuits = Vec::new();
+        // Train rules that name no trainer, for the trainers the room files list.
+        let mut trains = Vec::new();
         for (i, rule) in r.rules.iter_mut().enumerate() {
             let at = match rule {
                 RuleSpec::Rest(x) => &mut x.at,
                 RuleSpec::Camp(c) => &mut c.at,
                 RuleSpec::Gear(_) => continue,
+                RuleSpec::Train(t) => match &mut t.at {
+                    Some(p) => p,
+                    None => {
+                        trains.push(i);
+                        continue;
+                    }
+                },
                 RuleSpec::Circuit(c) => {
                     // Respawn times are keyed by the lair as written, which becomes its
                     // room number in the long form.
@@ -406,7 +416,7 @@ impl World<'_> {
                 RuleSpec::Rest(x) => Some(&x.at),
                 RuleSpec::Camp(c) => Some(&c.at),
                 RuleSpec::Circuit(c) => c.lairs.last(),
-                RuleSpec::Gear(_) => None,
+                RuleSpec::Gear(_) | RuleSpec::Train(_) => None,
             })
             .find_map(|p| place(self.places, p, area).ok())?;
         let reach = Reach {
@@ -416,6 +426,20 @@ impl World<'_> {
         for (field, k) in &spots {
             if let Err(why) = self.both_ways(&reach, *k) {
                 out.add(file, field, &why);
+            }
+        }
+        // A train rule naming no trainer trains at the first it can walk to (#56).
+        for i in trains {
+            let field = format!("{prefix}do[{i}]");
+            let trainers = self.places.trainers(class, area);
+            let Some(first) = trainers.first() else {
+                let who = class.map_or("any class".to_owned(), |c| format!("a {c}"));
+                out.add(file, &field, &format!("no trainer in places/ trains {who}"));
+                continue;
+            };
+            if !trainers.iter().any(|&t| self.both_ways(&reach, t).is_ok()) {
+                let why = self.both_ways(&reach, *first).err().unwrap_or_default();
+                out.add(file, &field, &format!("no trainer can be walked to: {why}"));
             }
         }
         Some(reach)

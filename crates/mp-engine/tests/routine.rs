@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use mp_config::{Amount, GearUse, Pick, Pools, When};
 use mp_engine::{
-    Carried, CircuitSettings, GearSettings, Goal, LairSettings, RoomBook, RoomInfo, RouteRules,
-    Routine, RoutinePart, RoutineSettings, RuleSettings, Seen, WalkState, WalkStep,
+    Carried, CircuitSettings, ExpKnown, GearSettings, Goal, LairSettings, RoomBook, RoomInfo,
+    RouteRules, Routine, RoutinePart, RoutineSettings, RuleSettings, Seen, TrainEnd, WalkState,
+    WalkStep,
 };
 use mp_parse::{Rest, Vitals};
 
@@ -187,6 +188,7 @@ fn seen(hp_now: i32, room: (u32, u32)) -> Seen {
         monsters: Vec::new(),
         room: Some(room),
         walking: false,
+        exp: None,
     }
 }
 
@@ -557,6 +559,8 @@ fn each_part_reads_for_the_card() {
         RoutinePart::Stuck("no way".into()).to_string(),
         "stuck (no way); trying again soon"
     );
+    assert_eq!(RoutinePart::ToTrainer.to_string(), "going to train");
+    assert_eq!(RoutinePart::Training.to_string(), "training");
 }
 
 // ----- gear (#55)
@@ -725,4 +729,112 @@ fn the_gear_parts_read_for_the_card() {
         RoutinePart::Equipping("club".into()).to_string(),
         "getting club"
     );
+}
+
+// ----- training (#56)
+
+const GUILD: (u32, u32) = (1, 2147);
+const OTHER_GUILD: (u32, u32) = (1, 497);
+
+fn train_rule(trainers: Vec<(u32, u32)>, up_to: Option<u32>) -> RuleSettings {
+    RuleSettings::Train {
+        trainers,
+        up_to,
+        when: When::default(),
+    }
+}
+
+/// Train at the guild up to level 3, else camp.
+fn trainee() -> Bot {
+    Bot::with(with_rules(vec![train_rule(vec![GUILD], Some(3)), camp()]))
+}
+
+/// The bot at `level` with `left` experience still needed for the next, in `room`.
+fn at_level(level: u32, left: i64, room: (u32, u32)) -> Seen {
+    Seen {
+        exp: Some(ExpKnown { level, left }),
+        ..seen(100, room)
+    }
+}
+
+#[test]
+fn it_trains_once_it_has_the_experience_and_stops_at_its_level() {
+    let mut b = trainee();
+    // Its experience isn't known yet: it camps, and the session asks for `exp`.
+    assert!(b.r.wants_exp());
+    assert_eq!(b.see(&seen(100, CAMP), 1), Goal::Walk(CAMP));
+    b.arrive(&seen(100, CAMP), 2);
+    // 500 short of level 2: not yet.
+    assert_eq!(b.see(&at_level(1, 500, CAMP), 3), Goal::Camp(LOOK));
+    // Enough: to the guild.
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 4), Goal::Walk(GUILD));
+    assert_eq!(b.r.part(), RoutinePart::ToTrainer);
+    assert_eq!(b.arrive(&at_level(1, 0, GUILD), 10), Goal::Train);
+    assert_eq!(b.r.part(), RoutinePart::Training);
+    b.r.train_ended(TrainEnd::Trained(2), b.at(11));
+    assert_eq!(b.r.take_notes(), ["trained to level 2"]);
+    // It waits where it is for the new level's experience, rather than walk off.
+    assert_eq!(b.r.goal(), Goal::Wait);
+    assert_eq!(b.see(&seen(100, GUILD), 12), Goal::Wait);
+    // Enough for level 3 too: it trains again where it stands.
+    assert_eq!(b.see(&at_level(2, 0, GUILD), 13), Goal::Train);
+    b.r.train_ended(TrainEnd::Trained(3), b.at(14));
+    b.r.take_notes();
+    // Level 3 is as far as it goes, enough experience or not: back to camp.
+    assert_eq!(b.see(&at_level(3, 0, GUILD), 15), Goal::Walk(CAMP));
+    assert_eq!(b.arrive(&at_level(3, 0, CAMP), 20), Goal::Camp(LOOK));
+    assert_eq!(b.see(&at_level(3, 0, CAMP), 600), Goal::Camp(LOOK));
+}
+
+#[test]
+fn without_a_cap_it_trains_whenever_it_can() {
+    let mut b = Bot::with(with_rules(vec![train_rule(vec![GUILD], None), camp()]));
+    assert_eq!(b.see(&at_level(40, 0, CAMP), 1), Goal::Walk(GUILD));
+}
+
+#[test]
+fn no_money_for_training_is_said_and_tried_again_later() {
+    let mut b = trainee();
+    b.see(&at_level(1, 0, CAMP), 1);
+    b.arrive(&at_level(1, 0, GUILD), 5);
+    b.r.train_ended(TrainEnd::NoMoney, b.at(6));
+    let notes = b.r.take_notes();
+    assert!(notes[0].contains("money"), "{notes:?}");
+    assert_eq!(b.r.goal(), Goal::Walk(CAMP));
+    b.arrive(&at_level(1, 0, CAMP), 10);
+    // Five minutes on, it tries again.
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 6 + 299), Goal::Camp(LOOK));
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 6 + 300), Goal::Walk(GUILD));
+}
+
+#[test]
+fn a_trainer_that_wont_train_it_gives_way_to_the_next() {
+    let mut b = Bot::with(with_rules(vec![
+        train_rule(vec![OTHER_GUILD, GUILD], Some(3)),
+        camp(),
+    ]));
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 1), Goal::Walk(OTHER_GUILD));
+    b.arrive(&at_level(1, 0, OTHER_GUILD), 5);
+    b.r.train_ended(
+        TrainEnd::Refused("This shop is not suitable for your training.".into()),
+        b.at(6),
+    );
+    assert_eq!(b.r.goal(), Goal::Walk(GUILD));
+    b.arrive(&at_level(1, 0, GUILD), 10);
+    b.r.train_ended(
+        TrainEnd::Refused("You have progressed too far to use the training provided here.".into()),
+        b.at(11),
+    );
+    // None will: said, and not tried again until the bot restarts.
+    let notes = b.r.take_notes();
+    assert!(notes.iter().any(|n| n.contains("no trainer")), "{notes:?}");
+    assert_eq!(b.r.goal(), Goal::Walk(CAMP));
+    b.arrive(&at_level(1, 0, CAMP), 15);
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 5000), Goal::Camp(LOOK));
+}
+
+#[test]
+fn no_trainer_at_all_never_applies() {
+    let mut b = Bot::with(with_rules(vec![train_rule(Vec::new(), Some(3)), camp()]));
+    assert_eq!(b.see(&at_level(1, 0, CAMP), 1), Goal::Walk(CAMP));
 }

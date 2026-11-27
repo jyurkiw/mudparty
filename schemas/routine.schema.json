@@ -235,6 +235,9 @@
           "const": "gear"
         },
         {
+          "const": "train"
+        },
+        {
           "additionalProperties": false,
           "properties": {
             "rest": {
@@ -281,9 +284,52 @@
             "gear"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "train": {
+              "$ref": "#/$defs/TrainRule"
+            }
+          },
+          "required": [
+            "train"
+          ],
+          "type": "object"
         }
       ],
-      "description": "A rule: a map with one key (rest, circuit, camp or gear), or the bare word `gear`."
+      "description": "A rule: a map with one key (rest, circuit, camp, gear or train), or the bare word `gear` or `train`."
+    },
+    "TrainRule": {
+      "additionalProperties": false,
+      "description": "Train a level at a trainer whenever the experience for it is there (#56): `- train`,\nor `- train: { at: guild, up_to: 3 }`. The fee is the game's (5 silver a level in\nNewhaven); one the bot can't pay is said, and tried again later.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Place"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trainer; left out, those the compiled room files say train the character's\nclass (or any class), in the routine's `places` area first."
+        },
+        "up_to": {
+          "description": "The highest level to train to: an arena's top level, say, since a level above it\nlocks the bot out. Left out, as high as the trainer goes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {}
+        }
+      },
+      "type": "object"
     },
     "When": {
       "additionalProperties": false,

@@ -44,6 +44,10 @@ pub struct StockChar {
     pub spells: Vec<String>,
     /// The room on map 1 to start in.
     pub room: u32,
+    /// Experience, for a character that has earned levels it hasn't trained (#56).
+    pub exp: u32,
+    /// Silver nobles carried, as well as what creation gave it.
+    pub silver: u32,
 }
 
 impl StockChar {
@@ -55,6 +59,8 @@ impl StockChar {
             class: class.to_owned(),
             spells: Vec::new(),
             room: ARENA,
+            exp: 0,
+            silver: 0,
         }
     }
 
@@ -276,6 +282,11 @@ impl StockSilvermere {
             c.room = RoomId(ch.room);
             c.trailmaps[0] = MapId(1);
             c.trailrooms[0] = RoomId(ch.room);
+            if ch.exp > 0 {
+                c.expbil = 0;
+                c.exprem = ch.exp;
+            }
+            c.coins.silver += ch.silver;
             let mut book = Vec::new();
             for short in &ch.spells {
                 let spell = db

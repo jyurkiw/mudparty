@@ -902,8 +902,8 @@ hunts, from the character's `routine:` and `places:` (*§7.3*).
   line out when the room is empty, so the combat engine now empties its roster at
   `Obvious exits:` with no `Also here:` since the last prompt.
 - **Only bots.** A seated character, or one whose MudPlay has dropped, runs no routine.
-- **Not yet:** training (#56), which joins the loop as a rule of its own; an @ command to
-  send the bot to a part. Shopping came as the `gear` rule (#55), and lair times kept
+- **Not yet:** an @ command to send the bot to a part. Training came as the `train` rule
+  (#56). Shopping came as the `gear` rule (#55), and lair times kept
   across a reconnect with circuits (#67).
 
 ## 7. Data model
@@ -1788,8 +1788,8 @@ prefer_not: { dungeon-entrance: 20 }  # allowed, but costs 20 steps more
 - **Given a level** (`RouteRules::level`, #66), a level exit that won't let the character
   through isn't taken, as silvermere decides it: at least `par1`, and at most `par2`
   unless `par2` is 0. The error names it: `by an exit for levels 1 to 3, and the character
-  is level 5`. `check --level` uses it. A running bot doesn't yet, since the session
-  doesn't keep the level until #56.
+  is level 5`. `check --level` uses it. A running bot does once it knows its level, from
+  `exp` or a training (#56).
 - **Where it's set:** a routine's `avoid:` and `prefer_not:` (the current routine, until
   #65 moves them onto routines and rules), and the page's Go order's `avoid`, for one
   trip. Rooms are places (a key, the character's `places:`, or the compiled room files);
@@ -1820,7 +1820,7 @@ do:
 ```
 
 - **Conditions** (`when:`): `hp_below`, `mp_below`, `hp_at_least`, `mp_at_least`; every
-  one given must hold. `level_below` comes with training (#56), and time windows later.
+  one given must hold. `level_below` and time windows later (a train rule says how far with `up_to`, #56).
   The `gear` rule needs no `missing` condition: it applies by itself when the gear wants
   checking (*§14.7*).
 - **Taking over:** a rule's `when` says when it starts; once started it runs until it's
@@ -1966,6 +1966,38 @@ keeps the character's `gear:` (`{ item, use: wield | wear, at }`):
 - A buy, wield or wear with no answer for 10 s is sent once more, then given up.
 
 `train` goes to a trainer while the next level is affordable and below `up_to` (#56).
+
+**Built in #56** (`mp-config` `TrainRule`, `mp-engine` `routine.rs`, `mp-data`
+`Places::trainers`): `- train`, or `- train: { at: guild, up_to: 3, when: {...} }`.
+
+- **The experience.** A routine with a train rule wants the bot's level and experience.
+  The session sends `exp` while they aren't known (at the start, and after each training),
+  reads `Exp: .. Level: .. Exp needed for next level: <left>`, and takes each `You gain N
+  experience` off `left`. silvermere shows `left` as 0 once the experience is there, and
+  `train` checks the same figure.
+- **When.** It applies when its `when` holds, the level and experience are known, `left`
+  is 0, and the next level is no higher than `up_to` (left out, as high as a trainer
+  goes).
+- **Where.** The trainer `at:` names, or the compiled room files' training shops for the
+  character's `class:` or for any class, those in the routine's `places` area first.
+  Newhaven's Adventurer's Guild (1/2147) trains any class, levels 1 to 10, for 5 silver a
+  level (silvermere's `training_fee_copper`: the level times 5 silver, plus the shop's
+  markup).
+- **Training.** At the trainer it sends `train`, and reads `You hand over .. and you
+  receive training to attain level N.` Then it waits where it stands until `exp` answers
+  for the new level, so a bot with experience for several levels trains them one after
+  another without walking off. A `train` with no answer in 10 s is sent once more.
+- **Refusals.** `You do not have the money required for your training.` and `You do not
+  have the required experience to train yet!` are noted on the card and tried again in 5
+  minutes. The others (not a training room, another class's trainer, a level outside the
+  trainer's, tournament mode) refuse that trainer: the next is tried, and with none left
+  training stops until the bot restarts.
+- **The level on walks.** The session keeps the level from `exp` and each training, and
+  each walk's rules carry it (`RouteRules::level`), so a level exit that won't let the bot
+  through isn't planned through (*§14.5*).
+- **Not built:** training stats (silvermere's `train stats` is the creation editor, not a
+  stat at a time), and stopping the routine at the cap. In a rule list the rules below
+  run once `up_to` is reached, so the bot fights on, as the 1.0 loop wants.
 
 ### 14.8 A character under the new shape
 

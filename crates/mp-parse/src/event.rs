@@ -272,6 +272,21 @@ pub enum Event {
         copper: i64,
     },
 
+    // ----- training (#56)
+    /// `You hand over <coins> and you receive training to attain level <n>.`
+    Trained {
+        level: u32,
+    },
+    /// `You do not have the required experience to train yet!`
+    TrainNoExp,
+    /// `You do not have the money required for your training.`
+    TrainNoMoney,
+    /// Any other refusal of `train` (not a training room, another class's trainer, a level
+    /// outside the trainer's, tournament mode), as worded.
+    TrainRefused {
+        text: String,
+    },
+
     // ----- where and how far
     /// `/room`'s answer, `1/206` (a silvermere fork command).
     RoomKey {
