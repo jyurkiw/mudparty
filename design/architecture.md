@@ -1645,8 +1645,8 @@ resolved in this order:
    is an error that lists the rooms it could be;
 4. the key, `1/2150`, which always works.
 
-The long form `{ room: 1/2150, name: "Newhaven, Arena" }` names the room by number and
-checks the name: if the world is renumbered, `check` (*§14.9*) says the name no longer
+The long form `{ room: 1/2150, name: "Newhaven, Arena" }` (`mp-config` `Place`, #66),
+written wherever a file names a place, names the room by number and checks the name: if the world is renumbered, `check` (*§14.9*) says the name no longer
 matches. The web editor writes this form, so a file it saved stays readable. MudPlay saves
 its loops' rooms as `1/5` strings for the same reason (`LoopWaypoint.cs`).
 
@@ -1782,15 +1782,19 @@ prefer_not: { dungeon-entrance: 20 }  # allowed, but costs 20 steps more
 - **Exits the game refuses** (a level exit, an alignment or timed one) are added to the
   walk's rules, and it plans round them from where it stands, up to three times, before
   ending with the game's words (*§6.10*). That gates exits by level without knowing the
-  character's level. Knowing it and planning round level exits beforehand waits for a
-  level the session keeps (#56).
+  character's level.
+- **Given a level** (`RouteRules::level`, #66), a level exit that won't let the character
+  through isn't taken, as silvermere decides it: at least `par1`, and at most `par2`
+  unless `par2` is 0. The error names it: `by an exit for levels 1 to 3, and the character
+  is level 5`. `check --level` uses it. A running bot doesn't yet, since the session
+  doesn't keep the level until #56.
 - **Where it's set:** a routine's `avoid:` and `prefer_not:` (the current routine, until
   #65 moves them onto routines and rules), and the page's Go order's `avoid`, for one
   trip. Rooms are places (a key, the character's `places:`, or the compiled room files);
   areas are compiled areas; exit kinds are the room files' names. They are looked up
   when the bot starts, so one that doesn't read stops the bot with its name.
-- With perfect information `check` (#66) will prove that every place a script names can
-  be reached without crossing anything avoided, before the bot runs it.
+- With perfect information, `check` (#66, *§14.9*) proves that every place a script names
+  can be reached without crossing anything avoided, before the bot runs it.
 - The walker (*§6.10*) keeps carrying out the steps: doors, bashing, confirming each
   room, pausing for a fight.
 
@@ -1938,14 +1942,50 @@ Targeting rules may be written as bare words when they take no value.
 
 ### 14.9 Help for writing by hand
 
-- **A JSON Schema**, generated from the config types (`schemars`), so an editor with a YAML
-  extension (VS Code's, for one) completes keys, shows each field's doc and marks errors
-  as you type. `# yaml-language-server: $schema=...` at the top of a file, or the editor's
-  settings, points to it.
-- **`mudparty-server check <file>`** prints the file as the server reads it: defaults
-  filled in, places resolved to keys, the routine's rules in order. It also proves
-  reachability (*§14.5*) and checks long-form names (*§14.3*).
-- Errors name the file and the field, as now (*§7*).
+Built in #66.
+
+- **JSON Schemas** are generated from the config types with `schemars` (`mp-config`
+  `schema.rs`). There is one each for a character's file, a routine's and a places local
+  file, kept in the repository's `schemas/`. With them an editor that has a YAML extension
+  (VS Code's, for one) completes keys, shows each field's doc and marks errors as you
+  type. `# yaml-language-server: $schema=...` at the top of a file, or the editor's
+  settings, points to one.
+  - The types written by hand (rules, targeting rules, amounts, durations, places, a
+    routine reference) describe themselves.
+  - A routine's `${name}` parameters are allowed wherever an amount, a duration or a cost
+    goes.
+  - `mudparty-server schema [--out <folder>]` writes them. A test fails when `schemas/`
+    differs from what the types generate, and another checks the README's examples
+    against them.
+  - A schema checks the shape of a file. What it means is still the loaders' to check (a
+    rest rule's `when`, a percentage over 100%, a rule that would never run).
+- **`mudparty-server check <file> [--level <n>]`** (`mudparty-server` `check.rs`) prints the
+  file as the server reads it:
+  - defaults filled in, and a routine's parameters;
+  - every place as the long form, with the world's name;
+  - a rest's `until` from the character's `rest.stop_when_all`;
+  - a character's routine written inline, so the output is itself a file that reads the
+    same (`CharacterConfig::to_yaml`, `Routine::to_yaml`);
+  - where each item of gear would be bought, in comments.
+
+  It takes a local file too, printing each alias as its key with the room's name beside
+  it. Then it lists what would stop the bot, each `file: field: why` with the file named
+  from the data root, and exits 1 if anything would.
+- **What it proves:**
+  - **Reachability.** Every place the rules name can be walked to and back from the place
+    of the last rule (where the bot is when nothing else is due), keeping to the
+    routine's `avoid` and `prefer_not`. Between them, every place reaches every other.
+    With a gear rule, a shop for each item can be walked to and back from too, and the
+    first that can is the one named.
+  - **Level exits,** given `--level` (*§14.5*). Without it they're walked, and the game
+    decides.
+  - **Long-form names** (*§14.3*): a room by number whose `name` isn't the world's any more
+    is said to have been renumbered, perhaps.
+  - **Unknown places:** a name no room answers to, an area no file has.
+- **The game data** is opened as the server opens it, imported first when `gamedata/`
+  hasn't it.
+- Errors name the file and the field, as now (*§7*). A file that doesn't read is one
+  error.
 
 ### 14.10 The map
 

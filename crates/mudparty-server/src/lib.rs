@@ -5,6 +5,7 @@
 //! [`web`]), carries out the page's orders, and on an orderly stop logs every bot off.
 //! The hub and the proxy come in later steps.
 
+pub mod check;
 pub mod history;
 pub mod proxy;
 pub mod view;
@@ -21,7 +22,7 @@ use anyhow::Context;
 use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
-    CharacterConfig, Logging, PartyRole, RuleSpec, Secrets, ServerConfig, load_character,
+    CharacterConfig, Logging, PartyRole, Place, RuleSpec, Secrets, ServerConfig, load_character,
     load_routine, load_server,
 };
 use mp_data::places::Places;
@@ -37,6 +38,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
 use view::Card;
+
+pub use check::{Checked, check};
 
 /// Waits before each reconnect of a lost link; the last one repeats (design §6.2).
 const RECONNECT: [u64; 4] = [5, 10, 30, 60];
@@ -253,33 +256,24 @@ impl Server {
     /// missing (design §7.5). Without either, bots still log in, but don't fight: the engine
     /// needs the game's monster names to tell monsters from players.
     fn open_gamedata(&self) {
-        let path = self.root.join("gamedata").join("gamedata.sqlite");
-        if !path.exists() {
-            let source = self.root.join(&self.config.gamedata.silvermere_db);
-            if !source.exists() {
-                self.record(
-                    "gamedata_missing",
-                    json!({"silvermere_db": source.display().to_string()}),
-                );
-                return;
-            }
-            let imported = std::fs::create_dir_all(path.parent().expect("a folder"))
-                .map_err(|e| e.to_string())
-                .and_then(|()| mp_data::import(&source, &path).map_err(|e| e.to_string()));
-            match imported {
-                Ok(r) => self.record(
-                    "gamedata_imported",
-                    json!({"rev": r.rev, "rooms": r.rooms, "spells": r.spells, "monsters": r.monsters}),
-                ),
-                Err(e) => {
-                    self.record("gamedata_import_failed", json!({"error": e}));
-                    return;
+        match open_gamedata(&self.root, &self.config) {
+            Ok((gd, imported)) => {
+                if let Some(r) = imported {
+                    self.record(
+                        "gamedata_imported",
+                        json!({"rev": r.rev, "rooms": r.rooms, "spells": r.spells, "monsters": r.monsters}),
+                    );
                 }
+                *self.gamedata.lock().expect("gamedata lock") = Some(gd);
             }
-        }
-        match GameData::open(&path) {
-            Ok(gd) => *self.gamedata.lock().expect("gamedata lock") = Some(gd),
-            Err(e) => self.record("gamedata_open_failed", json!({"error": e.to_string()})),
+            Err(GamedataError::Missing(source)) => self.record(
+                "gamedata_missing",
+                json!({"silvermere_db": source.display().to_string()}),
+            ),
+            Err(GamedataError::Import(e)) => {
+                self.record("gamedata_import_failed", json!({"error": e}));
+            }
+            Err(GamedataError::Open(e)) => self.record("gamedata_open_failed", json!({"error": e})),
         }
     }
 
@@ -448,8 +442,15 @@ impl Server {
             Order::Pause => Command::Do(Effect::Stop(true)),
             Order::Resume => Command::Do(Effect::Stop(false)),
             Order::Goto { room, avoid } => Command::Goto {
-                to: self.place(&room, None)?,
-                rules: self.route_rules(None, &avoid, &[], &[], &BTreeMap::new())?,
+                to: place(&self.places, &Place::Named(room), None)?,
+                rules: route_rules(
+                    &self.places,
+                    None,
+                    &avoid.into_iter().map(Place::Named).collect::<Vec<_>>(),
+                    &[],
+                    &[],
+                    &BTreeMap::new(),
+                )?,
             },
         };
         let bots = self.bots.lock().expect("bots lock");
@@ -901,6 +902,49 @@ pub fn log_rolls(logging: &Logging) -> StreamRolls {
     }
 }
 
+/// Why the game data didn't open.
+#[derive(Debug)]
+pub(crate) enum GamedataError {
+    /// No `gamedata.sqlite`, and no `silvermere.db` to import it from.
+    Missing(PathBuf),
+    Import(String),
+    Open(String),
+}
+
+impl std::fmt::Display for GamedataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(p) => write!(f, "no game data: {} isn't there", p.display()),
+            Self::Import(e) => write!(f, "importing the game data: {e}"),
+            Self::Open(e) => write!(f, "opening the game data: {e}"),
+        }
+    }
+}
+
+/// `<root>/gamedata/gamedata.sqlite`, imported first from the `silvermere.db` that
+/// `config` names when it's missing (design §7.5); with the import's report when there was
+/// one.
+pub(crate) fn open_gamedata(
+    root: &Path,
+    config: &ServerConfig,
+) -> Result<(GameData, Option<mp_data::ImportReport>), GamedataError> {
+    let path = root.join("gamedata").join("gamedata.sqlite");
+    let mut imported = None;
+    if !path.exists() {
+        let source = root.join(&config.gamedata.silvermere_db);
+        if !source.exists() {
+            return Err(GamedataError::Missing(source));
+        }
+        std::fs::create_dir_all(path.parent().expect("a folder"))
+            .map_err(|e| GamedataError::Import(e.to_string()))?;
+        imported = Some(
+            mp_data::import(&source, &path).map_err(|e| GamedataError::Import(e.to_string()))?,
+        );
+    }
+    let gd = GameData::open(&path).map_err(|e| GamedataError::Open(e.to_string()))?;
+    Ok((gd, imported))
+}
+
 /// `mudparty-server places compile` (#63, design §14.4): writes `<root>/places/<area>.yaml`
 /// for every area of the silvermere database `mudparty.toml` names, or for `area` alone.
 /// The hand-written `<area>.local.yaml` files beside them are never touched. Returns each
@@ -920,6 +964,20 @@ pub fn compile_places(root: &Path, area: Option<&str>) -> anyhow::Result<Vec<(St
     for a in areas.iter().filter(|a| area.is_none_or(|w| a.area == w)) {
         a.write(&dir.join(format!("{}.yaml", a.area)))?;
         written.push((a.area.clone(), a.rooms.len()));
+    }
+    Ok(written)
+}
+
+/// `mudparty-server schema` (#66, design §14.9): writes the JSON Schemas for the files
+/// written by hand into `dir`; returns the files written.
+pub fn write_schemas(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    let mut written = Vec::new();
+    for (file, schema) in mp_config::schema::all() {
+        let path = dir.join(file);
+        std::fs::write(&path, mp_config::schema::to_text(&schema))
+            .with_context(|| path.display().to_string())?;
+        written.push(path);
     }
     Ok(written)
 }
@@ -957,48 +1015,70 @@ fn rest_for(c: &CharacterConfig) -> Option<RestSettings> {
     })
 }
 
+/// The room a place names (design §14.3): a room by number, a key (`1/2150`), or a place
+/// in the compiled room files, looked for first in `area`.
+pub(crate) fn place(places: &Places, p: &Place, area: Option<&str>) -> Result<(u32, u32), String> {
+    match p {
+        Place::Room { map, room, .. } => Ok((*map, *room)),
+        Place::Named(name) => {
+            if let Some(k) = room_key(name) {
+                return Ok(k);
+            }
+            places.resolve(name, area).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// What a walk keeps out of (#64): rooms and the rooms of areas, exit kinds by name, and
+/// the rooms it would rather not walk through. Places are looked for first in `area`.
+pub(crate) fn route_rules(
+    places: &Places,
+    area: Option<&str>,
+    rooms: &[Place],
+    areas: &[String],
+    exits: &[String],
+    prefer_not: &BTreeMap<String, u32>,
+) -> Result<RouteRules, String> {
+    let mut rules = RouteRules::default();
+    for r in rooms {
+        rules.avoid_rooms.insert(place(places, r, area)?);
+    }
+    for a in areas {
+        let keys = places
+            .rooms_in(a)
+            .ok_or_else(|| format!("no area {a:?} in places/"))?;
+        rules.avoid_rooms.extend(keys);
+    }
+    for e in exits {
+        let code = mp_data::places::exit_kind_code(e)
+            .ok_or_else(|| format!("{e:?} isn't an exit kind"))?;
+        rules.avoid_kinds.insert(code);
+    }
+    for (r, cost) in prefer_not {
+        rules
+            .prefer_not
+            .insert(place(places, &Place::Named(r.clone()), area)?, *cost);
+    }
+    Ok(rules)
+}
+
+/// The router's rules for a walk: the engine's, with the character's level when known.
+pub(crate) fn data_rules(rules: &RouteRules, level: Option<u32>) -> mp_data::RouteRules {
+    let key = |(m, r): (u32, u32)| (i64::from(m), i64::from(r));
+    mp_data::RouteRules {
+        avoid_rooms: rules.avoid_rooms.iter().copied().map(key).collect(),
+        avoid_kinds: rules.avoid_kinds.iter().copied().collect(),
+        refused: rules.refused.iter().map(|&(r, d)| (key(r), d)).collect(),
+        prefer_not: rules
+            .prefer_not
+            .iter()
+            .map(|(&r, &c)| (key(r), c))
+            .collect(),
+        level,
+    }
+}
+
 impl Server {
-    /// The room a place names (design §14.3): a key (`1/2150`), or a place in the compiled
-    /// room files, looked for first in `area`.
-    fn place(&self, name: &str, area: Option<&str>) -> Result<(u32, u32), String> {
-        if let Some(k) = room_key(name) {
-            return Ok(k);
-        }
-        self.places.resolve(name, area).map_err(|e| e.to_string())
-    }
-
-    /// What a walk keeps out of (#64): rooms and the rooms of areas, exit kinds by name, and
-    /// the rooms it would rather not walk through. Places are looked for first in `area`.
-    fn route_rules(
-        &self,
-        area: Option<&str>,
-        rooms: &[String],
-        areas: &[String],
-        exits: &[String],
-        prefer_not: &BTreeMap<String, u32>,
-    ) -> Result<RouteRules, String> {
-        let mut rules = RouteRules::default();
-        for r in rooms {
-            rules.avoid_rooms.insert(self.place(r, area)?);
-        }
-        for a in areas {
-            let keys = self
-                .places
-                .rooms_in(a)
-                .ok_or_else(|| format!("no area {a:?} in places/"))?;
-            rules.avoid_rooms.extend(keys);
-        }
-        for e in exits {
-            let code = mp_data::places::exit_kind_code(e)
-                .ok_or_else(|| format!("{e:?} isn't an exit kind"))?;
-            rules.avoid_kinds.insert(code);
-        }
-        for (r, cost) in prefer_not {
-            rules.prefer_not.insert(self.place(r, area)?, *cost);
-        }
-        Ok(rules)
-    }
-
     /// A bot's routine (#65): its file read from `routines/` (or written inline), its
     /// parameters filled in and its places looked up; an error names what didn't read.
     fn routine_for(&self, c: &CharacterConfig) -> Result<Option<RoutineSettings>, String> {
@@ -1008,9 +1088,8 @@ impl Server {
         let r =
             load_routine(&self.root.join("routines"), &c.name, rr).map_err(|e| e.to_string())?;
         let area = r.places.as_deref();
-        let at = |field: String, name: &str| {
-            self.place(name, area)
-                .map_err(|e| format!("routine {}: {field}: {e}", r.name))
+        let at = |field: String, p: &Place| {
+            place(&self.places, p, area).map_err(|e| format!("routine {}: {field}: {e}", r.name))
         };
         let mut rules = Vec::new();
         for (i, rule) in r.rules.iter().enumerate() {
@@ -1039,7 +1118,7 @@ impl Server {
                     for (j, gear) in c.gear.iter().enumerate() {
                         let shops = match &gear.at {
                             Some(shop) => vec![
-                                self.place(shop, area)
+                                place(&self.places, shop, area)
                                     .map_err(|e| format!("{}: gear[{j}].at: {e}", c.name))?,
                             ],
                             None => self.places.shops_selling(&gear.item, area),
@@ -1061,15 +1140,15 @@ impl Server {
             rules,
             retry: ROUTINE_RETRY,
             kill_wait: KILL_WAIT,
-            route: self
-                .route_rules(
-                    area,
-                    &r.avoid.rooms,
-                    &r.avoid.areas,
-                    &r.avoid.exits,
-                    &r.prefer_not,
-                )
-                .map_err(|e| format!("routine {}: avoid: {e}", r.name))?,
+            route: route_rules(
+                &self.places,
+                area,
+                &r.avoid.rooms,
+                &r.avoid.areas,
+                &r.avoid.exits,
+                &r.prefer_not,
+            )
+            .map_err(|e| format!("routine {}: avoid: {e}", r.name))?,
         }))
     }
 }
@@ -1140,16 +1219,8 @@ impl RoomBook for GameRooms {
         let key = |(m, r): (u32, u32)| (i64::from(m), i64::from(r));
         let gd = self.0.lock().expect("gamedata lock");
         let gd = gd.as_ref().ok_or("no game data to plan a walk on")?;
-        let rules = mp_data::RouteRules {
-            avoid_rooms: rules.avoid_rooms.iter().copied().map(key).collect(),
-            avoid_kinds: rules.avoid_kinds.iter().copied().collect(),
-            refused: rules.refused.iter().map(|&(r, d)| (key(r), d)).collect(),
-            prefer_not: rules
-                .prefer_not
-                .iter()
-                .map(|(&r, &c)| (key(r), c))
-                .collect(),
-        };
+        // The bot's level isn't known yet (#56): the game decides a level exit.
+        let rules = data_rules(rules, None);
         let steps = gd
             .route_with(key(from), key(to), &rules)
             .map_err(|e| e.to_string())?;

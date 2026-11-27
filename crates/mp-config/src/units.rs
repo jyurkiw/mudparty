@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serializer, de};
 
 /// `250ms`, `30s`, `5m` or `1h`.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -40,6 +40,26 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 
 pub fn duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
     parse_duration(&String::deserialize(d)?).map_err(de::Error::custom)
+}
+
+/// A duration in the largest unit that writes it exactly: `1h`, `4m`, `5s`, `1500ms`.
+pub fn format_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if !ms.is_multiple_of(1000) {
+        return format!("{ms}ms");
+    }
+    let s = d.as_secs();
+    match s {
+        0 => "0s".to_owned(),
+        s if s.is_multiple_of(3600) => format!("{}h", s / 3600),
+        s if s.is_multiple_of(60) => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+/// A duration as [`duration`] reads it.
+pub fn ser_duration<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&format_duration(*d))
 }
 
 pub fn opt_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {

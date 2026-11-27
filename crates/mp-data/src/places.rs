@@ -245,6 +245,11 @@ pub fn exit_kind_name(code: i64) -> String {
     code_name(&EXIT_KINDS, code)
 }
 
+/// Every exit kind's name, as the room file writes them, in `EXIT_` code order.
+pub fn exit_kinds() -> &'static [&'static str] {
+    &EXIT_KINDS
+}
+
 /// The `EXIT_` code of an exit kind's name, as the room file writes it.
 pub fn exit_kind_code(name: &str) -> Option<i64> {
     EXIT_KINDS
@@ -768,7 +773,8 @@ impl Area {
 }
 
 /// An area's hand-written companion, `<area>.local.yaml`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(title = "mudparty places local file")]
 #[serde(deny_unknown_fields)]
 pub struct Local {
     pub schema: u32,
@@ -889,6 +895,14 @@ impl Places {
             }
         }
         Ok(places)
+    }
+
+    /// The game's name for the room `key`, if a compiled file has it.
+    pub fn name_of(&self, key: (u32, u32)) -> Option<&str> {
+        self.rooms
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.name.as_str())
     }
 
     /// The shops that sell `item` (case-blind), those in `area` first, then by key.

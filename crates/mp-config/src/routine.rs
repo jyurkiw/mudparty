@@ -10,15 +10,20 @@
 //! text. A character may set only parameters the routine declares, and a routine may use
 //! only parameters it declares.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, de};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_norway::Value;
 
 use crate::character::{Amount, Pools};
 use crate::error::ConfigError;
+use crate::place::Place;
+use crate::schema::one_key;
 
 /// Which routine a character runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,14 +54,15 @@ pub struct Routine {
 /// What a walk never uses. Rooms are places (aliases, slugs, names or keys, from the
 /// compiled room files); areas are compiled areas; exits are silvermere's exit kinds as the
 /// room files write them (`door`, `trap`, `toll`, ...).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Avoid {
     #[serde(default)]
-    pub rooms: Vec<String>,
+    pub rooms: Vec<Place>,
     #[serde(default)]
     pub areas: Vec<String>,
     #[serde(default)]
+    #[schemars(schema_with = "crate::schema::exit_kinds")]
     pub exits: Vec<String>,
 }
 
@@ -72,7 +78,7 @@ pub enum RuleSpec {
 
 /// Keep the character's `gear:` (#55): check the inventory when the routine starts and
 /// after each rest, put on what's carried but not in use, and buy what's missing.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GearRule {
     #[serde(default)]
@@ -81,56 +87,65 @@ pub struct GearRule {
 
 /// When a rule starts. Every condition given must hold; none given always holds. A rule
 /// that has started goes on until it's done, unless a rule above it starts.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct When {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hp_below: Option<Amount>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mp_below: Option<Amount>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hp_at_least: Option<Amount>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mp_at_least: Option<Amount>,
 }
 
 /// Walk to a room and rest there.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestRule {
-    pub at: String,
+    pub at: Place,
     /// Left out, it's refused by the check, which says what it needs.
     #[serde(default)]
     pub when: When,
     /// Rest until both reach these; the character's `rest.stop_when_all` when left out.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<Pools>,
 }
 
 /// A monster with a known spawn room and respawn time, such as Newhaven's cave bear.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HuntRule {
     /// The monster's name. A name the room shows that ends with it counts (`big cave bear`
     /// is a `cave bear`).
     pub monster: String,
     /// Its spawn room.
-    pub at: String,
+    pub at: Place,
     /// How long after a kill, or a visit that found it gone, it's due again.
-    #[serde(deserialize_with = "crate::units::duration")]
+    #[serde(
+        deserialize_with = "crate::units::duration",
+        serialize_with = "crate::units::ser_duration"
+    )]
+    #[schemars(schema_with = "crate::schema::duration")]
     pub every: Duration,
     #[serde(default)]
     pub when: When,
 }
 
 /// Stay in a room and fight what comes.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CampRule {
-    pub at: String,
+    pub at: Place,
     /// How often the bot looks around (a bare Enter redraws the room), so it sees monsters
     /// that arrive.
-    #[serde(default = "d_look", deserialize_with = "crate::units::duration")]
+    #[serde(
+        default = "d_look",
+        deserialize_with = "crate::units::duration",
+        serialize_with = "crate::units::ser_duration"
+    )]
+    #[schemars(schema_with = "crate::schema::duration")]
     pub look_every: Duration,
 }
 
@@ -168,24 +183,107 @@ impl<'de> Deserialize<'de> for RuleSpec {
     }
 }
 
+impl Serialize for RuleSpec {
+    /// A one-key map, or the bare `gear` when it says nothing more.
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if matches!(self, Self::Gear(g) if *g == GearRule::default()) {
+            return s.serialize_str("gear");
+        }
+        let mut m = s.serialize_map(Some(1))?;
+        match self {
+            Self::Rest(r) => m.serialize_entry("rest", r)?,
+            Self::Hunt(h) => m.serialize_entry("hunt", h)?,
+            Self::Camp(c) => m.serialize_entry("camp", c)?,
+            Self::Gear(g) => m.serialize_entry("gear", g)?,
+        }
+        m.end()
+    }
+}
+
+impl JsonSchema for RuleSpec {
+    fn schema_name() -> Cow<'static, str> {
+        "Rule".into()
+    }
+
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A rule: a map with one key (rest, hunt, camp or gear), or the bare word `gear`.",
+            "anyOf": [
+                { "const": "gear" },
+                one_key("rest", g.subschema_for::<RestRule>()),
+                one_key("hunt", g.subschema_for::<HuntRule>()),
+                one_key("camp", g.subschema_for::<CampRule>()),
+                one_key("gear", g.subschema_for::<GearRule>())
+            ]
+        })
+    }
+}
+
 /// A routine file as written, its parameters already filled in.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Body {
+#[schemars(rename = "RoutineFile", title = "mudparty routine file")]
+pub(crate) struct Body {
+    /// The file's format: 1.
     #[serde(default)]
     schema: Option<u32>,
+    /// The routine's name; the file's name when left out.
     #[serde(default)]
     name: Option<String>,
+    /// The area its places are looked for in first.
     #[serde(default)]
     places: Option<String>,
+    /// Its parameters and their defaults, used as `${name}` in any value; a character may
+    /// set them with `with:`.
     #[serde(default)]
+    #[schemars(schema_with = "crate::schema::scalars")]
     params: BTreeMap<String, Value>,
+    /// What its walks never use.
     #[serde(default)]
     avoid: Avoid,
+    /// Rooms walked through only when the way round is longer than this many steps more.
     #[serde(default)]
+    #[schemars(schema_with = "crate::schema::costs")]
     prefer_not: BTreeMap<String, u32>,
+    /// Its rules, read top-down: the first that applies wins.
     #[serde(rename = "do")]
     rules: Vec<RuleSpec>,
+}
+
+/// A routine as its file would write it.
+#[derive(Serialize)]
+struct Written<'a> {
+    schema: u32,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    places: &'a Option<String>,
+    avoid: &'a Avoid,
+    prefer_not: &'a BTreeMap<String, u32>,
+    #[serde(rename = "do")]
+    rules: &'a [RuleSpec],
+}
+
+impl Serialize for Routine {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        Written {
+            schema: 1,
+            name: &self.name,
+            places: &self.places,
+            avoid: &self.avoid,
+            prefer_not: &self.prefer_not,
+            rules: &self.rules,
+        }
+        .serialize(s)
+    }
+}
+
+impl Routine {
+    /// The routine as its file would write it, parameters filled in and defaults written
+    /// out: what `check` prints (#66). It reads back the same.
+    pub fn to_yaml(&self) -> String {
+        serde_norway::to_string(self).expect("a routine always writes")
+    }
 }
 
 /// A YAML scalar as text: `50%`, `20`, `true`.
@@ -330,8 +428,8 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
     }
     for (i, rule) in r.rules.iter().enumerate() {
         let at = format!("do[{i}]");
-        let place = |p: &str| {
-            if p.trim().is_empty() {
+        let place = |p: &Place| {
+            if p.is_blank() {
                 Err(ConfigError::at(format!("{at}.at"), "a place is needed"))
             } else {
                 Ok(())
@@ -387,13 +485,17 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
             ));
         }
     }
-    for (field, names) in [("rooms", &r.avoid.rooms), ("areas", &r.avoid.areas)] {
-        if let Some(i) = names.iter().position(|n| n.trim().is_empty()) {
-            return Err(ConfigError::at(
-                format!("avoid.{field}[{i}]"),
-                "a name is needed",
-            ));
-        }
+    if let Some(i) = r.avoid.rooms.iter().position(Place::is_blank) {
+        return Err(ConfigError::at(
+            format!("avoid.rooms[{i}]"),
+            "a name is needed",
+        ));
+    }
+    if let Some(i) = r.avoid.areas.iter().position(|n| n.trim().is_empty()) {
+        return Err(ConfigError::at(
+            format!("avoid.areas[{i}]"),
+            "a name is needed",
+        ));
     }
     Ok(())
 }
@@ -454,6 +556,47 @@ impl<'de> Deserialize<'de> for RoutineRef {
         let r =
             read(&v, "", &BTreeMap::new(), false).map_err(|e| de::Error::custom(e.to_string()))?;
         Ok(Self::Inline(Box::new(r)))
+    }
+}
+
+impl Serialize for RoutineRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Named { name, with } if with.is_empty() => s.serialize_str(name),
+            Self::Named { name, with } => {
+                let mut m = s.serialize_map(Some(2))?;
+                m.serialize_entry("use", name)?;
+                m.serialize_entry("with", with)?;
+                m.end()
+            }
+            Self::Inline(r) => r.serialize(s),
+        }
+    }
+}
+
+impl JsonSchema for RoutineRef {
+    fn schema_name() -> Cow<'static, str> {
+        "RoutineRef".into()
+    }
+
+    fn json_schema(g: &mut SchemaGenerator) -> Schema {
+        let with = crate::schema::scalars(g);
+        json_schema!({
+            "description": "A routine in routines/ by name, { use: <name>, with: {...} } to set its parameters, or one written here.",
+            "anyOf": [
+                { "type": "string", "minLength": 1 },
+                {
+                    "type": "object",
+                    "properties": {
+                        "use": { "description": "The routine's file in routines/, without .yaml.", "type": "string" },
+                        "with": with
+                    },
+                    "required": ["use"],
+                    "additionalProperties": false
+                },
+                g.subschema_for::<Body>()
+            ]
+        })
     }
 }
 

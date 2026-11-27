@@ -24,6 +24,7 @@ tokio.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 serde.workspace = true
+serde_norway.workspace = true
 
 [dev-dependencies]
 mp-silvermere = { path = "../mp-silvermere" }

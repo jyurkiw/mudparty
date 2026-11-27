@@ -25,7 +25,7 @@ fn gear_reads_with_an_optional_shop() {
     assert_eq!(c.gear[0].how, GearUse::Wield);
     assert_eq!(c.gear[0].at, None);
     assert_eq!(c.gear[1].how, GearUse::Wear);
-    assert_eq!(c.gear[1].at.as_deref(), Some("armour-shop"));
+    assert!(c.gear[1].at.as_ref().is_some_and(|p| *p == "armour-shop"));
 }
 
 #[test]

@@ -5,7 +5,9 @@
 mod character;
 mod error;
 mod files;
+mod place;
 mod routine;
+pub mod schema;
 mod server;
 mod units;
 
@@ -16,9 +18,10 @@ pub use character::{
 };
 pub use error::ConfigError;
 pub use files::{Loaded, Secrets, load_character, load_server, revision};
+pub use place::Place;
 pub use routine::{
     Avoid, CampRule, GearRule, HuntRule, RestRule, Routine, RoutineRef, RuleSpec, When,
     load_routine,
 };
 pub use server::{Game, GameData, Listen, Logging, RollOverride, ServerConfig, Stale, StreamRoll};
-pub use units::{parse_duration, parse_size};
+pub use units::{format_duration, parse_duration, parse_size};
