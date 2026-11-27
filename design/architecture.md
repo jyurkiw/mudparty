@@ -909,7 +909,7 @@ hunts, from the character's `routine:` and `places:` (*§7.3*).
   rests (`Rester::begin`, to its stop thresholds), the combat engine fights (a kill order
   for `Kill`, its targeting rules in the camp). The session tells the routine how a walk
   or a rest ended, and shows what the bot is doing (`Seen`: vitals, fighting, the room's
-  monsters, the room, walking). In 1.1 the party director (#59) hands out the same goals
+  monsters, the room, walking). In 1.2 the party director (#59) hands out the same goals
   for several characters, so they stay few and plain.
 - **The loop.**
   1. Walk to the camp and camp there. A bot found elsewhere, not walking, walks back.
@@ -1581,14 +1581,23 @@ the pieces alone hadn't:
 (#56) and login steps (#33). The walk that could stall in a long session (#78) was a
 mortally wounded bot whose every step was refused; such a walk now ends saying why.
 
-**1.1** is what the user is really after: **one bot controlling several characters in
+**1.1 is the web UI for basic interactions** (user, 2026-11-27; goal #95). The first
+party test on a real server showed how easy hand-written files are to get wrong: a
+`.yml` extension was ignored without a word, and a bot with targeting but no `melee` or
+`tiers` picked targets and never attacked. Every fix meant Stop and Start. So 1.1 makes
+the page the place to set characters up:
+- creating and editing character files there, passwords included (#58);
+- a validator that catches traps as well as bad YAML, its findings on each card (#93);
+- reloading an edited file into a running bot without a logoff (#94).
+
+**1.2** is what the user is really after: **one bot controlling several characters in
 concert**, the party director (#59). A director in the server sets goals for each
 character, and the characters' engines keep their reflexes. It brings a
 `parties/<name>.yaml`, keeps the game party underneath (#54), and also runs bots around
 a main character played through MudPlay. The user chose this order knowing 1.0's
 routine moves into the director, so #53 keeps it behind a narrow interface of goals.
-
-**1.2:** building the YAML in the web page (#58).
+Building routines and places on the page, with the map (#71), comes with it. (Until
+2026-11-27 the director was 1.1 and the page editor 1.2.)
 
 **The YAML's shape** was settled on 2026-11-26 (*§14*): a compiled room file, one router
 with filters, routines as rule lists in their own files, and a map. 1.0 needs its first
@@ -1641,14 +1650,15 @@ Each item is an issue in the **Later** milestone (#15–#24).
 
 The shape the YAML moves to, settled with the user while #55 was being built. It replaces
 the `places:` and `routine:` sections of a character's file (*§6.11*, PR #61) before
-shopping, training and the 1.1 director add more to them. Nothing has shipped, so the old
+shopping, training and the 1.2 director add more to them. Nothing has shipped, so the old
 form is replaced, not kept beside the new one.
 
 ### 14.1 Why
 
-- **Scripts are written by hand as well as by the page.** The 1.2 web editor (#58) will
-  write most of them, but writing one by hand stays a first-class way to do it. The files
-  must read well, check well and explain their own mistakes.
+- **Scripts are written by hand as well as by the page.** The web editor (#58 for
+  character files in 1.1, routines and places with the map in 1.2) will write most of
+  them, but writing one by hand stays a first-class way to do it. The files must read
+  well, check well and explain their own mistakes.
 - **A character's file mixed four kinds of knowledge.** Who the character is (name,
   login), how it reacts (combat, rest), facts about the world (room numbers, which shop
   sells what, where a monster spawns) and what it does all day (the routine). The world
@@ -1667,7 +1677,7 @@ places/<area>.yaml            compiled from silvermere.db: never edited (§14.4)
 places/<area>.local.yaml      hand-written beside it: aliases, tags, avoid marks, map pins
 routines/<name>.yaml          a behaviour, reusable by any character (§14.6)
 characters/<name>.yaml        who, how it reacts, what it carries, which routine (§14.8)
-parties/<name>.yaml           1.1: the director's groups (#59)
+parties/<name>.yaml           1.2: the director's groups (#59)
 paths/<group>/<name>.yaml     loops imported from MegaMud .mp files (§8)
 ```
 
@@ -1883,7 +1893,7 @@ do:
   character's file (`routine: { do: [...] }`); a character's own `places:` are gone, in
   favour of the compiled room files and their local aliases.
 - **The goals stay the interface** (*§6.11*): each rule hands the engines goals (walk,
-  rest, camp, kill, buy and equip, train), and the 1.1 director (#59) hands out the same
+  rest, camp, kill, buy and equip, train), and the 1.2 director (#59) hands out the same
   goals, with rules of its own (follow the leader, hold the group).
 - `@stop` and `@rego` pause and resume the whole routine, as now.
 
@@ -1898,7 +1908,7 @@ The activities a rule can run:
 | `circuit` | Visit lairs as they respawn, ordered by travel cost. |
 | `sweep` | Visit every room of an area, least recently seen first, for wandering monsters. |
 | `errand` | Go, do something, come back: buy and equip (`gear`), `train`, heal, sell. |
-| `follow` | Stay with a leader: the game party, then the 1.1 director. |
+| `follow` | Stay with a leader: the game party, then the 1.2 director. |
 
 **Loops.** As MudPlay's v3 loops (`LoopWaypoint.cs`, which replaced v2's explicit steps):
 an ordered cycle of waypoints, each with an optional command to send on arrival, a delay
@@ -2133,7 +2143,7 @@ web page needs one too (user).
      walking.
   2. *Overlays:* lairs with their timers, avoided rooms, shops and trainers, the loop or
      circuit a bot is running.
-  3. *Editing (1.2, with #58):* click a room to make it a lair, a waypoint or avoided,
+  3. *Editing (1.2, #71):* click a room to make it a lair, a waypoint or avoided,
      which is how MudPlay sets lairs and loops. The map becomes the script editor.
 
 ### 14.11 Moving to it
