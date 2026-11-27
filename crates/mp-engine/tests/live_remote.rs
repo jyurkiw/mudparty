@@ -43,6 +43,7 @@ fn spec(game: SocketAddr, warn_denied: bool) -> SessionSpec {
             password: s("ermias1"),
             takeover: true,
             step_timeout: Duration::from_secs(20),
+            script: None,
         },
         statline: s("[HP=%h/%H,MA=%m/%M]:%r"),
         config_rev: s("c1"),

@@ -184,3 +184,17 @@ fn a_traced_feed_gives_each_item_with_its_text() {
         ]
     );
 }
+
+#[test]
+fn a_waiting_line_a_login_script_waits_for_is_reported_once() {
+    // A written login (#33) waits for text silvermere's own dialogue doesn't have.
+    let mut r = reader();
+    r.set_waits(vec!["Secret word:".into()]);
+    // Not there yet: nothing.
+    assert_eq!(r.feed(b"Secret wo"), Vec::<Item>::new());
+    assert_eq!(r.feed(b"rd: "), [Item::Text("Secret word: ".into())]);
+    // The rest of the line, when it ends, is read on its own.
+    assert_eq!(r.feed(b"xyzzy\r\n"), [Item::Text("xyzzy".into())]);
+    // A waiting line nobody waits for is still not reported.
+    assert_eq!(r.feed(b"Press a key"), Vec::<Item>::new());
+}

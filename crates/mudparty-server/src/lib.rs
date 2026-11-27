@@ -22,15 +22,15 @@ use anyhow::Context;
 use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
-    CharacterConfig, CircuitRule, Logging, PartyRole, Place, RuleSpec, Secrets, ServerConfig,
-    load_character, load_routine, load_server, parse_duration,
+    CharacterConfig, CircuitRule, Logging, LoginSteps, PartyRole, Place, RuleSpec, Secrets,
+    ServerConfig, load_character, load_routine, load_server, parse_duration,
 };
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
     AutoSwitch, CircuitSettings, CombatSettings, Command, Effect, GearSettings, Inviter,
     LairClocks, LairSettings, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
-    RestSettings, RoomBook, RoomInfo, RouteRules, RoutineSettings, RuleSettings, Seat,
+    RestSettings, RoomBook, RoomInfo, RouteRules, RoutineSettings, RuleSettings, ScriptStep, Seat,
     SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
@@ -514,6 +514,19 @@ impl Server {
             password: password.to_owned(),
             takeover: login.takeover,
             step_timeout: STEP_TIMEOUT,
+            // Steps written in the character's file (#33), or silvermere's dialogue.
+            script: match &login.steps {
+                LoginSteps::DefaultSilvermere => None,
+                LoginSteps::Steps(steps) => Some(
+                    steps
+                        .iter()
+                        .map(|s| ScriptStep {
+                            wait: s.wait.clone(),
+                            send: s.send.clone(),
+                        })
+                        .collect(),
+                ),
+            },
         };
         let spec = self.spec_for(&c, &loaded.rev, login);
         let (tx, rx) = mpsc::unbounded_channel();
@@ -632,6 +645,7 @@ impl Server {
                 .to_owned(),
             takeover: true,
             step_timeout: STEP_TIMEOUT,
+            script: None,
         };
         let spec = self.spec_for(&c, &rev, login);
         let (tx, rx) = mpsc::unbounded_channel();

@@ -56,6 +56,7 @@ fn spec(game: SocketAddr, party: Option<PartySettings>, rest: Option<RestSetting
             password: s("ermias1"),
             takeover: true,
             step_timeout: Duration::from_secs(20),
+            script: None,
         },
         statline: s("[HP=%h/%H,MA=%m/%M]:%r"),
         config_rev: s("c1"),

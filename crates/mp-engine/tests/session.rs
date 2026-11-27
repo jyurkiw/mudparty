@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use mp_engine::{
-    Command, LoginFailure, LoginSettings, Offline, Report, SessionHandle, SessionSpec,
+    Command, LoginFailure, LoginSettings, Offline, Report, ScriptStep, SessionHandle, SessionSpec,
     SessionState, spawn,
 };
 use mp_parse::{Event, Item};
@@ -25,6 +25,7 @@ fn spec(game: SocketAddr, password: &str, logs: Option<&Path>) -> SessionSpec {
             password: password.into(),
             takeover: true,
             step_timeout: Duration::from_secs(10),
+            script: None,
         },
         statline: BOT.into(),
         config_rev: "c1".into(),
@@ -235,7 +236,7 @@ async fn a_game_that_never_answers_times_the_login_out() {
         seen.last(),
         Some(&Report::State(SessionState::Offline(Offline::LoginFailed(
             LoginFailure::Timeout {
-                waiting_for: "the username prompt"
+                waiting_for: "the username prompt".into()
             }
         ))))
     );
@@ -308,6 +309,40 @@ async fn a_character_a_bot_played_before_logs_in_again() {
         until(&mut rx, is(SessionState::InGame)).await;
         h.send(Command::Logoff);
         until(&mut rx, offline).await;
+    }
+    sm.stop().await.unwrap();
+}
+
+// A login written in the character's file (#33), its steps silvermere's own dialogue.
+#[tokio::test(flavor = "multi_thread")]
+async fn written_steps_that_mirror_silvermeres_dialogue_log_in() {
+    let sm = Silvermere::start(&[Player::new("Aldric", "aldric1").hp(35)])
+        .await
+        .unwrap();
+    let logs = tempfile::tempdir().unwrap();
+    let mut s = spec(sm.telnet_addr(), "aldric1", Some(logs.path()));
+    let step = |wait: &str, send: &str| ScriptStep {
+        wait: wait.into(),
+        send: send.into(),
+    };
+    s.login.script = Some(vec![
+        step("Username:", "{account}"),
+        step("Password:", "{password}"),
+        step("Make your selection (X to exit):", "M"),
+        step("[MAJORMUD]:", "E"),
+    ]);
+    let (h, mut rx) = start(s);
+    until(
+        &mut rx,
+        |r| matches!(r, Report::Vitals(v) if v.max_hp == Some(35)),
+    )
+    .await;
+    h.send(Command::Logoff);
+    until(&mut rx, offline).await;
+    h.finished().await;
+    for e in std::fs::read_dir(logs.path().join("Aldric")).unwrap() {
+        let text = String::from_utf8_lossy(&std::fs::read(e.unwrap().path()).unwrap()).into_owned();
+        assert!(!text.contains("aldric1"), "a password in the logs");
     }
     sm.stop().await.unwrap();
 }

@@ -606,6 +606,25 @@ impl CharacterConfig {
         if self.name.trim().is_empty() {
             return Err(ConfigError::at("name", "a character needs a name"));
         }
+        // A written login (#33): each step waits for some text.
+        if let Some(Login {
+            steps: LoginSteps::Steps(steps),
+            ..
+        }) = &self.login
+        {
+            if steps.is_empty() {
+                return Err(ConfigError::at(
+                    "login.steps",
+                    "a list of {wait, send}, or default-silvermere",
+                ));
+            }
+            if let Some(i) = steps.iter().position(|s| s.wait.trim().is_empty()) {
+                return Err(ConfigError::at(
+                    format!("login.steps[{i}].wait"),
+                    "a step waits for some text from the game",
+                ));
+            }
+        }
         Statline::compile(&self.statline)
             .map_err(|e| ConfigError::at("statline", e.to_string()))?;
         for (i, r) in self.combat.targeting.iter().enumerate() {

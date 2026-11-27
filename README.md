@@ -250,6 +250,27 @@ the saved statline stays, and goes back at the next clean logoff. `statline_rest
 leaves the bot's statline on. One limit: a custom statline comes back as `full custom`,
 since `pro` doesn't say whether it was `custom` or `full custom`.
 
+A bot logs in by silvermere's own dialogue. A game with a different one is written in
+`login.steps`, each step waiting for some text and then sending a line, with `{account}`
+and `{password}` filled in (the password from `secrets.yaml`, never logged):
+
+```yaml
+schema: 1
+name: Ermias
+login:
+  account: Ermias
+  steps:
+    - { wait: "Username:", send: "{account}" }
+    - { wait: "Password:", send: "{password}" }
+    - { wait: "Make your selection (X to exit):", send: "M" }
+    - { wait: "[MAJORMUD]:", send: "E" }
+```
+
+A step's text may come in a finished line or in a line still waiting for an answer. The
+bot is in the game at the first prompt after the last step. The game's refusals (a wrong
+password, a locked account) stop the login as usual, and so does a second request for the
+name or the password once it's been sent.
+
 ### A routine
 
 A bot with a `routine:` runs a loop of its own, with no one leading it. A routine is a

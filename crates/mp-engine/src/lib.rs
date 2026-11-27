@@ -13,7 +13,7 @@ mod shop;
 mod walk;
 
 pub use combat::{Combat, CombatSettings};
-pub use login::{Login, LoginAction, LoginFailure, LoginSettings};
+pub use login::{Login, LoginAction, LoginFailure, LoginSettings, ScriptStep};
 pub use pacing::{Action, Pacer, PacingSettings};
 pub use party::{PartyJoin, PartySettings, PartyState};
 pub use remote::{

@@ -152,6 +152,17 @@ fn err(yaml: &str) -> String {
 }
 
 #[test]
+fn written_login_steps_each_wait_for_some_text() {
+    let e = err(&ERMIAS.replace("steps: default-silvermere", "steps: []"));
+    assert!(e.contains("login.steps"), "{e}");
+    let e = err(&ERMIAS.replace(
+        "steps: default-silvermere",
+        "steps:\n    - { wait: \"Username:\", send: \"{account}\" }\n    - { wait: \" \", send: \"{password}\" }",
+    ));
+    assert!(e.contains("login.steps[1].wait"), "{e}");
+}
+
+#[test]
 fn a_statline_the_matcher_cant_read_is_refused() {
     let e = err(&ERMIAS.replace("\"[HP=%h/%H,MA=%m/%M]:%r\"", "\"[MA=%m]:\""));
     assert!(e.contains("statline"), "{e}");

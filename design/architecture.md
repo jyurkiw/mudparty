@@ -493,6 +493,16 @@ dialogue (`bin/silvermere/tests/login_e2e.rs`, `docs/auth.md`):
   stops the login rather than sending it again.
 - Each step has a timeout. A failure is reported to the server with the last screen of
   text.
+- **Written steps** (`login.steps`, #33; `mp-engine` `login.rs`): a list of
+  `{wait, send}` in place of `default-silvermere`. Each step waits, in turn, for its text
+  in a finished line or in the line waiting for an answer, and sends its line with
+  `{account}` and `{password}` filled in. A line with the password goes as a secret, kept
+  out of the logs. The reader reports a waiting line once it ends with one of the login's
+  texts (`Reader::set_waits`), as it does a known prompt, so no text is read twice; the
+  waits are cleared once in the game. The game's refusals, the credential guard (a step
+  that sent the name or the password matched again) and the step timeout (naming the text
+  waited for) hold as for silvermere's dialogue. The bot is in the game at the first
+  prompt after the last step. A takeover question isn't answered unless a step answers it.
 - On a dropped link the client reconnects with backoff (5 s, 10 s, 30 s, then every 60 s),
   unless the drop followed an orderly logoff.
 - Interactive mode can turn auto-login off for a session (`--no-login`).

@@ -45,6 +45,7 @@ fn spec(game: SocketAddr, store: Arc<Memory>) -> SessionSpec {
             password: "aldric1".into(),
             takeover: true,
             step_timeout: Duration::from_secs(10),
+            script: None,
         },
         statline: BOT.into(),
         config_rev: "c1".into(),

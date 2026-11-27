@@ -1174,6 +1174,8 @@ impl Runner {
         }
         let mut reader = Reader::with_statlines(shapes);
         let mut login = Login::new(self.spec.login.clone(), Instant::now());
+        // A written login (#33) waits for text of its own, in a waiting line too.
+        reader.set_waits(login.waits());
         // A new link is a new view of the room: the roster starts again.
         let mut combat = self.spec.combat.clone().map(Combat::new);
         if let Some(c) = &mut combat {
@@ -1247,7 +1249,7 @@ impl Runner {
                                 }
                                 continue;
                             }
-                            for action in login.on_item(&t.item, Instant::now()) {
+                            for action in login.on_traced(&t, Instant::now()) {
                                 self.decision("login_step", json!({"read": t.plain, "action": format!("{action:?}").replace(&self.spec.login.password, "********")}));
                                 match action {
                                     LoginAction::Send(line) => {
@@ -1262,6 +1264,7 @@ impl Runner {
                                     }
                                     LoginAction::InGame => {
                                         in_game = true;
+                                        reader.set_waits(Vec::new());
                                         self.exp_since.get_or_insert_with(Instant::now);
                                         self.state(SessionState::InGame);
                                         self.event("in_game", json!({}));
