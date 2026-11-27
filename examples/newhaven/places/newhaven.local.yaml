@@ -1,0 +1,7 @@
+# Names of our own for Newhaven rooms the compiled file can't name alone.
+schema: 1
+area: newhaven
+aliases:
+  arena: arena-2150
+  road: narrow-road-2146
+  bear: dungeon:small-cavern-2156

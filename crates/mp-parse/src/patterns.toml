@@ -119,6 +119,20 @@ keys = ["exp_gain"]
 re = '^You gain (?P<exp>\d+) experience\.$'
 numbers = ["exp"]
 
+# A kill that gains nothing, since the character holds all the experience it may without
+# training (silvermere progression/experience.rs `add_experience`); in place of ExpGain.
+[[pattern]]
+event = "ExpCapped"
+keys = ["exp_capped"]
+re = '^You have progressed too far without training to acquire anymore experience!$'
+
+# A monster leaving the room (silvermere's own words; a player's leave line is the same
+# shape once its anti-script bytes are gone, and a roster of monsters ignores it).
+[[pattern]]
+event = "Left"
+keys = ["monster_left_up", "monster_left_down", "monster_left_dir"]
+re = '^(?P<who>.+) just left (?:upwards|downwards|to the \w+)\.$'
+
 [[pattern]]
 event = "AlsoHere"
 keys = ["room_also_here"]
@@ -327,10 +341,22 @@ event = "Equipped"
 keys = ["wield_ok", "wear_ok"]
 re = '^You are now (?:holding|wearing) (?P<item>.+)\.$'
 
+# LIGHT <item> (silvermere commands/inventory.rs `cmd_light`): a light source lit is put
+# to use as a worn item is.
+[[pattern]]
+event = "Equipped"
+keys = ["light_ok"]
+re = '^You lit the (?P<item>.+)\.$'
+
 [[pattern]]
 event = "EquipRefused"
 keys = ["wear_no_room", "wear_forbidden", "weapon_forbidden", "wear_not_have_any"]
 re = '^(?P<text>You have no more room to wear that item!|You may not wear that item!|You may not use that weapon\.|You do not have any .+\.)$'
+
+[[pattern]]
+event = "EquipRefused"
+keys = ["light_forbidden", "already_lit", "cannot_light", "light_recharge"]
+re = '^(?P<text>You may not light that item!|You already have something lit!|You cannot light .+!|You must recharge that before you may light it again\.)$'
 
 # INVENTORY: the carried list (wrapped at 79 columns, so it may run onto the next lines),
 # the keys line, `Wealth:` and `Encumbrance:` (silvermere display/inventory.rs). Nothing!

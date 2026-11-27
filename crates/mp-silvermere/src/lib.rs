@@ -11,7 +11,7 @@ mod stock;
 
 pub use client::{RawClient, WAIT};
 pub use relay::Relay;
-pub use stock::{ARENA, StockChar, StockSilvermere, stock_template};
+pub use stock::{ARENA, Stats, StockChar, StockSilvermere, stock_template};
 
 use std::net::SocketAddr;
 

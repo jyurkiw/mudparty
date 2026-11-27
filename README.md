@@ -12,7 +12,10 @@ in this repository's issues.
 ## Status
 
 Headless bots, combat, resting, party join, @ commands, logs and the web page work, and
-MudPlay can play through the proxy. Still to come: `#` commands and typing from the web
+MudPlay can play through the proxy. A bot can run a character through a routine by
+itself: [`examples/newhaven`](examples/newhaven) gears a new Warrior up, trains it to level
+3, and has it fight in the arena, rest when hurt, and hunt the cave bear (see
+[An example: Newhaven](#an-example-newhaven)). Still to come: `#` commands and typing from the web
 page through the proxy, the interactive terminal client, character sheets and path
 translation. A few settings for those already read in `mudparty.toml` (below), but nothing
 uses them yet.
@@ -332,7 +335,7 @@ name: Ermias
 login:
   account: Ermias
 combat:
-  targeting: [kill_order, { priority: ["*"] }]   # a rule with no value may be a bare word
+  targeting: [kill_order, { priority: ["*kobold*", "*rat"] }]   # a rule with no value may be a bare word
   melee: a
 routine:
   use: newhaven-arena        # or just `routine: newhaven-arena`
@@ -341,13 +344,20 @@ gear:                        # what it carries, kept by the routine's gear rule
   - { item: club, use: wield }
   - { item: padded vest, use: wear }
   - { item: padded pants, use: wear, at: armour-shop }   # at: a shop of your choosing
+  - { item: torch, use: light }                          # lit, to see in a dark room
 ```
+
+A bot that walks through town shouldn't have `priority: ["*"]`: shopkeepers are monsters
+too, and it would attack them as it shops (#89). Name the monsters it should fight
+instead. `fight_back` answers only a monster's `moves to attack you!` line for now, since
+most attacks print the monster's own words (#85).
 
 A one-off routine may be written in the character's file instead, as `routine: { do: [...] }`.
 
-A `gear` rule (`- gear`, or `- gear: { when: {...} }`) keeps the character's `gear:`. When
-the routine starts and after each rest, it looks at the inventory. An item carried but not
-in use is put on where the bot stands. A missing one is bought at a shop that sells it, as
+A `gear` rule (`- gear`, or `- gear: { when: {...} }`) keeps the character's `gear:`. Each
+item is `wield`ed, `wear`ed, or `light`ed (a torch or a lantern, for a dark room such as
+Newhaven's Small Cavern). When the routine starts and after each rest, it looks at the
+inventory. An item carried but not in use is put on where the bot stands. A missing one is bought at a shop that sells it, as
 the compiled room files say (those in the routine's `places` area first), and put on; then
 it looks again. An item it can't get (no money, can't use it, no shop sells it, no way
 there) is skipped and noted on the card, and not tried again until the bot restarts. Put
@@ -380,6 +390,29 @@ The card shows where the routine is: camping, going to rest, resting, going to a
 waiting for one to fill, killing, going to train, training. `@stop` (or
 the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where
 it was. While it runs, the page's Go box is refused, since the routine is walking the bot.
+
+A circuit tells the card when it's done with a lair: `cleared Small Cavern`, or `gave up on
+cave bear in Small Cavern` when a monster there never fought back.
+
+### An example: Newhaven
+
+[`examples/newhaven`](examples/newhaven) is a whole set of files for the 1.0 goal: a new
+Warrior, `Ermias`, who runs Newhaven's arena by himself. Copy its `characters`, `routines`
+and `places` folders into the data root, run `places compile`, and give the account's
+password in `secrets.yaml`. The bot then:
+
+- logs in by the steps its file writes out (silvermere's own, as an example);
+- buys a club, the padded set and a torch, and puts them on and lights the torch;
+- trains at the Adventurer's Guild whenever it has the experience, up to level 3, since a
+  fourth level locks it out of the arena;
+- kills the cave bear in the Small Cavern when it's there and HP is at least 80%, through
+  the arena's locked door, with the torch to see by;
+- otherwise camps in the arena, fighting Newhaven's monsters by name, and below half its
+  HP rests on Narrow Road and comes back.
+
+The whole-system test `crates/mudparty-server/tests/newhaven.rs` runs these files on the
+stock world. Its warrior has its creation points in strength, health and agility; one
+created with none spent is too weak for the bear.
 
 Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists every
 setting. The server watches `characters/`, and a running bot picks up an edited file

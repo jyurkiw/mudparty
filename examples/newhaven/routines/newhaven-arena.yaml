@@ -1,0 +1,26 @@
+# Newhaven's arena loop (1.0, #57): gear up from the shops, train to level 3 at the
+# Adventurer's Guild, fight in the arena, rest on Narrow Road when hurt, and kill the
+# cave bear in the Small Cavern whenever it has come back.
+schema: 1
+name: newhaven-arena
+places: newhaven
+params:
+  rest_below: 50%
+  bear_hp: 80%
+do:
+  # Buys and puts on the character's `gear:` when it starts and after each rest.
+  - gear
+  # Below the line: up the stairs to Narrow Road, rest, and back.
+  - rest:
+      at: road
+      when: { hp_below: "${rest_below}" }
+      until: { hp: 100% }
+  # The arena takes levels 1 to 3; level 4 would lock the bot out.
+  - train: { up_to: 3 }
+  # The cave bear, when its cavern has filled again and HP allows. Its wait-room is the
+  # arena, since the Dungeon Entrance between is a lair of its own.
+  - circuit:
+      lairs: [bear]
+      when: { hp_at_least: "${bear_hp}" }
+  # Otherwise: stay in the arena and fight what comes.
+  - camp: { at: arena }

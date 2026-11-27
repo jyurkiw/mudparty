@@ -174,6 +174,35 @@ fn cases() -> Vec<Case> {
             Msg::ExpGain { exp: 1250 },
             vec![E::ExpGain { exp: 1250 }],
         ),
+        msg("exp_capped", Msg::ExpCapped, vec![E::ExpCapped]),
+        msg(
+            "monster_left_up",
+            Msg::MonsterLeftUp {
+                mon: s("giant rat"),
+            },
+            vec![E::Left {
+                who: s("giant rat"),
+            }],
+        ),
+        msg(
+            "monster_left_down",
+            Msg::MonsterLeftDown {
+                mon: s("giant rat"),
+            },
+            vec![E::Left {
+                who: s("giant rat"),
+            }],
+        ),
+        msg(
+            "monster_left_dir",
+            Msg::MonsterLeftDir {
+                mon: s("acid slime"),
+                dir: s("north"),
+            },
+            vec![E::Left {
+                who: s("acid slime"),
+            }],
+        ),
         msg(
             "room_also_here",
             Msg::RoomAlsoHere {
@@ -558,6 +587,41 @@ fn cases() -> Vec<Case> {
             Msg::WearNotHaveAny { name: s("club") },
             vec![E::EquipRefused {
                 text: s("You do not have any club."),
+            }],
+        ),
+        msg(
+            "light_ok",
+            Msg::LightOk { item: s("torch") },
+            vec![E::Equipped { item: s("torch") }],
+        ),
+        msg(
+            "light_forbidden",
+            Msg::LightForbidden,
+            vec![E::EquipRefused {
+                text: s("You may not light that item!"),
+            }],
+        ),
+        msg(
+            "already_lit",
+            Msg::AlreadyLit,
+            vec![E::EquipRefused {
+                text: s("You already have something lit!"),
+            }],
+        ),
+        msg(
+            "cannot_light",
+            Msg::CannotLight {
+                item: s("padded vest"),
+            },
+            vec![E::EquipRefused {
+                text: s("You cannot light padded vest!"),
+            }],
+        ),
+        msg(
+            "light_recharge",
+            Msg::LightRecharge,
+            vec![E::EquipRefused {
+                text: s("You must recharge that before you may light it again."),
             }],
         ),
         msg(

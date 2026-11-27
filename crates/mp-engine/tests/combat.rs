@@ -216,6 +216,54 @@ fn a_kill_drops_the_target_and_nothing_is_cast_at_the_corpse() {
     assert_eq!(f.combat.target(), None);
 }
 
+// Past the experience it may hold untrained, a kill gains nothing, and the game says so in
+// place of the experience line: still a kill (#57). A bot kept at an arena's top level
+// gets there.
+#[test]
+fn a_kill_past_the_experience_cap_is_still_a_kill() {
+    let mut set = settings();
+    set.targeting = vec![Rule::Priority(vec![s("*")])];
+    let mut f = Fight::new(set);
+    f.here("kobold, giant rat").prompt(80);
+    f.msg(Msg::CombatEngaged)
+        .wait(5)
+        .msg(Msg::ExpCapped)
+        .msg(Msg::CombatOff)
+        .prompt(70);
+    assert_eq!(f.take_sent(), ["lbol kobold", "lbol giant rat"]);
+}
+
+// A target that runs off is let go, and the next is taken (#57): kept, the bot would
+// attack an empty room and never see the fight end.
+#[test]
+fn a_target_that_leaves_is_let_go() {
+    let mut set = settings();
+    set.targeting = vec![Rule::Priority(vec![s("*")])];
+    let mut f = Fight::new(set);
+    f.here("kobold, giant rat").prompt(80);
+    f.msg(Msg::CombatEngaged).wait(5).msg(Msg::MonsterLeftDir {
+        mon: s("kobold"),
+        dir: s("north"),
+    });
+    f.msg(Msg::CombatOff).prompt(70);
+    assert_eq!(f.take_sent(), ["lbol kobold", "lbol giant rat"]);
+    assert_eq!(f.combat.monsters(), ["giant rat"]);
+}
+
+#[test]
+fn a_lone_target_that_leaves_ends_the_fight() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin, practice dummy")
+        .leader_attacks("practice dummy")
+        .prompt(80);
+    f.msg(Msg::CombatEngaged).wait(5).msg(Msg::MonsterLeftUp {
+        mon: s("practice dummy"),
+    });
+    f.msg(Msg::CombatOff).prompt(70);
+    assert_eq!(f.take_sent(), ["lbol practice dummy"]);
+    assert_eq!(f.combat.target(), None);
+}
+
 #[test]
 fn after_a_kill_the_next_monster_is_picked() {
     let mut set = settings();

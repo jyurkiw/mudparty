@@ -77,7 +77,7 @@ pub struct CharacterConfig {
 pub struct Gear {
     /// The item's name, as the game lists it (`padded vest`).
     pub item: String,
-    /// `wield` or `wear`.
+    /// `wield`, `wear`, or `light` (a light source, such as a torch).
     #[serde(rename = "use")]
     pub how: GearUse,
     /// The shop to buy it at, a place; left out, a shop the compiled room files say sells
@@ -92,6 +92,8 @@ pub struct Gear {
 pub enum GearUse {
     Wield,
     Wear,
+    /// Lit, as a torch or a lantern is (`light <item>`), to see in a dark room.
+    Light,
 }
 
 /// A character whose MudPlay has dropped stays in the game, idle, under its engine. It

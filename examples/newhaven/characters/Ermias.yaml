@@ -1,0 +1,37 @@
+# A new Warrior who runs Newhaven's arena loop by itself.
+schema: 1
+name: Ermias
+class: Warrior
+login:
+  account: Ermias
+  # silvermere's own dialogue, written out.
+  steps:
+    - { wait: "Username:", send: "{account}" }
+    - { wait: "Password:", send: "{password}" }
+    - { wait: "Make your selection (X to exit):", send: "M" }
+    - { wait: "[MAJORMUD]:", send: "E" }
+combat:
+  # What the routine sends it to kill, then Newhaven's arena and dungeon monsters by
+  # name ("large acid slime" fits "*acid slime"). Not `"*"`, which would attack the
+  # shopkeepers too.
+  targeting:
+    - kill_order
+    - priority:
+        - "*cave bear"
+        - "*acid slime"
+        - "*kobold thief"
+        - "*carrion beast"
+        - "*filthbug"
+        - "*lashworm"
+        - "*giant rat"
+  melee: a
+gear:
+  - { item: club, use: wield }
+  - { item: padded vest, use: wear }
+  - { item: padded pants, use: wear }
+  - { item: padded helm, use: wear }
+  - { item: padded gloves, use: wear }
+  - { item: padded boots, use: wear }
+  # The Small Cavern is too dark to see the cave bear in without one.
+  - { item: torch, use: light }
+routine: newhaven-arena

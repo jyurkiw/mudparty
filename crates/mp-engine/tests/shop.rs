@@ -122,6 +122,32 @@ fn it_buys_then_wields() {
     assert_eq!(e.state(), EquipState::Done);
 }
 
+// A light source is lit (#57): the Small Cavern is too dark to see the cave bear in.
+#[test]
+fn it_buys_then_lights_a_torch() {
+    let now = Instant::now();
+    let mut e = Equipper::new("torch", GearUse::Light, true, WAIT);
+    assert_eq!(e.start(now), ["buy torch"]);
+    assert_eq!(
+        hear(
+            &mut e,
+            Event::Bought {
+                item: "torch".into()
+            },
+            now
+        ),
+        ["light torch"]
+    );
+    hear(
+        &mut e,
+        Event::Equipped {
+            item: "torch".into(),
+        },
+        now,
+    );
+    assert_eq!(e.state(), EquipState::Done);
+}
+
 #[test]
 fn an_item_already_carried_is_only_worn() {
     let now = Instant::now();
