@@ -71,7 +71,7 @@ pub struct Avoid {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleSpec {
     Rest(RestRule),
-    Hunt(HuntRule),
+    Circuit(CircuitRule),
     Camp(CampRule),
     Gear(GearRule),
 }
@@ -113,24 +113,51 @@ pub struct RestRule {
     pub until: Option<Pools>,
 }
 
-/// A monster with a known spawn room and respawn time, such as Newhaven's cave bear.
+/// Visit lairs as each fills again (#67, design §14.7), as MudPlay's Auto-Lair: a lair's
+/// clock starts at its last kill, and it's ready its respawn time later. The bot waits
+/// next door, never stepping in early, and kills all it finds. A hunt of one monster is a
+/// circuit of one lair. When no lair is ready the rules below it run.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HuntRule {
-    /// The monster's name. A name the room shows that ends with it counts (`big cave bear`
-    /// is a `cave bear`).
-    pub monster: String,
-    /// Its spawn room.
-    pub at: Place,
-    /// How long after a kill, or a visit that found it gone, it's due again.
+pub struct CircuitRule {
+    /// The lairs, as places.
+    pub lairs: Vec<Place>,
+    /// How long after its last kill each lair fills again, by the lair as written (its room
+    /// number for the long form): `{ small-cavern: 4m }`. A lair left out takes the compiled
+    /// room file's time.
     #[serde(
+        default,
+        deserialize_with = "crate::units::durations",
+        serialize_with = "crate::units::ser_durations",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    #[schemars(schema_with = "crate::schema::durations")]
+    pub respawn: BTreeMap<String, Duration>,
+    /// How long the bot will wait outside a lair for it to fill, rather than give way to
+    /// the rules below; none by default.
+    #[serde(
+        default,
         deserialize_with = "crate::units::duration",
         serialize_with = "crate::units::ser_duration"
     )]
     #[schemars(schema_with = "crate::schema::duration")]
-    pub every: Duration,
+    pub wait: Duration,
+    /// Which lair next: `soonest`, the nearest that will be ready when the bot gets there,
+    /// else the one whose fight can start first; or `throughput`, the nearest, counting
+    /// time spent waiting as free.
+    #[serde(default)]
+    pub pick: Pick,
     #[serde(default)]
     pub when: When,
+}
+
+/// How a circuit picks its next lair.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Pick {
+    #[default]
+    Soonest,
+    Throughput,
 }
 
 /// Stay in a room and fight what comes.
@@ -173,11 +200,17 @@ impl<'de> Deserialize<'de> for RuleSpec {
         let e = de::Error::custom;
         match name.as_str() {
             "rest" => RestRule::deserialize(value).map(Self::Rest).map_err(e),
-            "hunt" => HuntRule::deserialize(value).map(Self::Hunt).map_err(e),
+            "circuit" => CircuitRule::deserialize(value)
+                .map(Self::Circuit)
+                .map_err(e),
             "camp" => CampRule::deserialize(value).map(Self::Camp).map_err(e),
             "gear" => GearRule::deserialize(value).map(Self::Gear).map_err(e),
+            "hunt" => Err(de::Error::custom(
+                "`hunt` is now a circuit of one lair (#67): \
+                 `circuit: { lairs: [small-cavern], respawn: { small-cavern: 4m } }`",
+            )),
             other => Err(de::Error::custom(format!(
-                "unknown rule `{other}`: rest, hunt, camp or gear"
+                "unknown rule `{other}`: rest, circuit, camp or gear"
             ))),
         }
     }
@@ -192,7 +225,7 @@ impl Serialize for RuleSpec {
         let mut m = s.serialize_map(Some(1))?;
         match self {
             Self::Rest(r) => m.serialize_entry("rest", r)?,
-            Self::Hunt(h) => m.serialize_entry("hunt", h)?,
+            Self::Circuit(c) => m.serialize_entry("circuit", c)?,
             Self::Camp(c) => m.serialize_entry("camp", c)?,
             Self::Gear(g) => m.serialize_entry("gear", g)?,
         }
@@ -207,11 +240,11 @@ impl JsonSchema for RuleSpec {
 
     fn json_schema(g: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A rule: a map with one key (rest, hunt, camp or gear), or the bare word `gear`.",
+            "description": "A rule: a map with one key (rest, circuit, camp or gear), or the bare word `gear`.",
             "anyOf": [
                 { "const": "gear" },
                 one_key("rest", g.subschema_for::<RestRule>()),
-                one_key("hunt", g.subschema_for::<HuntRule>()),
+                one_key("circuit", g.subschema_for::<CircuitRule>()),
                 one_key("camp", g.subschema_for::<CampRule>()),
                 one_key("gear", g.subschema_for::<GearRule>())
             ]
@@ -450,21 +483,34 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
                     check_amount(&format!("{at}.until.mp"), u.mp)?;
                 }
             }
-            RuleSpec::Hunt(h) => {
-                place(&h.at)?;
-                if h.monster.trim().is_empty() {
+            RuleSpec::Circuit(c) => {
+                if c.lairs.is_empty() {
                     return Err(ConfigError::at(
-                        format!("{at}.monster"),
-                        "a monster is needed",
+                        format!("{at}.lairs"),
+                        "a circuit needs at least one lair",
                     ));
                 }
-                if h.every.is_zero() {
+                if let Some(j) = c.lairs.iter().position(Place::is_blank) {
                     return Err(ConfigError::at(
-                        format!("{at}.every"),
-                        "must be more than 0s",
+                        format!("{at}.lairs[{j}]"),
+                        "a place is needed",
                     ));
                 }
-                check_when(&at, &h.when)?;
+                for (name, d) in &c.respawn {
+                    if !c.lairs.iter().any(|l| l.as_key() == name.trim()) {
+                        return Err(ConfigError::at(
+                            format!("{at}.respawn.{name}"),
+                            "isn't one of the circuit's lairs, as its `lairs:` writes it",
+                        ));
+                    }
+                    if d.is_zero() {
+                        return Err(ConfigError::at(
+                            format!("{at}.respawn.{name}"),
+                            "must be more than 0s",
+                        ));
+                    }
+                }
+                check_when(&at, &c.when)?;
             }
             RuleSpec::Camp(c) => place(&c.at)?,
             RuleSpec::Gear(g) => check_when(&at, &g.when)?,
@@ -504,7 +550,7 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
 fn always(rule: &RuleSpec) -> bool {
     match rule {
         RuleSpec::Camp(_) => true,
-        RuleSpec::Rest(_) | RuleSpec::Hunt(_) | RuleSpec::Gear(_) => false,
+        RuleSpec::Rest(_) | RuleSpec::Circuit(_) | RuleSpec::Gear(_) => false,
     }
 }
 

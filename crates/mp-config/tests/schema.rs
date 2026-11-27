@@ -80,7 +80,9 @@ fn the_schema_marks_what_the_loader_refuses() {
         "do:\n  - camp: {}\n",
         "do:\n  - camp: { at: arena }\n    rest: { at: road }\n",
         "do:\n  - camp: { at: { room: arena } }\n",
-        "do:\n  - hunt: { monster: bear, at: cave, every: soon }\n",
+        "do:\n  - circuit: { lairs: [cave], respawn: { cave: soon } }\n",
+        "do:\n  - circuit: { lairs: [cave], pick: fastest }\n",
+        "do:\n  - hunt: { monster: bear, at: cave, every: 4m }\n",
     ] {
         assert!(!errors(&r, bad).is_empty(), "{bad}");
     }

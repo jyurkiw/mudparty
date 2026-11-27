@@ -4,12 +4,14 @@
 //! That is where to look for a downed or nearly dead character to rescue.
 //!
 //! It also keeps each character's own statline while a bot has its own set (#34), so it
-//! survives a crash and is put back on the next clean logoff.
+//! survives a crash and is put back on the next clean logoff, and when each lair was last
+//! cleared (#67), so a circuit's clocks survive a restart.
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mp_engine::StatlineStore;
+use mp_engine::{LairClocks, StatlineStore};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
@@ -57,6 +59,12 @@ impl History {
                 character TEXT PRIMARY KEY,
                 original TEXT NOT NULL,
                 saved_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS lairs (
+                map INTEGER NOT NULL,
+                room INTEGER NOT NULL,
+                cleared_ms INTEGER NOT NULL,
+                PRIMARY KEY (map, room)
             );",
         )?;
         Ok(Self(Mutex::new(db)))
@@ -108,6 +116,38 @@ impl History {
     }
 }
 
+/// When each lair was last cleared (#67), by any bot: lairs are the world's. Kept as
+/// milliseconds since 1970, UTC.
+impl LairClocks for History {
+    fn last_cleared(&self, lair: (u32, u32)) -> Option<SystemTime> {
+        let ms: i64 = self
+            .0
+            .lock()
+            .expect("history lock")
+            .query_row(
+                "SELECT cleared_ms FROM lairs WHERE map = ?1 AND room = ?2",
+                params![lair.0, lair.1],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()?;
+        Some(UNIX_EPOCH + Duration::from_millis(u64::try_from(ms).ok()?))
+    }
+
+    // A failed write can't be reported from here; the session logs each lair cleared.
+    fn cleared(&self, lair: (u32, u32), at: SystemTime) {
+        let ms = at
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let _ = self.0.lock().expect("history lock").execute(
+            "INSERT INTO lairs (map, room, cleared_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (map, room) DO UPDATE SET cleared_ms = ?3",
+            params![lair.0, lair.1, ms],
+        );
+    }
+}
+
 impl StatlineStore for History {
     fn saved(&self, name: &str) -> Option<String> {
         self.0
@@ -143,7 +183,9 @@ impl StatlineStore for History {
 
 #[cfg(test)]
 mod tests {
-    use mp_engine::StatlineStore;
+    use std::time::{Duration, SystemTime};
+
+    use mp_engine::{LairClocks, StatlineStore};
 
     use super::History;
 
@@ -160,5 +202,21 @@ mod tests {
         assert_eq!(h.saved("Ermias").as_deref(), Some("[HP=%h]:"));
         h.clear("Ermias");
         assert_eq!(h.saved("Ermias"), None);
+    }
+
+    #[test]
+    fn a_lairs_clock_outlives_the_server() {
+        // Lairs are the world's, not a character's: any bot's kill starts the clock (#67).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mudparty.sqlite");
+        let h = History::open(&path).unwrap();
+        assert_eq!(h.last_cleared((1, 2156)), None);
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        h.cleared((1, 2156), at - Duration::from_secs(60));
+        h.cleared((1, 2156), at);
+        drop(h);
+        let h = History::open(&path).unwrap();
+        assert_eq!(h.last_cleared((1, 2156)), Some(at));
+        assert_eq!(h.last_cleared((1, 2150)), None);
     }
 }

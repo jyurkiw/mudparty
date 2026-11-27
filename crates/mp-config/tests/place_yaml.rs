@@ -116,7 +116,7 @@ prefer_not:
 do:
   - gear
   - rest: { at: road, when: { hp_below: 50% }, until: { hp: 90% } }
-  - hunt: { monster: cave bear, at: { room: 1/2156 }, every: 4m, when: { hp_at_least: 80% } }
+  - circuit: { lairs: [{ room: 1/2156 }], respawn: { 1/2156: 4m }, wait: 30s, pick: throughput, when: { hp_at_least: 80% } }
   - camp: { at: arena, look_every: 1500ms }
 "#;
 
@@ -137,7 +137,7 @@ fn a_routine_written_back_reads_the_same() {
     let text = r.to_yaml();
     assert_eq!(routine(&text).unwrap(), r, "{text}");
     assert!(text.contains("look_every: 1500ms"), "{text}");
-    assert!(text.contains("every: 4m"), "{text}");
+    assert!(text.contains("1/2156: 4m"), "{text}");
     // Written inline in a character's file, it reads the same too.
     let c = CharacterConfig::from_yaml(&format!(
         "schema: 1\nname: Ermias\nroutine:\n{}",

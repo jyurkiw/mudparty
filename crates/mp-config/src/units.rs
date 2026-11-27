@@ -1,6 +1,7 @@
 //! Durations (`250ms`, `30s`, `5m`, `1h`) and sizes (`512KB`, `1MB`, a plain number of
 //! bytes) as the config files write them.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serializer, de};
@@ -60,6 +61,25 @@ pub fn format_duration(d: Duration) -> String {
 /// A duration as [`duration`] reads it.
 pub fn ser_duration<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&format_duration(*d))
+}
+
+/// A map of names to durations: `{ small-cavern: 4m }`.
+pub fn durations<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Duration>, D::Error> {
+    BTreeMap::<String, String>::deserialize(d)?
+        .into_iter()
+        .map(|(k, v)| {
+            parse_duration(&v)
+                .map(|d| (k.clone(), d))
+                .map_err(|e| de::Error::custom(format!("{k}: {e}")))
+        })
+        .collect()
+}
+
+pub fn ser_durations<S: Serializer>(
+    m: &BTreeMap<String, Duration>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.collect_map(m.iter().map(|(k, d)| (k, format_duration(*d))))
 }
 
 pub fn opt_size<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {

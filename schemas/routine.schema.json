@@ -86,6 +86,47 @@
       ],
       "type": "object"
     },
+    "CircuitRule": {
+      "additionalProperties": false,
+      "description": "Visit lairs as each fills again (#67, design §14.7), as MudPlay's Auto-Lair: a lair's\nclock starts at its last kill, and it's ready its respawn time later. The bot waits\nnext door, never stepping in early, and kills all it finds. A hunt of one monster is a\ncircuit of one lair. When no lair is ready the rules below it run.",
+      "properties": {
+        "lairs": {
+          "description": "The lairs, as places.",
+          "items": {
+            "$ref": "#/$defs/Place"
+          },
+          "type": "array"
+        },
+        "pick": {
+          "$ref": "#/$defs/Pick",
+          "default": "soonest",
+          "description": "Which lair next: `soonest`, the nearest that will be ready when the bot gets there,\nelse the one whose fight can start first; or `throughput`, the nearest, counting\ntime spent waiting as free."
+        },
+        "respawn": {
+          "additionalProperties": {
+            "description": "A duration: `250ms`, `30s`, `5m` or `1h`.",
+            "pattern": "^\\s*(\\d+(ms|s|m|h)|\\$\\{[^}]+\\})\\s*$",
+            "type": "string"
+          },
+          "description": "How long after its last kill each lair fills again, by the lair as written (its room\nnumber for the long form): `{ small-cavern: 4m }`. A lair left out takes the compiled\nroom file's time.",
+          "type": "object"
+        },
+        "wait": {
+          "default": "0s",
+          "description": "How long the bot will wait outside a lair for it to fill, rather than give way to\nthe rules below; none by default.",
+          "pattern": "^\\s*(\\d+(ms|s|m|h)|\\$\\{[^}]+\\})\\s*$",
+          "type": "string"
+        },
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {}
+        }
+      },
+      "required": [
+        "lairs"
+      ],
+      "type": "object"
+    },
     "GearRule": {
       "additionalProperties": false,
       "description": "Keep the character's `gear:` (#55): check the inventory when the routine starts and\nafter each rest, put on what's carried but not in use, and buy what's missing.",
@@ -97,34 +138,13 @@
       },
       "type": "object"
     },
-    "HuntRule": {
-      "additionalProperties": false,
-      "description": "A monster with a known spawn room and respawn time, such as Newhaven's cave bear.",
-      "properties": {
-        "at": {
-          "$ref": "#/$defs/Place",
-          "description": "Its spawn room."
-        },
-        "every": {
-          "description": "How long after a kill, or a visit that found it gone, it's due again.",
-          "pattern": "^\\s*(\\d+(ms|s|m|h)|\\$\\{[^}]+\\})\\s*$",
-          "type": "string"
-        },
-        "monster": {
-          "description": "The monster's name. A name the room shows that ends with it counts (`big cave bear`\nis a `cave bear`).",
-          "type": "string"
-        },
-        "when": {
-          "$ref": "#/$defs/When",
-          "default": {}
-        }
-      },
-      "required": [
-        "monster",
-        "at",
-        "every"
+    "Pick": {
+      "description": "How a circuit picks its next lair.",
+      "enum": [
+        "soonest",
+        "throughput"
       ],
-      "type": "object"
+      "type": "string"
     },
     "Place": {
       "anyOf": [
@@ -229,12 +249,12 @@
         {
           "additionalProperties": false,
           "properties": {
-            "hunt": {
-              "$ref": "#/$defs/HuntRule"
+            "circuit": {
+              "$ref": "#/$defs/CircuitRule"
             }
           },
           "required": [
-            "hunt"
+            "circuit"
           ],
           "type": "object"
         },
@@ -263,7 +283,7 @@
           "type": "object"
         }
       ],
-      "description": "A rule: a map with one key (rest, hunt, camp or gear), or the bare word `gear`."
+      "description": "A rule: a map with one key (rest, circuit, camp or gear), or the bare word `gear`."
     },
     "When": {
       "additionalProperties": false,

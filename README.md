@@ -272,21 +272,36 @@ do:
       at: road
       when: { hp_below: "${rest_below}" }
       until: { hp: 100% }    # the character's rest.stop_when_all when left out
-  - hunt:                    # when due and HP allows: the bear's cavern
-      monster: cave bear     # "big cave bear" counts too
-      at: dungeon:small-cavern-2156
-      every: 4m              # due again this long after a kill, or a visit that found it gone
+  - circuit:                 # when a lair is ready and HP allows: the bear's cavern
+      lairs: [bear]          # an alias of dungeon:small-cavern-2156
+      respawn: { bear: 4m }  # how long after its last kill it fills; the room file's if left out
       when: { hp_at_least: "${bear_hp}" }
   - camp:                    # otherwise: stay in the arena and fight what comes
       at: arena
       look_every: 5s         # the default
 ```
 
-The rules are `rest`, `hunt`, `camp` and `gear` (below). A rule's `when` (`hp_below`, `mp_below`,
-`hp_at_least`, `mp_at_least`) says when it starts; once started it runs until it's done,
-unless a rule above it starts, which takes over once no fight is going on. A hunt that
-was cut short is still due. `road` and `arena` are aliases in `places/newhaven.local.yaml`
-(see [Places](#places)), since Newhaven has two of each.
+The rules are `rest`, `circuit`, `camp` and `gear` (below). A rule's `when` (`hp_below`,
+`mp_below`, `hp_at_least`, `mp_at_least`) says when it starts; once started it runs until
+it's done, unless a rule above it starts, which takes over once no fight is going on.
+`road`, `arena` and `bear` are aliases in `places/newhaven.local.yaml` (see
+[Places](#places)), since Newhaven has two of each.
+
+A `circuit` visits lairs as each fills again. A lair's clock starts at its last kill, and
+it's ready its `respawn` later; one not seen yet is ready now. The circuit applies when a
+lair will be ready by the time the bot gets there. It takes the nearest such lair, walks to
+the room next door (a lair fills when it's entered, so the bot never steps in early), goes
+in when it's ready, and kills everything there. Then it plans again from where it stands,
+and when no lair is ready the rules below run. A lair's clock is kept in `mudparty.sqlite`,
+so it survives a restart, and a lair cut short by a rest is still ready afterwards.
+
+- `wait: 1m` lets the bot wait next door for a lair that will be ready within a minute,
+  instead of giving way to the rules below; with none ready on arrival, it waits for the
+  one whose fight can start soonest.
+- `pick: throughput` takes the nearest lair, counting time spent waiting as free.
+- `respawn` is keyed by the lair as `lairs:` writes it (by room number, `1/2156`, for the
+  long form). A lair left out takes the compiled room file's time; silvermere counts it in
+  whole minutes, so a minute more may be needed.
 
 A character names the routine, and may change its parameters:
 
@@ -326,7 +341,8 @@ do:
   - camp: { at: arena }
 ```
 
-The card shows where the routine is: camping, going to rest, resting, hunting. `@stop` (or
+The card shows where the routine is: camping, going to rest, resting, going to a lair,
+waiting for one to fill, killing. `@stop` (or
 the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where
 it was. While it runs, the page's Go box is refused, since the routine is walking the bot.
 

@@ -9,10 +9,10 @@
 //! through unchanged both ways, and the engines read what the game says (the tap) but
 //! decide nothing.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use mp_config::{Amount, Automation};
 use mp_log::{CharacterLogs, Header, Source, StreamRolls, SystemClock};
@@ -89,6 +89,22 @@ pub struct SessionSpec {
     pub statline_restore: bool,
     /// A solo bot's loop (#53), or none. A seated or unattended character runs none.
     pub routine: Option<RoutineSettings>,
+}
+
+/// When the routine's lairs were last cleared, as kept, turned into this run's clock. A time
+/// still to come (the clock was set back) counts as now.
+fn kept_clocks(set: &RoutineSettings, now: Instant) -> BTreeMap<(u32, u32), Instant> {
+    let Some(store) = &set.lair_clocks else {
+        return BTreeMap::new();
+    };
+    let wall = SystemTime::now();
+    set.lairs()
+        .filter_map(|l| {
+            let at = store.last_cleared(l.at)?;
+            let ago = wall.duration_since(at).unwrap_or_default();
+            Some((l.at, now.checked_sub(ago)?))
+        })
+        .collect()
 }
 
 /// Keeps a character's own statline while a bot has its own set (#34, design §6.1).
@@ -914,6 +930,17 @@ impl Runner {
             run.last_look = now;
             pacer.push("");
         }
+        // Each lair cleared, kept for the next run (#67).
+        for (lair, at) in run.routine.take_cleared() {
+            self.event(
+                "lair_cleared",
+                json!({"lair": format!("{}/{}", lair.0, lair.1)}),
+            );
+            if let Some(store) = &run.routine.settings().lair_clocks {
+                let ago = Instant::now().saturating_duration_since(at);
+                store.cleared(lair, SystemTime::now() - ago);
+            }
+        }
         for note in run.routine.take_notes() {
             self.event("routine_note", json!({"note": note}));
             self.report(Report::RoutineNote(note));
@@ -1072,7 +1099,11 @@ impl Runner {
             .clone()
             .filter(|_| seat.is_none())
             .map(|set| Running {
-                routine: Routine::new(set, Instant::now()),
+                routine: {
+                    let now = Instant::now();
+                    let clocks = kept_clocks(&set, now);
+                    Routine::with_clocks(set, clocks, now)
+                },
                 goal: None,
                 walking: false,
                 resting: false,

@@ -11,7 +11,7 @@
 //! the exits' parameter slots). The few fields whose meaning depends on the room are
 //! explained where they are read.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -823,6 +823,10 @@ struct Found {
     name: String,
     /// What its shop sells.
     sells: Vec<String>,
+    /// A lair's respawn as the file writes it (`2m`, `server default`).
+    lair_respawn: Option<String>,
+    /// Where its exits lead, as the file writes them, by direction word.
+    exits: Vec<String>,
 }
 
 /// Every area in a `places/` folder, with the local files' aliases, for naming rooms
@@ -870,6 +874,15 @@ impl Places {
                     slug,
                     name: room.name,
                     sells: room.shop.map(|s| s.sells).unwrap_or_default(),
+                    lair_respawn: room.lair.map(|l| l.respawn),
+                    exits: room
+                        .exits
+                        .into_values()
+                        .map(|e| match e {
+                            Exit::To(to) => to,
+                            Exit::Special(s) => s.to,
+                        })
+                        .collect(),
                 });
             }
         }
@@ -903,6 +916,43 @@ impl Places {
             .iter()
             .find(|f| f.key == key)
             .map(|f| f.name.as_str())
+    }
+
+    /// A lair's respawn time as its file writes it (`2m`, or `server default` when the room
+    /// sets none); none for a room that isn't a lair (#67).
+    pub fn lair_respawn(&self, key: (u32, u32)) -> Option<&str> {
+        self.rooms
+            .iter()
+            .find(|f| f.key == key)
+            .and_then(|f| f.lair_respawn.as_deref())
+    }
+
+    /// Where a bot waits for the lair `key` to fill (#67, design §14.7): the nearest room by
+    /// exits that isn't a lair itself, never passing through a room in `avoid`; of rooms as
+    /// near, the first by direction word. A lair fills when a player walks in, so waiting
+    /// inside would start it early. Lairs next to each other are walked through, as the bot
+    /// would.
+    pub fn wait_room(&self, key: (u32, u32), avoid: &BTreeSet<(u32, u32)>) -> Option<(u32, u32)> {
+        let mut seen = BTreeSet::from([key]);
+        let mut queue = VecDeque::from([key]);
+        while let Some(k) = queue.pop_front() {
+            let Some(room) = self.rooms.iter().find(|f| f.key == k) else {
+                continue;
+            };
+            for to in &room.exits {
+                let Ok(next) = self.resolve_plain(to, Some(&room.area)) else {
+                    continue;
+                };
+                if avoid.contains(&next) || !seen.insert(next) {
+                    continue;
+                }
+                if self.lair_respawn(next).is_none() {
+                    return Some(next);
+                }
+                queue.push_back(next);
+            }
+        }
+        None
     }
 
     /// The shops that sell `item` (case-blind), those in `area` first, then by key.

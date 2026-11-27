@@ -18,7 +18,7 @@ params:
 do:
   - gear
   - rest: { at: road, when: { hp_below: \"${rest_below}\" } }
-  - hunt: { monster: cave bear, at: dungeon:small-cavern-2156, every: 4m }
+  - circuit: { lairs: [dungeon:small-cavern-2156] }
   - camp: { at: arena }
 ";
 
@@ -85,6 +85,8 @@ fn the_newhaven_files_print_as_the_server_reads_them() {
     for want in ["look_every: 5s", "hp_below: 60%", "until:", "statline:"] {
         assert!(t.contains(want), "{want:?} in:\n{t}");
     }
+    // The cavern's respawn time, from the room file, keyed by its room number.
+    assert!(t.contains("1/2156: 2m"), "{t}");
     // Where each item would be bought.
     assert!(t.contains("club") && t.contains("1/2141"), "{t}");
     assert!(t.contains("padded vest") && t.contains("1/2142"), "{t}");
@@ -176,6 +178,45 @@ fn a_room_whose_name_has_changed_is_said() {
     assert!(
         p.contains("Newhaven, Pit") && p.contains("Newhaven, Arena"),
         "{p}"
+    );
+}
+
+#[test]
+fn a_lair_with_no_time_or_nowhere_to_wait_is_said() {
+    // The arena isn't a lair, so how long it takes to fill isn't known.
+    let routine = ARENA.replace("lairs: [dungeon:small-cavern-2156]", "lairs: [arena]");
+    let dir = root(&routine, ERMIAS);
+    let c = run(dir.path(), "characters/Ermias.yaml", None);
+    assert!(
+        c.problems.iter().any(
+            |l| l.starts_with("routines/newhaven-arena.yaml: do[2].lairs[0]: ")
+                && l.contains("isn't a lair")
+        ),
+        "{:?}",
+        c.problems
+    );
+    // Given one, it checks.
+    let routine = ARENA.replace(
+        "lairs: [dungeon:small-cavern-2156]",
+        "lairs: [arena], respawn: { arena: 3m }",
+    );
+    let dir = root(&routine, ERMIAS);
+    let c = run(dir.path(), "characters/Ermias.yaml", None);
+    assert_eq!(c.problems, Vec::<String>::new());
+    // The bot waits for the cavern in the arena, past the Dungeon Entrance (a lair of rats
+    // itself); with the arena avoided there's nowhere to wait.
+    let routine = ARENA
+        .replace("do:\n", "avoid:\n  rooms: [arena]\ndo:\n")
+        .replace("  - camp: { at: arena }\n", "  - camp: { at: road }\n");
+    let dir = root(&routine, ERMIAS);
+    let c = run(dir.path(), "characters/Ermias.yaml", None);
+    assert!(
+        c.problems.iter().any(
+            |l| l.starts_with("routines/newhaven-arena.yaml: do[2].lairs[0]: ")
+                && l.contains("nowhere to wait")
+        ),
+        "{:?}",
+        c.problems
     );
 }
 

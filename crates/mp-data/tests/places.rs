@@ -2,6 +2,7 @@
 //! silvermere's database, read back, and rooms named in it by alias, slug, the game's
 //! name, or key. Run against the stock world, whose Newhaven the 1.0 bot plays.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::sync::OnceLock;
 
@@ -201,4 +202,20 @@ fn a_local_alias_to_a_room_that_isnt_there_is_refused() {
     let e = Places::load(dir.path()).unwrap_err().to_string();
     assert!(e.contains("tavern"), "{e}");
     assert!(e.contains("newhaven.local.yaml"), "{e}");
+}
+
+#[test]
+fn a_lair_knows_its_respawn_and_where_to_wait_outside_it() {
+    let (_dir, p) = places();
+    assert_eq!(p.lair_respawn((1, 2156)), Some("2m"));
+    assert_eq!(p.lair_respawn((1, 2152)), Some("1m"));
+    assert_eq!(p.lair_respawn((1, 2150)), None);
+    // A lair fills when it's entered, so a bot waits outside, in the nearest room that
+    // isn't a lair. The cavern's one way out is the Dungeon Entrance, a lair of rats
+    // itself, so that's the arena past it.
+    assert_eq!(p.wait_room((1, 2156), &BTreeSet::new()), Some((1, 2150)));
+    // With the arena avoided, there's nowhere to wait.
+    assert_eq!(p.wait_room((1, 2156), &BTreeSet::from([(1, 2150)])), None);
+    // The entrance's own wait-room is the arena next door.
+    assert_eq!(p.wait_room((1, 2152), &BTreeSet::new()), Some((1, 2150)));
 }
