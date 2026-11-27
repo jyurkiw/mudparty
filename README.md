@@ -6,8 +6,10 @@ bots, each with its own link to the game. The bots log in, join your party, figh
 tiers, rest and tell you to wait, and answer MegaMud-style @ commands. A web page shows
 the whole party and lets you order the bots around.
 
-The design is in [design/architecture.md](design/architecture.md), and progress is tracked
-in this repository's issues.
+**[The wiki](https://github.com/jyurkiw/mudparty/wiki)** covers every setting and every
+script you write by hand, with worked examples: a party you lead from MudPlay, and a bot
+that plays Newhaven alone. The design is in [design/architecture.md](design/architecture.md),
+and progress is tracked in this repository's issues.
 
 ## Status
 
@@ -343,7 +345,7 @@ routine:
 gear:                        # what it carries, kept by the routine's gear rule
   - { item: club, use: wield }
   - { item: padded vest, use: wear }
-  - { item: padded pants, use: wear, at: armour-shop }   # at: a shop of your choosing
+  - { item: padded pants, use: wear, at: newhaven:armour-shop }   # at: a shop of your choosing
   - { item: torch, use: light }                          # lit, to see in a dark room
 ```
 
@@ -414,9 +416,10 @@ The whole-system test `crates/mudparty-server/tests/newhaven.rs` runs these file
 stock world. Its warrior has its creation points in strength, health and agility; one
 created with none spent is too weak for the bear.
 
-Section 7.3 of [the design](design/architecture.md#73-charactersnameyaml) lists every
-setting. The server watches `characters/`, and a running bot picks up an edited file
-without restarting.
+[The wiki's Character Files page](https://github.com/jyurkiw/mudparty/wiki/Character-Files)
+lists every setting. The server watches `characters/`: an edited file shows on the
+character's card at once, with its error if it doesn't read. A running bot takes a new
+`statline` straight away; for any other change, stop and start the bot.
 
 ## Places
 
