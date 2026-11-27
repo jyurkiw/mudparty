@@ -74,6 +74,25 @@ pub enum RuleSpec {
     Circuit(CircuitRule),
     Camp(CampRule),
     Gear(GearRule),
+    Train(TrainRule),
+}
+
+/// Train a level at a trainer whenever the experience for it is there (#56): `- train`,
+/// or `- train: { at: guild, up_to: 3 }`. The fee is the game's (5 silver a level in
+/// Newhaven); one the bot can't pay is said, and tried again later.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TrainRule {
+    /// The trainer; left out, those the compiled room files say train the character's
+    /// class (or any class), in the routine's `places` area first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Place>,
+    /// The highest level to train to: an arena's top level, say, since a level above it
+    /// locks the bot out. Left out, as high as the trainer goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<u32>,
+    #[serde(default)]
+    pub when: When,
 }
 
 /// Keep the character's `gear:` (#55): check the inventory when the routine starts and
@@ -205,12 +224,13 @@ impl<'de> Deserialize<'de> for RuleSpec {
                 .map_err(e),
             "camp" => CampRule::deserialize(value).map(Self::Camp).map_err(e),
             "gear" => GearRule::deserialize(value).map(Self::Gear).map_err(e),
+            "train" => TrainRule::deserialize(value).map(Self::Train).map_err(e),
             "hunt" => Err(de::Error::custom(
                 "`hunt` is now a circuit of one lair (#67): \
                  `circuit: { lairs: [small-cavern], respawn: { small-cavern: 4m } }`",
             )),
             other => Err(de::Error::custom(format!(
-                "unknown rule `{other}`: rest, circuit, camp or gear"
+                "unknown rule `{other}`: rest, circuit, camp, gear or train"
             ))),
         }
     }
@@ -222,12 +242,16 @@ impl Serialize for RuleSpec {
         if matches!(self, Self::Gear(g) if *g == GearRule::default()) {
             return s.serialize_str("gear");
         }
+        if matches!(self, Self::Train(t) if *t == TrainRule::default()) {
+            return s.serialize_str("train");
+        }
         let mut m = s.serialize_map(Some(1))?;
         match self {
             Self::Rest(r) => m.serialize_entry("rest", r)?,
             Self::Circuit(c) => m.serialize_entry("circuit", c)?,
             Self::Camp(c) => m.serialize_entry("camp", c)?,
             Self::Gear(g) => m.serialize_entry("gear", g)?,
+            Self::Train(t) => m.serialize_entry("train", t)?,
         }
         m.end()
     }
@@ -240,13 +264,15 @@ impl JsonSchema for RuleSpec {
 
     fn json_schema(g: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A rule: a map with one key (rest, circuit, camp or gear), or the bare word `gear`.",
+            "description": "A rule: a map with one key (rest, circuit, camp, gear or train), or the bare word `gear` or `train`.",
             "anyOf": [
                 { "const": "gear" },
+                { "const": "train" },
                 one_key("rest", g.subschema_for::<RestRule>()),
                 one_key("circuit", g.subschema_for::<CircuitRule>()),
                 one_key("camp", g.subschema_for::<CampRule>()),
-                one_key("gear", g.subschema_for::<GearRule>())
+                one_key("gear", g.subschema_for::<GearRule>()),
+                one_key("train", g.subschema_for::<TrainRule>())
             ]
         })
     }
@@ -514,6 +540,18 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
             }
             RuleSpec::Camp(c) => place(&c.at)?,
             RuleSpec::Gear(g) => check_when(&at, &g.when)?,
+            RuleSpec::Train(t) => {
+                if let Some(p) = &t.at {
+                    place(p)?;
+                }
+                if t.up_to.is_some_and(|l| l < 2) {
+                    return Err(ConfigError::at(
+                        format!("{at}.up_to"),
+                        "the level to train up to: 2 or more",
+                    ));
+                }
+                check_when(&at, &t.when)?;
+            }
         }
         // A rule below one that always applies would never run.
         if let Some(j) = r.rules[..i].iter().position(always) {
@@ -550,7 +588,7 @@ pub(crate) fn check(r: &Routine) -> Result<(), ConfigError> {
 fn always(rule: &RuleSpec) -> bool {
     match rule {
         RuleSpec::Camp(_) => true,
-        RuleSpec::Rest(_) | RuleSpec::Circuit(_) | RuleSpec::Gear(_) => false,
+        RuleSpec::Rest(_) | RuleSpec::Circuit(_) | RuleSpec::Gear(_) | RuleSpec::Train(_) => false,
     }
 }
 

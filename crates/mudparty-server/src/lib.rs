@@ -1198,6 +1198,16 @@ impl Server {
                         when: g.when,
                     }
                 }
+                // The trainer its `at:` names, or those the compiled room files say train
+                // the character's class (#56).
+                RuleSpec::Train(t) => RuleSettings::Train {
+                    trainers: match &t.at {
+                        Some(p) => vec![at(field, p)?],
+                        None => self.places.trainers(c.class.as_deref(), area),
+                    },
+                    up_to: t.up_to,
+                    when: t.when,
+                },
             });
         }
         Ok(Some(RoutineSettings {
@@ -1278,8 +1288,8 @@ impl RoomBook for GameRooms {
         let key = |(m, r): (u32, u32)| (i64::from(m), i64::from(r));
         let gd = self.0.lock().expect("gamedata lock");
         let gd = gd.as_ref().ok_or("no game data to plan a walk on")?;
-        // The bot's level isn't known yet (#56): the game decides a level exit.
-        let rules = data_rules(rules, None);
+        // With the level unknown (#56), the game decides a level exit.
+        let rules = data_rules(rules, rules.level);
         let steps = gd
             .route_with(key(from), key(to), &rules)
             .map_err(|e| e.to_string())?;

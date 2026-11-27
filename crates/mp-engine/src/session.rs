@@ -34,7 +34,7 @@ use crate::remote::{
     status_reply, where_reply,
 };
 use crate::rest::{RestSettings, Rester};
-use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen};
+use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen, TrainEnd};
 use crate::shop::{EquipState, Equipper, InventoryReader};
 use crate::walk::{RouteRules, WalkState, Walker};
 
@@ -312,6 +312,10 @@ struct Running {
     inventory: InventoryReader,
     /// Buying and putting on an item, for the routine.
     equipper: Option<Equipper>,
+    /// When `train` went for the routine, and whether it's gone twice (#56).
+    training: Option<(Instant, bool)>,
+    /// When `exp` went for the routine, while its answer is awaited.
+    asked_exp: Option<Instant>,
 }
 
 /// What [`Runner::watch_states`] last reported, so only changes are.
@@ -437,6 +441,8 @@ struct Runner {
     exp_made: i64,
     exp_since: Option<Instant>,
     exp_known: Option<ExpKnown>,
+    /// The character's level, as `exp` or a training last said (#56).
+    level: Option<u32>,
     last_vitals: Option<Vitals>,
 }
 
@@ -791,6 +797,32 @@ impl Runner {
             }
             _ => {}
         }
+        // A `train` the routine asked for (#56): its answer, or none in time.
+        if let Some((at, resent)) = run.training {
+            let end = match item {
+                Some(Item::Event(Event::Trained { level })) => Some(TrainEnd::Trained(*level)),
+                Some(Item::Event(Event::TrainNoExp)) => Some(TrainEnd::NoExp),
+                Some(Item::Event(Event::TrainNoMoney)) => Some(TrainEnd::NoMoney),
+                Some(Item::Event(Event::TrainRefused { text })) => {
+                    Some(TrainEnd::Refused(text.clone()))
+                }
+                None if now.duration_since(at) >= GEAR_WAIT && resent => Some(TrainEnd::NoAnswer),
+                None if now.duration_since(at) >= GEAR_WAIT => {
+                    pacer.push("train");
+                    run.training = Some((now, true));
+                    None
+                }
+                _ => None,
+            };
+            if let Some(end) = end {
+                run.training = None;
+                self.decision("trained", json!({"end": format!("{end:?}")}));
+                run.routine.train_ended(end, now);
+            }
+        }
+        if item.is_some_and(|i| matches!(i, Item::Event(Event::ExpLine { .. }))) {
+            run.asked_exp = None;
+        }
         if let Some(e) = &mut run.equipper {
             let lines = match item {
                 Some(i) => e.on_item(i, now),
@@ -836,7 +868,19 @@ impl Runner {
                 .map_or_else(Vec::new, |c| c.monsters().to_vec()),
             room,
             walking: walker.is_some(),
+            exp: self.exp_known,
         };
+        // A routine that trains wants the level and experience: `exp` while unknown.
+        if run.routine.wants_exp()
+            && self.exp_known.is_none()
+            && walker.is_none()
+            && run
+                .asked_exp
+                .is_none_or(|at| now.duration_since(at) >= GEAR_WAIT)
+        {
+            pacer.push("exp");
+            run.asked_exp = Some(now);
+        }
         run.routine
             .set_paused(self.auto.stopped || self.auto.all_off);
         if let Some(end) = ended
@@ -859,6 +903,7 @@ impl Runner {
             // A gear step the routine no longer wants is let go.
             run.equipper = None;
             run.asked_inventory = None;
+            run.training = None;
             // A walk the routine started and no longer wants is called off.
             if run.walking {
                 run.walking = false;
@@ -869,8 +914,10 @@ impl Runner {
             match &goal {
                 Goal::Walk(to) => match self.spec.rooms.clone() {
                     Some(book) => {
-                        let mut w = Walker::new(*to, book, WALK_STEP_WAIT)
-                            .with_rules(run.routine.route_rules().clone());
+                        // The level exits it may take, as far as its level is known.
+                        let mut rules = run.routine.route_rules().clone();
+                        rules.level = self.level;
+                        let mut w = Walker::new(*to, book, WALK_STEP_WAIT).with_rules(rules);
                         for line in w.start(now) {
                             pacer.push(line);
                         }
@@ -915,6 +962,10 @@ impl Runner {
                         pacer.push(line);
                     }
                     run.equipper = Some(e);
+                }
+                Goal::Train => {
+                    pacer.push("train");
+                    run.training = Some((now, false));
                 }
                 Goal::Wait => {}
             }
@@ -1112,6 +1163,8 @@ impl Runner {
                 asked_inventory: None,
                 inventory: InventoryReader::default(),
                 equipper: None,
+                training: None,
+                asked_exp: None,
             });
         // silvermere saves the statline with the character, so one this bot played before
         // comes back with the bot's own statline; read that as well as the defaults.
@@ -1282,12 +1335,23 @@ impl Runner {
                         match &t.item {
                             Item::Event(Event::ExpGain { exp }) => {
                                 self.exp_made += exp;
+                                // Still needed for the next level, less what's gained.
+                                if let Some(k) = &mut self.exp_known {
+                                    k.left = (k.left - exp).max(0);
+                                }
                             }
+                            // A new level: what it needs isn't known until `exp` again.
+                            Item::Event(Event::Trained { level }) => {
+                                self.exp_known = None;
+                                self.level = Some(*level);
+                            }
+                            Item::Event(Event::TrainNoExp) => self.exp_known = None,
                             Item::Event(Event::ExpLine { level, left, .. }) => {
                                 self.exp_known = Some(ExpKnown {
                                     level: *level,
                                     left: *left,
                                 });
+                                self.level = Some(*level);
                                 self.answer(&mut pacer, |q| q == Query::Exp, None, &Doing::of(&combat, &rester, now));
                             }
                             Item::Event(Event::ProfileStatline { mode }) if probe.is_some() => {
@@ -1626,6 +1690,7 @@ async fn run_from(
         exp_made: 0,
         exp_since: None,
         exp_known: None,
+        level: None,
         last_vitals: None,
         spec,
         reports,

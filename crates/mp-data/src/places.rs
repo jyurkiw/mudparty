@@ -827,6 +827,8 @@ struct Found {
     lair_respawn: Option<String>,
     /// Where its exits lead, as the file writes them, by direction word.
     exits: Vec<String>,
+    /// A training shop's class: `any class`, or the class's name.
+    trains: Option<String>,
 }
 
 /// Every area in a `places/` folder, with the local files' aliases, for naming rooms
@@ -873,6 +875,7 @@ impl Places {
                     area: a.area.clone(),
                     slug,
                     name: room.name,
+                    trains: room.shop.as_ref().and_then(|s| s.trains.clone()),
                     sells: room.shop.map(|s| s.sells).unwrap_or_default(),
                     lair_respawn: room.lair.map(|l| l.respawn),
                     exits: room
@@ -953,6 +956,22 @@ impl Places {
             }
         }
         None
+    }
+
+    /// The trainers for `class` (#56): training shops for any class or for that one
+    /// (case-blind), those in `area` first, then by key. With no class, those for any class.
+    pub fn trainers(&self, class: Option<&str>, area: Option<&str>) -> Vec<(u32, u32)> {
+        let mut found: Vec<&Found> = self
+            .rooms
+            .iter()
+            .filter(|f| {
+                f.trains.as_deref().is_some_and(|t| {
+                    t == "any class" || class.is_some_and(|c| t.eq_ignore_ascii_case(c.trim()))
+                })
+            })
+            .collect();
+        found.sort_by_key(|f| (area.is_none_or(|a| f.area != a), f.key));
+        found.iter().map(|f| f.key).collect()
     }
 
     /// The shops that sell `item` (case-blind), those in `area` first, then by key.

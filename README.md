@@ -281,7 +281,7 @@ do:
       look_every: 5s         # the default
 ```
 
-The rules are `rest`, `circuit`, `camp` and `gear` (below). A rule's `when` (`hp_below`,
+The rules are `rest`, `circuit`, `camp`, `gear` and `train` (below). A rule's `when` (`hp_below`,
 `mp_below`, `hp_at_least`, `mp_at_least`) says when it starts; once started it runs until
 it's done, unless a rule above it starts, which takes over once no fight is going on.
 `road`, `arena` and `bear` are aliases in `places/newhaven.local.yaml` (see
@@ -338,11 +338,25 @@ name: newhaven-start
 places: newhaven
 do:
   - gear
+  - train: { up_to: 3 }      # the arena takes levels 1 to 3
   - camp: { at: arena }
 ```
 
+A `train` rule (`- train`, or `- train: { at: guild, up_to: 3 }`) trains a level whenever
+the bot has the experience for it. The routine asks the game with `exp` and counts what's
+gained after. With enough for the next level, and the next no higher than `up_to`, the bot
+walks to a trainer and sends `train`. It then waits there for the new level's experience,
+and trains again or goes on. Without `at:` it trains at the first of the compiled room
+files' trainers for the character's `class:` (or any class), those in the routine's
+`places` area first. Newhaven's Adventurer's Guild trains any class, for 5 silver a level.
+If it can't pay (or the game says the experience isn't there), that's noted on the card
+and tried again in 5 minutes. A trainer that won't train the bot (another class's, or a
+level outside its own) gives way to the next; with none left, training stops until the bot
+restarts. Put `up_to` at an arena's top level, since a level above it locks the bot out.
+Once the level is known, walks keep out of level exits that won't let the bot through.
+
 The card shows where the routine is: camping, going to rest, resting, going to a lair,
-waiting for one to fill, killing. `@stop` (or
+waiting for one to fill, killing, going to train, training. `@stop` (or
 the page's Pause) pauses it with the rest of the bot, and `@rego` (Go on) picks it up where
 it was. While it runs, the page's Go box is refused, since the routine is walking the bot.
 

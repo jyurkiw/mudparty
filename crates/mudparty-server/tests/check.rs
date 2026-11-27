@@ -246,3 +246,25 @@ fn the_local_file_prints_each_alias_as_its_room() {
     // It's still a local file.
     serde_norway::from_str::<mp_data::places::Local>(&c.text).unwrap();
 }
+
+#[test]
+fn a_train_rule_needs_a_trainer_it_can_walk_to() {
+    // No trainer named: the Adventurer's Guild trains any class.
+    let routine = ARENA.replace("  - gear\n", "  - gear\n  - train: { up_to: 3 }\n");
+    let dir = root(&routine, ERMIAS);
+    let c = run(dir.path(), "characters/Ermias.yaml", None);
+    assert_eq!(c.problems, Vec::<String>::new());
+    assert!(c.text.contains("up_to: 3"), "{}", c.text);
+    // The guild is north of the Narrow Road; avoided, there's no way to it.
+    let routine = routine.replace("do:\n", "avoid:\n  rooms: [road]\ndo:\n");
+    let dir = root(&routine, ERMIAS);
+    let c = run(dir.path(), "characters/Ermias.yaml", None);
+    assert!(
+        c.problems
+            .iter()
+            .any(|l| l.starts_with("routines/newhaven-arena.yaml: do[1]: ")
+                && l.contains("no trainer can be walked to")),
+        "{:?}",
+        c.problems
+    );
+}

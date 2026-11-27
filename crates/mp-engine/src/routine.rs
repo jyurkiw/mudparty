@@ -19,6 +19,13 @@
 //!   item it can't get (no money, can't use it, no shop, no way there) is skipped, and
 //!   said ([`Routine::take_notes`]).
 //!
+//! - `train` (#56): once the bot has the experience for the next level, and the next is
+//!   no higher than `up_to`, walk to a trainer and `train`; then wait there for the new
+//!   level's experience (the session asks for `exp`), and train again or go on. No money
+//!   (or no experience, the game says) is said and tried again in 5 minutes; a trainer
+//!   that won't train the bot gives way to the next, and with none left training stops
+//!   until the bot restarts.
+//!
 //! **Taking over.** A rule's `when` says when it starts; once started it runs until it's
 //! done. A rule higher up that starts to apply takes over at a safe point, never mid-fight
 //! (fleeing is #16). A lair whose fight was cut short isn't cleared, so it's still ready
@@ -38,7 +45,7 @@ use std::time::{Duration, Instant, SystemTime};
 use mp_config::{GearUse, Pick, Pools, When};
 use mp_parse::Vitals;
 
-use crate::remote::RoomBook;
+use crate::remote::{ExpKnown, RoomBook};
 use crate::rest::below;
 use crate::shop::Carried;
 use crate::walk::{RouteRules, WalkState};
@@ -97,6 +104,30 @@ pub enum RuleSettings {
         items: Vec<GearSettings>,
         when: When,
     },
+    Train {
+        /// Best first.
+        trainers: Vec<(u32, u32)>,
+        /// The highest level to train to; none for as high as a trainer goes.
+        up_to: Option<u32>,
+        when: When,
+    },
+}
+
+/// How long after a training refused for want of money (or experience) it's tried again.
+const TRAIN_RETRY: Duration = Duration::from_secs(300);
+
+/// How a `train` the routine asked for ended (#56).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrainEnd {
+    /// Up a level, to this one.
+    Trained(u32),
+    NoExp,
+    NoMoney,
+    /// This trainer won't train the bot (another class's, a level outside its own), as
+    /// the game worded it.
+    Refused(String),
+    /// No answer, sent twice.
+    NoAnswer,
 }
 
 /// One item the character carries, and the shops that sell it, best first.
@@ -149,6 +180,8 @@ pub enum Goal {
         how: GearUse,
         buy: bool,
     },
+    /// Train a level here; tell the routine how it went ([`Routine::train_ended`]).
+    Train,
     /// Nothing: waiting to try again, or paused.
     Wait,
 }
@@ -172,6 +205,8 @@ pub enum RoutinePart {
     CheckingGear,
     ToShop(String),
     Equipping(String),
+    ToTrainer,
+    Training,
 }
 
 impl fmt::Display for RoutinePart {
@@ -190,6 +225,8 @@ impl fmt::Display for RoutinePart {
             Self::CheckingGear => f.write_str("checking gear"),
             Self::ToShop(item) => write!(f, "going to get {item}"),
             Self::Equipping(item) => write!(f, "getting {item}"),
+            Self::ToTrainer => f.write_str("going to train"),
+            Self::Training => f.write_str("training"),
         }
     }
 }
@@ -207,6 +244,9 @@ pub struct Seen {
     pub room: Option<(u32, u32)>,
     /// A walk is under way.
     pub walking: bool,
+    /// The level, and the experience still needed for the next, as `exp` last showed it
+    /// less what's been gained since; none until it's been asked (#56).
+    pub exp: Option<ExpKnown>,
 }
 
 /// What the rule under way is doing.
@@ -236,6 +276,12 @@ enum Doing {
     ToShop { item: usize, shop: usize },
     /// Buying (if `buy`) and putting on `items[item]`.
     Equip { item: usize, buy: bool },
+    /// Walking to `trainers[t]`.
+    ToTrainer { t: usize },
+    /// At `trainers[t]`, training.
+    Training { t: usize },
+    /// Trained: waiting where it is for the new level's experience.
+    AfterTrain,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +311,10 @@ pub struct Routine {
     skipped: BTreeSet<String>,
     /// What the card should be told: items skipped, and why.
     notes: Vec<String>,
+    /// Trainers that wouldn't train the bot, not tried again.
+    refused_trainers: BTreeSet<(u32, u32)>,
+    /// No training before this: refused for want of money or experience.
+    train_after: Option<Instant>,
 }
 
 /// A walk, `(from, to)`.
@@ -318,6 +368,8 @@ impl Routine {
             gear_due: true,
             skipped: BTreeSet::new(),
             notes: Vec::new(),
+            refused_trainers: BTreeSet::new(),
+            train_after: None,
         };
         r.pick(&Seen::default(), now, None);
         r
@@ -433,6 +485,17 @@ impl Routine {
             RuleSettings::Circuit(c) => holds(&c.when, s) && self.next_lair(c, s, now).is_some(),
             RuleSettings::Camp { .. } => true,
             RuleSettings::Gear { when, .. } => self.gear_due && holds(when, s),
+            RuleSettings::Train {
+                trainers,
+                up_to,
+                when,
+            } => {
+                holds(when, s)
+                    && s.exp
+                        .is_some_and(|e| e.left <= 0 && up_to.is_none_or(|u| e.level < u))
+                    && self.train_after.is_none_or(|t| now >= t)
+                    && self.next_trainer(trainers, 0).is_some()
+            }
         }
     }
 
@@ -496,6 +559,11 @@ impl Routine {
     fn begin(&self, rule: usize, s: &Seen, now: Instant) -> Doing {
         match &self.set.rules[rule] {
             RuleSettings::Gear { .. } => Doing::Checking,
+            RuleSettings::Train { trainers, .. } => match self.next_trainer(trainers, 0) {
+                Some(t) if s.room == Some(trainers[t]) => Doing::Training { t },
+                Some(t) => Doing::ToTrainer { t },
+                None => Doing::Walking,
+            },
             RuleSettings::Circuit(c) => match self.next_lair(c, s, now) {
                 Some(lair) if self.ready_at(&c.lairs[lair], now).is_none() => {
                     Doing::ToLair { lair }
@@ -565,6 +633,11 @@ impl Routine {
                 buy: *buy,
             },
             (RuleSettings::Gear { .. }, _) => Goal::Inventory,
+            (RuleSettings::Train { trainers, .. }, Doing::ToTrainer { t }) => {
+                Goal::Walk(trainers[*t])
+            }
+            (RuleSettings::Train { .. }, Doing::Training { .. }) => Goal::Train,
+            (RuleSettings::Train { .. }, _) => Goal::Wait,
         }
     }
 
@@ -600,6 +673,8 @@ impl Routine {
                 RoutinePart::Equipping(items[*item].item.clone())
             }
             (RuleSettings::Gear { .. }, _) => RoutinePart::CheckingGear,
+            (RuleSettings::Train { .. }, Doing::ToTrainer { .. }) => RoutinePart::ToTrainer,
+            (RuleSettings::Train { .. }, _) => RoutinePart::Training,
         }
     }
 
@@ -647,6 +722,10 @@ impl Routine {
                         doing: Doing::Walking,
                     });
                 }
+            }
+            // Trained: on once the new level's experience is known.
+            (RuleSettings::Train { .. }, Doing::AfterTrain) if s.exp.is_some() => {
+                self.pick(s, now, None);
             }
             (RuleSettings::Circuit(c), Doing::Waiting { lair }) => {
                 if self.ready_at(&c.lairs[*lair], now).is_none() {
@@ -760,8 +839,83 @@ impl Routine {
                         });
                     }
                 }
+                RuleSettings::Train { .. } => {
+                    if let Doing::ToTrainer { t } = a.doing {
+                        self.active = Some(Active {
+                            rule: a.rule,
+                            doing: Doing::Training { t },
+                        });
+                    }
+                }
             },
             _ => {}
+        }
+    }
+
+    /// Whether the routine wants to know the bot's experience: it trains (#56). The
+    /// session asks with `exp` while it isn't known.
+    pub fn wants_exp(&self) -> bool {
+        self.set
+            .rules
+            .iter()
+            .any(|r| matches!(r, RuleSettings::Train { .. }))
+    }
+
+    /// The first trainer from `from` on that hasn't refused the bot.
+    fn next_trainer(&self, trainers: &[(u32, u32)], from: usize) -> Option<usize> {
+        (from..trainers.len()).find(|&t| !self.refused_trainers.contains(&trainers[t]))
+    }
+
+    /// The `train` the routine asked for ended.
+    pub fn train_ended(&mut self, end: TrainEnd, now: Instant) {
+        let Some(Active {
+            rule,
+            doing: Doing::Training { t },
+        }) = self.active.clone()
+        else {
+            return;
+        };
+        let RuleSettings::Train { trainers, .. } = &self.set.rules[rule] else {
+            return;
+        };
+        let trainers = trainers.clone();
+        let last = self.last.clone();
+        match end {
+            TrainEnd::Trained(level) => {
+                self.notes.push(format!("trained to level {level}"));
+                self.active = Some(Active {
+                    rule,
+                    doing: Doing::AfterTrain,
+                });
+            }
+            TrainEnd::Refused(why) => {
+                self.refused_trainers.insert(trainers[t]);
+                match self.next_trainer(&trainers, t + 1) {
+                    Some(next) => {
+                        self.active = Some(Active {
+                            rule,
+                            doing: Doing::ToTrainer { t: next },
+                        });
+                    }
+                    None => {
+                        self.notes.push(format!(
+                            "no trainer will train it ({why}); training stopped"
+                        ));
+                        self.pick(&last, now, Some(rule));
+                    }
+                }
+            }
+            other => {
+                let why = match other {
+                    TrainEnd::NoMoney => "no money for the training fee",
+                    TrainEnd::NoExp => "the game says there isn't the experience yet",
+                    _ => "the trainer gave no answer",
+                };
+                self.notes
+                    .push(format!("couldn't train: {why}; trying again in 5m"));
+                self.train_after = Some(now + TRAIN_RETRY);
+                self.pick(&last, now, Some(rule));
+            }
         }
     }
 

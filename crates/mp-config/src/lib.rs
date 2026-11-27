@@ -20,8 +20,8 @@ pub use error::ConfigError;
 pub use files::{Loaded, Secrets, load_character, load_server, revision};
 pub use place::Place;
 pub use routine::{
-    Avoid, CampRule, CircuitRule, GearRule, Pick, RestRule, Routine, RoutineRef, RuleSpec, When,
-    load_routine,
+    Avoid, CampRule, CircuitRule, GearRule, Pick, RestRule, Routine, RoutineRef, RuleSpec,
+    TrainRule, When, load_routine,
 };
 pub use server::{Game, GameData, Listen, Logging, RollOverride, ServerConfig, Stale, StreamRoll};
 pub use units::{format_duration, parse_duration, parse_size};

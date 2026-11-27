@@ -219,3 +219,15 @@ fn a_lair_knows_its_respawn_and_where_to_wait_outside_it() {
     // The entrance's own wait-room is the arena next door.
     assert_eq!(p.wait_room((1, 2152), &BTreeSet::new()), Some((1, 2150)));
 }
+
+#[test]
+fn a_trainer_is_found_for_a_class() {
+    let (_dir, p) = places();
+    // The Adventurer's Guild trains any class, so it's a Warrior's trainer and one for a
+    // character whose class isn't known.
+    assert_eq!(
+        p.trainers(Some("Warrior"), Some("newhaven")).first(),
+        Some(&(1, 2147))
+    );
+    assert!(p.trainers(None, Some("newhaven")).contains(&(1, 2147)));
+}

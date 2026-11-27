@@ -590,6 +590,60 @@ fn cases() -> Vec<Case> {
             },
             vec![E::Wealth { copper: 1234 }],
         ),
+        // training (#56)
+        msg(
+            "trained",
+            Msg::Trained {
+                paid: s(" 5 silver nobles"),
+                level: 2,
+            },
+            vec![E::Trained { level: 2 }],
+        ),
+        msg(
+            "trained",
+            Msg::Trained {
+                paid: s(" nothing"),
+                level: 12,
+            },
+            vec![E::Trained { level: 12 }],
+        ),
+        msg("train_no_exp", Msg::TrainNoExp, vec![E::TrainNoExp]),
+        msg("train_no_money", Msg::TrainNoMoney, vec![E::TrainNoMoney]),
+        msg(
+            "train_wrong_room",
+            Msg::TrainWrongRoom,
+            vec![E::TrainRefused {
+                text: s("You must be in an appropriate training room to train!"),
+            }],
+        ),
+        msg(
+            "train_wrong_class",
+            Msg::TrainWrongClass,
+            vec![E::TrainRefused {
+                text: s("This shop is not suitable for your training."),
+            }],
+        ),
+        msg(
+            "train_too_low",
+            Msg::TrainTooLow,
+            vec![E::TrainRefused {
+                text: s("You have not progressed far enough to use the training provided here."),
+            }],
+        ),
+        msg(
+            "train_too_high",
+            Msg::TrainTooHigh,
+            vec![E::TrainRefused {
+                text: s("You have progressed too far to use the training provided here."),
+            }],
+        ),
+        msg(
+            "train_tournament",
+            Msg::TrainTournament,
+            vec![E::TrainRefused {
+                text: s("You may not do any training while in tournament mode!"),
+            }],
+        ),
         // the statline, as PROFILE shows it
         msg(
             "profile_statline",

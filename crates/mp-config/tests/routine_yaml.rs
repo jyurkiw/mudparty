@@ -242,3 +242,37 @@ fn targeting_rules_may_be_bare_words() {
     .unwrap();
     assert_eq!(c.combat.targeting.len(), 3);
 }
+
+const TRAINING: &str = "schema: 1
+name: newhaven-arena
+places: newhaven
+do:
+  - train: { at: guild, up_to: 3 }
+  - train
+  - camp: { at: arena }
+";
+
+#[test]
+fn a_train_rule_says_where_and_how_far() {
+    let dir = routines(TRAINING);
+    let c = character("routine: newhaven-arena\n");
+    let r = load_routine(dir.path(), "Ermias", c.routine.as_ref().unwrap()).unwrap();
+    let RuleSpec::Train(t) = &r.rules[0] else {
+        panic!("{:?}", r.rules[0])
+    };
+    assert_eq!(t.at.as_ref().map(|p| p.as_key()), Some("guild".into()));
+    assert_eq!(t.up_to, Some(3));
+    // A bare `train`: any trainer for the class, as high as it will go.
+    let RuleSpec::Train(t) = &r.rules[1] else {
+        panic!("{:?}", r.rules[1])
+    };
+    assert_eq!((t.at.is_none(), t.up_to), (true, None));
+}
+
+#[test]
+fn a_train_rule_trains_to_level_2_at_least() {
+    let e = error_in(&TRAINING.replace("up_to: 3", "up_to: 1"));
+    assert!(e.contains("do[0].up_to"), "{e}");
+    let e = error_in(&TRAINING.replace("up_to: 3", "up_to: 3, stats: [strength]"));
+    assert!(e.contains("stats"), "{e}");
+}

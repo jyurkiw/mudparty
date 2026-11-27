@@ -50,6 +50,9 @@ pub struct RouteRules {
     pub refused: BTreeSet<((u32, u32), u8)>,
     /// Rooms walked through only when the way round is longer than this many steps more.
     pub prefer_not: BTreeMap<(u32, u32), u32>,
+    /// The character's level, when known (#56): a level exit that won't let it through
+    /// isn't planned through.
+    pub level: Option<u32>,
 }
 
 /// Where a walk stands.
