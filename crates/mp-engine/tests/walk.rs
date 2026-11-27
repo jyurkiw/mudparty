@@ -282,3 +282,42 @@ fn a_step_with_no_answer_finds_where_it_is_again_then_gives_up() {
     assert!(w.w.on_tick(t, false).is_empty());
     assert!(matches!(w.w.state(), WalkState::Failed(why) if why.contains("answer")));
 }
+
+// A step the game takes no notice of, again and again, though `/room` answers each time
+// (#78): the bot can't move, and the walk gives up rather than try for ever.
+#[test]
+fn a_step_that_never_goes_through_gives_up_though_the_room_answers() {
+    let mut w = Walk::to(3);
+    w.take();
+    w.at(1);
+    assert_eq!(w.take(), ["east"]);
+    let mut t = w.now;
+    for _ in 0..3 {
+        t += STEP_WAIT + Duration::from_secs(1);
+        assert_eq!(w.w.on_tick(t, false), ["/room"]);
+        // Still in 1/1: it tries the step again.
+        assert_eq!(
+            w.w.on_item(&Item::Event(Event::RoomKey { map: 1, room: 1 }), t, false),
+            ["east"]
+        );
+    }
+    t += STEP_WAIT + Duration::from_secs(1);
+    assert!(w.w.on_tick(t, false).is_empty());
+    assert!(matches!(w.w.state(), WalkState::Failed(why) if why.contains("answer")));
+}
+
+// HP at 0 or below: silvermere refuses every move (#78). The walk ends saying so.
+#[test]
+fn a_mortally_wounded_bot_cant_walk() {
+    let mut w = Walk::to(3);
+    w.take();
+    w.at(1);
+    w.take();
+    w.hear(Event::MortallyWounded);
+    assert!(
+        matches!(w.w.state(), WalkState::Failed(why) if why.contains("mortally wounded")),
+        "{:?}",
+        w.w.state()
+    );
+    assert!(w.take().is_empty());
+}

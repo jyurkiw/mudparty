@@ -18,6 +18,8 @@
 //!   ([`Event::ExitRefused`]). The walker marks the exit refused and plans round it
 //!   (#64); with no way round, the walk ends with the game's words.
 //! - Moving mid-fight would flee, so the walker waits while the bot fights.
+//! - With HP at 0 or below every move is refused (`You may not do that while you are
+//!   mortally wounded!`), and the walk ends saying so (#78).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -235,9 +237,11 @@ impl Walker {
             return Vec::new();
         };
         match (self.phase, e) {
-            (Phase::Locate, Event::RoomKey { map, room }) => {
-                self.unanswered = 0;
-                self.plan_from((*map, *room), now)
+            // `/room` answering isn't progress: a step the game takes no notice of, asked
+            // again and again, still gives up (#78). Only a step confirmed is.
+            (Phase::Locate, Event::RoomKey { map, room }) => self.plan_from((*map, *room), now),
+            (Phase::Move | Phase::Open | Phase::Bash, Event::MortallyWounded) => {
+                self.fail("the bot is mortally wounded, and can't move until it heals")
             }
             (Phase::Confirm, Event::RoomKey { map, room }) => {
                 self.unanswered = 0;

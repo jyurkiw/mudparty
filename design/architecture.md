@@ -869,7 +869,13 @@ A bot walks to a room by itself: the first piece of 1.0 (*§12.2*).
      marks that exit refused for the walk, which plans round it (#64, *§14.5*); with no
      way round, it ends the walk with the game's words.
   6. A fight pauses it; once over, it finds where it is and goes on.
-  7. A line with no answer for 10 s is asked again, three times.
+  7. A line with no answer for 10 s is asked again, three times. `/room` answering doesn't
+     count as progress, only a step confirmed does, so a step the game takes no notice of
+     gives up after three tries rather than looping (#78).
+  8. With HP at 0 or below silvermere refuses every move (`You may not do that while you
+     are mortally wounded!`), and the walk ends saying the bot can't move until it heals
+     (#78). That was the old long walk test's stall: with combat off, the cave bear in its
+     cavern wounded the bot, and every step out was refused while `/room` kept answering.
 - **In the session**, `Command::Goto { to, rules }` starts a walk (in the game, not seated). Its
   progress is `Report::Walk(WalkState)`. The page has a "Go" box (`goto` order, room as
   `1/2141`), and the card shows the walk.
@@ -1548,8 +1554,8 @@ non-MVP parts left out:
 
 All of it is configured in hand-written YAML. Several such bots may run at once, each on
 its own. The pieces: walking (#52, *§6.10*), the routine (#53), shopping (#55), training
-(#56) and login steps (#33). A walk that can stall in a long session (#78) must be fixed
-or explained before the goal's test, which is one.
+(#56) and login steps (#33). The walk that could stall in a long session (#78) was a
+mortally wounded bot whose every step was refused; such a walk now ends saying why.
 
 **1.1** is what the user is really after: **one bot controlling several characters in
 concert**, the party director (#59). A director in the server sets goals for each
