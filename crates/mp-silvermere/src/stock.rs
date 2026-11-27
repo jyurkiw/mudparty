@@ -48,6 +48,17 @@ pub struct StockChar {
     pub exp: u32,
     /// Silver nobles carried, as well as what creation gave it.
     pub silver: u32,
+    /// Strength, health and agility, as a player spends creation points (#57); none keeps
+    /// what creation gave it, with no points spent.
+    pub stats: Option<Stats>,
+}
+
+/// Base stats a character is given in place of creation's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stats {
+    pub strength: u16,
+    pub health: u16,
+    pub agility: u16,
 }
 
 impl StockChar {
@@ -61,6 +72,7 @@ impl StockChar {
             room: ARENA,
             exp: 0,
             silver: 0,
+            stats: None,
         }
     }
 
@@ -287,6 +299,13 @@ impl StockSilvermere {
                 c.exprem = ch.exp;
             }
             c.coins.silver += ch.silver;
+            if let Some(s) = ch.stats {
+                // Base and current alike: the game works the rest out (HP from health) as
+                // it loads the character.
+                (c.basstr, c.str) = (s.strength, s.strength);
+                (c.bashea, c.hea) = (s.health, s.health);
+                (c.basagi, c.agi) = (s.agility, s.agility);
+            }
             let mut book = Vec::new();
             for short in &ch.spells {
                 let spell = db

@@ -353,6 +353,7 @@ fn a_lair_is_cleared_and_visited_again_once_it_has_filled() {
     assert_eq!(b.see(&seen(100, CAVERN), 40), Goal::Walk(CAMP));
     assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(40))]);
     assert_eq!(b.r.take_cleared(), []);
+    assert_eq!(b.r.take_notes(), ["cleared Small Cavern"]);
     assert_eq!(b.arrive(&seen(100, CAMP), 45), Goal::Camp(LOOK));
     // Ready at 40 + 240. The room outside is 2 steps, 4 seconds, away, so it sets off
     // at 276 to be there as the lair fills, and waits there rather than step in early.
@@ -386,6 +387,8 @@ fn an_empty_lair_starts_its_clock_at_the_visit() {
     b.see(&seen(100, CAMP), 2);
     assert_eq!(b.arrive(&seen(100, CAVERN), 10), Goal::Walk(CAMP));
     assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(10))]);
+    // Killed on the way in, perhaps, as a fight on a walk pauses it.
+    assert_eq!(b.r.take_notes(), ["cleared Small Cavern"]);
     b.arrive(&seen(100, CAMP), 15);
     assert_eq!(b.see(&seen(100, CAMP), 10 + 235), Goal::Camp(LOOK));
     assert_eq!(b.see(&seen(100, CAMP), 10 + 236), Goal::Walk(OUTSIDE));
@@ -401,6 +404,7 @@ fn a_kill_that_never_starts_is_given_up() {
     assert_eq!(b.see(&bear, 10 + 29), Goal::Kill("cave bear".into()));
     assert_eq!(b.see(&bear, 10 + 30), Goal::Walk(CAMP));
     assert_eq!(b.r.take_cleared(), [(CAVERN, b.at(40))]);
+    assert_eq!(b.r.take_notes(), ["gave up on cave bear in Small Cavern"]);
 }
 
 #[test]

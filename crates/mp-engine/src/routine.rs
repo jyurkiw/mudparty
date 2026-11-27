@@ -588,11 +588,24 @@ impl Routine {
 
     /// Lair `lair` of circuit `rule` is clear (or given up on): its clock starts now, and
     /// the routine plans again from where the bot stands.
-    fn lair_done(&mut self, rule: usize, lair: usize, s: &Seen, now: Instant) {
+    /// Done with a lair: cleared, or `given_up` on a monster there that never fought. Its
+    /// clock starts now either way, and the card is told.
+    fn lair_done(
+        &mut self,
+        rule: usize,
+        lair: usize,
+        given_up: Option<&str>,
+        s: &Seen,
+        now: Instant,
+    ) {
         if let RuleSettings::Circuit(c) = &self.set.rules[rule] {
-            let at = c.lairs[lair].at;
-            self.clocks.insert(at, now);
-            self.cleared.push((at, now));
+            let l = &c.lairs[lair];
+            self.clocks.insert(l.at, now);
+            self.cleared.push((l.at, now));
+            self.notes.push(match given_up {
+                Some(m) => format!("gave up on {m} in {}", l.name),
+                None => format!("cleared {}", l.name),
+            });
         }
         self.pick(s, now, None);
     }
@@ -747,7 +760,8 @@ impl Routine {
                 if present(target, &s.monsters) {
                     // Standing there unfought: given up on.
                     if !started && now.duration_since(*since) >= self.set.kill_wait {
-                        self.lair_done(a.rule, *lair, s, now);
+                        let target = target.clone();
+                        self.lair_done(a.rule, *lair, Some(&target), s, now);
                     }
                 } else if let Some(next) = s.monsters.first() {
                     // Dead, or gone; the next.
@@ -761,7 +775,7 @@ impl Routine {
                         },
                     });
                 } else {
-                    self.lair_done(a.rule, *lair, s, now);
+                    self.lair_done(a.rule, *lair, None, s, now);
                 }
             }
             _ => {}
@@ -827,7 +841,7 @@ impl Routine {
                                 },
                             });
                         }
-                        None => self.lair_done(a.rule, lair, s, now),
+                        None => self.lair_done(a.rule, lair, None, s, now),
                     },
                     _ => {}
                 },

@@ -1,5 +1,5 @@
 //! A character's `gear:` (#55, design §14.7): what it carries, and whether each item is
-//! wielded or worn. A routine's `gear` rule keeps it so, buying what's missing at a shop
+//! wielded, worn or lit. A routine's `gear` rule keeps it so, buying what's missing at a shop
 //! that sells it, or at the shop `at:` names.
 
 use std::fs;
@@ -26,6 +26,14 @@ fn gear_reads_with_an_optional_shop() {
     assert_eq!(c.gear[0].at, None);
     assert_eq!(c.gear[1].how, GearUse::Wear);
     assert!(c.gear[1].at.as_ref().is_some_and(|p| *p == "armour-shop"));
+}
+
+#[test]
+fn a_light_source_is_lit() {
+    let c = CharacterConfig::from_yaml(&format!("{ERMIAS}  - {{ item: torch, use: light }}\n"))
+        .unwrap();
+    assert_eq!(c.gear[2].item, "torch");
+    assert_eq!(c.gear[2].how, GearUse::Light);
 }
 
 #[test]

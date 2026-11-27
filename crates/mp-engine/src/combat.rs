@@ -211,6 +211,12 @@ impl Combat {
             // out when nobody is: exits with no list since the last prompt mean an empty
             // room (a move, or a look after the last monster died or left).
             Item::Event(Event::ObviousExits) if !self.also_here_seen => self.roster.clear(),
+            // Gone: off the roster, so a target that ran is let go at the next prompt.
+            Item::Event(Event::Left { who }) => {
+                if let Some(i) = self.roster.iter().position(|r| r.eq_ignore_ascii_case(who)) {
+                    self.roster.remove(i);
+                }
+            }
             Item::Event(Event::MovesToAttack { who, target })
             | Item::Event(Event::MovesToCast { who, target, .. })
                 if self
@@ -226,7 +232,8 @@ impl Combat {
                 self.engaged = false;
                 self.current = None;
             }
-            Item::Event(Event::ExpGain { .. }) => self.killed(),
+            // A kill says what it gained, or that it gained nothing past the cap.
+            Item::Event(Event::ExpGain { .. } | Event::ExpCapped) => self.killed(),
             Item::Event(Event::SpellNoEffect { target }) => {
                 if let Some(a @ (Attack::Spell(_) | Attack::Room(_))) = self.current.take() {
                     self.useless.insert((a.key(), lower(target)));

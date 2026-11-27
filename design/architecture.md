@@ -603,8 +603,20 @@ combat:
     - fight_back: true                         # whatever is attacking this bot
 ```
 
-- **The room's monsters** come from the room display (`Also here:`), from arrival and
-  departure lines, and from death lines.
+- **The room's monsters** come from the room display (`Also here:`) and from departure
+  lines (`<monster> just left to the north.`, or upwards, downwards): a target that leaves
+  is let go, and the next is picked. Arrivals print each monster's own words from the game
+  data, and aren't read yet (#85); a camp's look finds them. A kill is the experience line
+  (`You gain <n> experience.`), or, past the experience a character may hold untrained,
+  `You have progressed too far without training to acquire anymore experience!` in its
+  place.
+- **`fight_back`** answers `<monster> moves to attack you!`. Most attacks print the
+  monster's own attack words, which aren't read yet (#85), so it rarely fires; a bot that
+  must fight what comes names the monsters in `priority`. `priority: ["*"]` takes in
+  shopkeepers too (#89).
+- **Seen, not yet explained** (#87): the attack sent a second time just after
+  `*Combat Engaged*`, which silvermere answers `*Combat Off*`, a few times before a fight
+  settles.
 - **The leader's target** comes from the bot's own stream, which is the authoritative
   source when they share a room: `<Leader> moves to attack <target>.` or
   `<Leader> moves to cast <spell> upon <target>.`. A room spell reads
@@ -1553,7 +1565,19 @@ non-MVP parts left out:
   of the arena.
 
 All of it is configured in hand-written YAML. Several such bots may run at once, each on
-its own. The pieces: walking (#52, *§6.10*), the routine (#53), shopping (#55), training
+its own. **The goal test** (`mudparty-server` `tests/newhaven.rs`) runs the files in
+`examples/newhaven` on the stock world and sees the whole loop. Building it found what
+the pieces alone hadn't:
+- The Small Cavern is dark (light -200), so a bot without a light can't see the bear and
+  is beaten without fighting back: gear gained `use: light`.
+- A kill past the experience cap prints no experience line, so the combat engine never
+  saw the kill and attacked the corpse for ever. A bot held at level 3 gets there.
+- A target that ran off was kept, and the walk paused for its fight never went on.
+- `priority: ["*"]` attacks the shopkeepers (#89), and `fight_back` rarely fires (#85,
+  *§6.4*), so the example names Newhaven's monsters.
+- A character with no creation points spent loses to the bear; the test's warrior has
+  them in strength, health and agility. The kobolds and rats of the Dungeon Entrance, on
+  the way, take a share of its HP first (#88). The pieces: walking (#52, *§6.10*), the routine (#53), shopping (#55), training
 (#56) and login steps (#33). The walk that could stall in a long session (#78) was a
 mortally wounded bot whose every step was refused; such a walk now ends saying why.
 
@@ -1942,7 +1966,8 @@ A `hunt` of one monster, as #61 built it, is a circuit of one lair.
   avoided room (`Places::wait_room`). In the stock world the cave bear's Small Cavern opens
   only onto the Dungeon Entrance, a lair of rats (`1m`), so the bear is waited for in the
   arena: the bot walks through the rats' lair each time, filling it on the way, as a
-  player would. A lair with nowhere to wait is an error when the bot starts, and in `check`.
+  player would. The circuit's `when` was checked as it set off, so a bot worn below it
+  on the way still goes in (#88). A lair with nowhere to wait is an error when the bot starts, and in `check`.
 - **In the lair** every monster it shows is killed in turn (a kill order each), and the
   lair is clear once none is left. That starts its clock, as a visit that finds it empty
   does. A monster left unfought for 30 s is given up on, which starts the clock too. A
@@ -1957,19 +1982,24 @@ A `hunt` of one monster, as #61 built it, is a circuit of one lair.
   when each was last cleared, by any bot (`LairClocks`). The session reads them when the
   routine starts and writes each lair as it's cleared.
 - **The card** shows `going to Small Cavern`, `waiting for Small Cavern to fill` and
-  `killing cave bear`.
+  `killing cave bear`, and is told `cleared Small Cavern` (or `gave up on cave bear in
+  Small Cavern`) when the bot is done with it. A monster in the lair that fights the bot
+  as it walks in is fought by the combat rules on the walk, so the lair may already be
+  clear when the walk ends.
 - **Not built:** bosses' early window (a leftover issue), and a circuit's own `idle:`
   rule.
 
 **Errands.** `gear` (built in #55, `mp-engine` `shop.rs` and the routine's gear rule)
-keeps the character's `gear:` (`{ item, use: wield | wear, at }`):
+keeps the character's `gear:` (`{ item, use: wield | wear | light, at }`):
 
 - It applies when the gear wants checking: when the routine starts, and after each rest.
   It sends `i` and reads the carried list (`You are carrying ...`, wrapped at 79 columns,
   up to the keys line): a worn item is named with its place (`padded vest (Torso)`), the
   weapon with `(Weapon Hand)` or `(Two handed)`, duplicates with a count in front.
-- The first item carried but not in use is put on where the bot stands (`wield` or
-  `wear`); the first one missing is bought at a shop that sells it, and put on. Then it
+- The first item carried but not in use is put on where the bot stands (`wield`, `wear`,
+  or `light` for a light source, which silvermere answers `You lit the torch.` and then
+  shows readied, `torch (Readied/n)`; one that burns out is replaced only at the next
+  check, #86); the first one missing is bought at a shop that sells it, and put on. Then it
   looks again, rather than trusting what it did; with nothing left to do, it is done until
   the next rest.
 - **Shops:** `at:` names one; otherwise the compiled room files' shops that sell the item,
@@ -1979,7 +2009,7 @@ keeps the character's `gear:` (`{ item, use: wield | wear, at }`):
 - **An item it can't get** (`You cannot afford`, a refusal to sell or to wear or wield, no
   shop selling it, no way to any) is skipped and said on the card (`Report::RoutineNote`),
   and not tried again until the bot restarts.
-- A buy, wield or wear with no answer for 10 s is sent once more, then given up.
+- A buy, wield, wear or light with no answer for 10 s is sent once more, then given up.
 
 `train` goes to a trainer while the next level is affordable and below `up_to` (#56).
 
@@ -2023,13 +2053,14 @@ name: Ermias
 class: Warrior
 login: { account: Ermias }
 combat:
-  targeting: [kill_order, fight_back, { priority: ["*"] }]
+  targeting: [kill_order, { priority: ["*cave bear", "*kobold thief", "*giant rat"] }]
   melee: a
 rest:
   until: { hp: 100% }
 gear:
   - { item: club, use: wield }
   - { item: padded vest, use: wear }
+  - { item: torch, use: light }
 routine: newhaven-arena
 ```
 

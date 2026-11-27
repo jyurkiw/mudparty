@@ -11,6 +11,8 @@
 //!   <item>.`, or another refusal (not sold here, not known, too heavy).
 //! - `wield <item>` answers `You are now holding <item>.`, `wear <item>` `You are now
 //!   wearing <item>.`, or a refusal (not allowed, no room, not carried).
+//! - `light <item>` answers `You lit the <item>.`, or a refusal (not a light, another
+//!   already lit, burnt out). A lit light source is shown readied, so it counts as in use.
 
 use std::time::{Duration, Instant};
 
@@ -141,6 +143,7 @@ impl Equipper {
             EquipState::Equipping => Some(match self.how {
                 GearUse::Wield => format!("wield {}", self.item),
                 GearUse::Wear => format!("wear {}", self.item),
+                GearUse::Light => format!("light {}", self.item),
             }),
             _ => None,
         }

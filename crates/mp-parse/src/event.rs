@@ -126,6 +126,13 @@ pub enum Event {
     ExpGain {
         exp: i64,
     },
+    /// `You have progressed too far without training to acquire anymore experience!`: a
+    /// kill that gained nothing, in place of `ExpGain`.
+    ExpCapped,
+    /// `<who> just left to the <dir>.` (or upwards, downwards): gone from the room.
+    Left {
+        who: String,
+    },
     /// The room's `Also here:` list, players and monsters.
     AlsoHere {
         names: Vec<String>,

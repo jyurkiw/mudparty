@@ -216,7 +216,7 @@
         },
         "use": {
           "$ref": "#/$defs/GearUse",
-          "description": "`wield` or `wear`."
+          "description": "`wield`, `wear`, or `light` (a light source, such as a torch)."
         }
       },
       "required": [
@@ -238,11 +238,20 @@
     },
     "GearUse": {
       "description": "How an item is put to use.",
-      "enum": [
-        "wield",
-        "wear"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "wield",
+            "wear"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "light",
+          "description": "Lit, as a torch or a lantern is (`light <item>`), to see in a dark room.",
+          "type": "string"
+        }
+      ]
     },
     "Login": {
       "additionalProperties": false,
