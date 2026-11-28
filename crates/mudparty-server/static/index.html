@@ -77,6 +77,8 @@
   pre.game .link:hover, .link:hover { text-decoration: underline; }
   dialog#text { border: 1px solid var(--line); border-radius: 8px; padding: 0;
                 background: var(--card); color: var(--ink); width: min(680px, 94vw); }
+  /* Help boxes are drawn for an 80-column screen: scroll rather than wrap them. */
+  dialog#text pre.game { white-space: pre; }
   dialog#text::backdrop { background: rgba(0, 0, 0, .25); }
   dialog#history { border: 1px solid var(--line); border-radius: 8px; padding: 0;
                    background: var(--card); color: var(--ink); width: min(820px, 96vw); }

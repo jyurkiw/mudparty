@@ -3,7 +3,8 @@
 //!
 //! The input is data bytes with telnet already removed. Plain text is what a terminal would
 //! show: ANSI removed, backspaces applied (silvermere's direction words carry a filler byte
-//! and a backspace), CP437 decoded. Telling a prompt from text glued after it is the prompt
+//! and a backspace), cursor-forward shown as spaces (its help boxes line columns up with
+//! it), CP437 decoded. Telling a prompt from text glued after it is the prompt
 //! matcher's job (mp-parse), except where silvermere writes over a prompt with its
 //! clear-line prefix `ESC[79D ESC[K`, which ends the prompt here.
 
@@ -23,7 +24,8 @@ pub enum LineEnd {
 pub struct Line {
     /// The bytes as received, ANSI and line end included.
     pub raw: Vec<u8>,
-    /// The text as a terminal would show it: no ANSI, backspaces applied, CP437 decoded.
+    /// The text as a terminal would show it: no ANSI, backspaces applied, cursor-forward as
+    /// spaces, CP437 decoded.
     pub plain: String,
     pub end: LineEnd,
 }
@@ -153,20 +155,35 @@ impl Extractor {
     }
 
     /// An escape sequence is complete. A cursor-left back to column 0 or beyond, with text
-    /// on the line, ends that text as an overwritten line.
+    /// on the line, ends that text as an overwritten line. A cursor-forward shows as that
+    /// many spaces: silvermere clears the screen before the help boxes that use it, so the
+    /// cells it moves over are blank.
     fn finish_escape(&mut self, out: &mut Vec<Line>, csi_final: Option<u8>) {
         self.esc = Esc::None;
-        if csi_final == Some(b'D') && !self.plain.is_empty() {
-            let params = &self.esc_buf[2..self.esc_buf.len() - 1];
-            let n = std::str::from_utf8(params)
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
-            if n >= self.plain.chars().count() {
-                out.push(self.take(LineEnd::Overwritten));
+        match csi_final {
+            Some(b'D') if !self.plain.is_empty() => {
+                if self.csi_count() >= self.plain.chars().count() {
+                    out.push(self.take(LineEnd::Overwritten));
+                }
             }
+            Some(b'C') => {
+                let n = self.csi_count();
+                self.plain.extend(std::iter::repeat_n(' ', n));
+            }
+            _ => {}
         }
         self.raw.append(&mut self.esc_buf);
+    }
+
+    /// The count of the CSI sequence in `esc_buf`: missing or 0 means 1, as a terminal reads
+    /// it.
+    fn csi_count(&self) -> usize {
+        let params = &self.esc_buf[2..self.esc_buf.len() - 1];
+        std::str::from_utf8(params)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1)
     }
 
     fn take(&mut self, end: LineEnd) -> Line {

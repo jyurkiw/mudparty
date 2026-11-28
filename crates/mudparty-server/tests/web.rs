@@ -274,6 +274,24 @@ async fn the_page_shows_the_party_and_orders_its_bots() {
     assert_eq!(r["ok"], true, "{r}");
     let c = ui.captured(&sm, "me").await;
     assert!(c["text"].as_str().unwrap().contains("Ermias"), "{c}");
+    // A help box keeps the columns silvermere lines up with cursor-forward.
+    let r = ui
+        .order(
+            "Ermias",
+            json!({"order": "capture", "id": "human", "line": "help human"}),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let c = ui.captured(&sm, "human").await;
+    let text = c["text"].as_str().unwrap();
+    assert!(
+        text.contains("║ Statistics         Abilities       ║"),
+        "{c}"
+    );
+    assert!(
+        text.contains("║ Charm     40-100 ║                 ║"),
+        "{c}"
+    );
 
     // The text history: what it sent and its notes, not the help and look it was asked
     // for, which have windows of their own.
