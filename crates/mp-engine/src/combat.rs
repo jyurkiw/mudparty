@@ -21,6 +21,11 @@
 //!   redrawing the other's prompt, kept it up ten times a second (#119). A kill can set it
 //!   off: the party's experience line doesn't say which of two same-named monsters died.
 //! - **Shared names**: an attack on a shared name goes to the first monster of that name.
+//! - **Refusals**: an attack at a name nobody here has is no attack. A melee line is taken as
+//!   speech: `You say "a kobold"` with fast talk on (a new character's default), else
+//!   `Your command had no effect.`; a spell is `You do not see kobold here!`. That is how the
+//!   bot learns that a monster died unseen (#118): its attack went out after the leader's
+//!   kill, so it had no share of the kill and no `*Combat Off*`.
 //!
 //! The room's monsters come from the `Also here:` list. A name counts as a monster only if
 //! it is, or ends with, a monster name from the game data (`large kobold` is a `kobold`), so
@@ -106,9 +111,6 @@ pub struct Combat {
     /// The attack last sent, while it is running.
     current: Option<Attack>,
     engaged: bool,
-    /// When the last attack went out, until the game answers it with `*Combat Engaged*`
-    /// (#119).
-    unanswered: Option<Instant>,
     kill_order: Option<String>,
     leader_target: Option<(String, Instant)>,
     attackers: Vec<String>,
@@ -123,6 +125,9 @@ pub struct Combat {
     /// An `Also here:` line came since the last prompt: the room display being read has
     /// its list.
     also_here_seen: bool,
+    /// The attack sent, its target and when it went, until the game takes it up
+    /// (`*Combat Engaged*`) or refuses it (#118, #119).
+    asked: Option<(Attack, String, Instant)>,
 }
 
 impl Combat {
@@ -133,7 +138,6 @@ impl Combat {
             target: None,
             current: None,
             engaged: false,
-            unanswered: None,
             kill_order: None,
             leader_target: None,
             attackers: Vec::new(),
@@ -143,6 +147,7 @@ impl Combat {
             nuke: true,
             hold: false,
             also_here_seen: false,
+            asked: None,
         }
     }
 
@@ -269,17 +274,20 @@ impl Combat {
             Item::Text(line) => {
                 if let Some(name) = self.arrival(line) {
                     self.roster.push(name);
+                } else if let Some(name) = self.refused(line) {
+                    self.gone(&name);
                 }
             }
             Item::Event(Event::CombatEngaged) => {
                 self.engaged = true;
-                self.unanswered = None;
+                self.asked = None;
             }
             // The break-off of the bot's own attack, answered in a round, is no stop.
             Item::Event(Event::CombatOff)
                 if self
-                    .unanswered
-                    .is_some_and(|at| now.duration_since(at) < self.set.round) => {}
+                    .asked
+                    .as_ref()
+                    .is_some_and(|(_, _, at)| now.duration_since(*at) < self.set.round) => {}
             Item::Event(Event::CombatOff) => {
                 self.engaged = false;
                 self.current = None;
@@ -310,6 +318,48 @@ impl Combat {
         Vec::new()
     }
 
+    /// The monster the game says the bot's attack found nobody by (see the module notes).
+    fn refused(&self, line: &str) -> Option<String> {
+        let (attack, target, _) = self.asked.as_ref()?;
+        let line = line.trim();
+        let said = format!("You say \"{}\"", attack.command(target));
+        let refused = match attack {
+            Attack::Melee(_) => {
+                line.eq_ignore_ascii_case(&said) || line == "Your command had no effect."
+            }
+            Attack::Spell(_) => line
+                .strip_prefix("You do not see ")
+                .and_then(|l| l.strip_suffix(" here!"))
+                .is_some_and(|t| t.eq_ignore_ascii_case(target)),
+            Attack::Room(_) => false,
+        };
+        refused.then(|| target.clone())
+    }
+
+    /// Nobody here goes by `name` (an attack at a shared name goes to the first of them):
+    /// all of that name leave the roster, and the fight with it ends.
+    fn gone(&mut self, name: &str) {
+        self.roster.retain(|r| !r.eq_ignore_ascii_case(name));
+        self.attackers.retain(|a| !a.eq_ignore_ascii_case(name));
+        if self
+            .leader_target
+            .as_ref()
+            .is_some_and(|(l, _)| l.eq_ignore_ascii_case(name))
+        {
+            self.leader_target = None;
+        }
+        if self
+            .target
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(name))
+        {
+            self.target = None;
+            self.current = None;
+            self.last_change = None;
+        }
+        self.asked = None;
+    }
+
     /// The target died: it leaves the roster, and nothing more goes at it.
     fn killed(&mut self) {
         let Some(t) = self.target.take() else { return };
@@ -335,6 +385,7 @@ impl Combat {
         self.current = None;
         self.engaged = false;
         self.last_change = None;
+        self.asked = None;
     }
 
     /// The target by the rules, top-down: the first rule that names a monster here wins.
@@ -431,9 +482,9 @@ impl Combat {
             return Vec::new();
         }
         let cmd = want.command(&target);
+        self.asked = Some((want.clone(), target, now));
         self.current = Some(want);
         self.last_change = Some(now);
-        self.unanswered = Some(now);
         vec![cmd]
     }
 }

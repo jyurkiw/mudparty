@@ -174,6 +174,72 @@ fn the_leader_s_target_is_assisted_though_unseen_till_then() {
     assert!(f.take_sent().is_empty());
 }
 
+// The bot's attack can reach the game after the leader has killed its target: the bot wasn't
+// fighting it, so no share of the kill and no `*Combat Off*` tells it so (#118). The game
+// refuses the attack instead; the monster is let go, and the leader's next is assisted.
+#[test]
+fn a_melee_attack_refused_by_speech_lets_the_monster_go() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin").prompt(4);
+    f.leader_attacks("kobold").prompt(4);
+    assert_eq!(f.take_sent(), ["a kobold"]);
+    // Fast talk on (a new character's default): the line is said, not swung.
+    f.msg(Msg::YouSay {
+        verb: s("say"),
+        text: s("a kobold"),
+    })
+    .prompt(4);
+    assert_eq!(f.combat.target(), None);
+    assert!(f.combat.monsters().is_empty());
+    f.leader_attacks("giant rat").prompt(4);
+    assert_eq!(f.take_sent(), ["a giant rat"]);
+}
+
+#[test]
+fn a_melee_attack_with_no_effect_lets_the_monster_go() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin, kobold, kobold").prompt(4);
+    f.leader_attacks("kobold").prompt(4);
+    assert_eq!(f.take_sent(), ["a kobold"]);
+    // Fast talk off. An attack goes to the first of a shared name, so none of them is here.
+    f.msg(Msg::NoEffect).prompt(4);
+    assert_eq!(f.combat.target(), None);
+    assert!(f.combat.monsters().is_empty());
+    f.leader_attacks("giant rat").prompt(4);
+    assert_eq!(f.take_sent(), ["a giant rat"]);
+}
+
+#[test]
+fn a_spell_at_a_monster_not_here_lets_it_go() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin").prompt(80);
+    f.leader_attacks("kobold").prompt(80);
+    assert_eq!(f.take_sent(), ["lbol kobold"]);
+    f.msg(Msg::CastNotHere { what: s("kobold") }).prompt(80);
+    assert_eq!(f.combat.target(), None);
+    f.leader_attacks("giant rat").prompt(80);
+    assert_eq!(f.take_sent(), ["lbol giant rat"]);
+}
+
+// Only the answer to the bot's own attack counts: other speech, or a command with no
+// effect once the fight is under way, leaves the target alone.
+#[test]
+fn other_refusals_leave_the_target_alone() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin, kobold").prompt(4);
+    f.leader_attacks("kobold").prompt(4);
+    assert_eq!(f.take_sent(), ["a kobold"]);
+    f.msg(Msg::YouSay {
+        verb: s("say"),
+        text: s("a giant rat"),
+    })
+    .prompt(4);
+    assert_eq!(f.combat.target(), Some("kobold"));
+    f.msg(Msg::CombatEngaged).msg(Msg::NoEffect).prompt(4);
+    assert_eq!(f.combat.target(), Some("kobold"));
+    assert_eq!(f.combat.monsters(), ["kobold"]);
+}
+
 #[test]
 fn an_empty_room_starts_no_fight() {
     let mut f = Fight::new(settings());
