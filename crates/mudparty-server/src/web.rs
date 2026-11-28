@@ -11,7 +11,13 @@
 //! - server → page `captured`: a command's output for a `capture` order (`id`, `line`,
 //!   `text`, `answered`), to every page, which match it by `id`;
 //! - page → server `history` (`name`, `since`): the character's text history after line
-//!   `since`, answered with a `history` message (`lines`: `seq`, `at`, `kind`, `text`).
+//!   `since`, answered with a `history` message (`lines`: `seq`, `at`, `kind`, `text`);
+//! - the character editor (#110, design §16): `edit_open` (`name`) answered by `edit`
+//!   (`rev`, `config`, `yaml`, `comments`, `password_set`); `edit_check` (`name`, `yaml` or
+//!   `config`) by `edit_checked` (`problems`, `warnings`, `yaml`); `edit_save` (`name`,
+//!   `rev` or none for a new file, `yaml` or `config`, `password`) by `edit_saved` (`rev`),
+//!   `edit_conflict` (`rev`, `yaml`), or `edit_checked` when refused; `edit_choices` by
+//!   `choices`.
 //!
 //! There is no login, so the page is served on loopback only.
 
@@ -28,7 +34,7 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
-use crate::{BotEvent, Order, Server};
+use crate::{BotEvent, EditInput, Order, Saved, Server};
 use mp_engine::Report;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -122,6 +128,28 @@ async fn feed(mut socket: WebSocket, server: Arc<Server>) {
     }
 }
 
+/// A message of `kind` for `name`, with `body`'s fields.
+fn edit_json(kind: &str, name: &str, body: &impl serde::Serialize) -> Value {
+    let mut v = serde_json::to_value(body).unwrap_or_else(|_| json!({}));
+    if let Value::Object(m) = &mut v {
+        m.insert("v".into(), json!(1));
+        m.insert("type".into(), json!(kind));
+        m.insert("name".into(), json!(name));
+    }
+    v
+}
+
+/// The editor's change: the YAML tab's `yaml`, or the forms' `config`.
+fn edit_input(msg: &serde_json::Map<String, Value>) -> Result<EditInput, String> {
+    if let Some(y) = msg.get("yaml").and_then(Value::as_str) {
+        return Ok(EditInput::Yaml(y.to_owned()));
+    }
+    match msg.get("config") {
+        Some(c @ Value::Object(_)) => Ok(EditInput::Config(c.clone())),
+        _ => Err("a change needs `yaml` or `config`".into()),
+    }
+}
+
 /// One message from the page; returns the `result` to send back.
 fn handle(server: &Arc<Server>, text: &str) -> Value {
     let result = |name: &str, r: Result<String, String>| {
@@ -143,6 +171,42 @@ fn handle(server: &Arc<Server>, text: &str) -> Value {
     }
     match msg.remove("type").as_ref().and_then(Value::as_str) {
         Some("order") => {}
+        // The character editor (#110, design §16).
+        Some("edit_open") => {
+            return match server.edit_open(&name) {
+                Ok(o) => edit_json("edit", &name, &o),
+                Err(e) => result(&name, Err(e)),
+            };
+        }
+        Some("edit_check") => {
+            return match edit_input(&msg).and_then(|i| server.edit_check(&name, i)) {
+                Ok(c) => edit_json("edit_checked", &name, &c),
+                Err(e) => result(&name, Err(e)),
+            };
+        }
+        Some("edit_save") => {
+            let rev = msg.get("rev").and_then(Value::as_str);
+            let password = msg
+                .get("password")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty());
+            return match edit_input(&msg).and_then(|i| server.edit_save(&name, rev, i, password)) {
+                Ok(Saved::Ok { rev }) => {
+                    json!({"v": 1, "type": "edit_saved", "name": name, "rev": rev})
+                }
+                Ok(Saved::Conflict { rev, yaml }) => {
+                    json!({"v": 1, "type": "edit_conflict", "name": name, "rev": rev, "yaml": yaml})
+                }
+                Ok(Saved::Refused(c)) => edit_json("edit_checked", &name, &c),
+                Err(e) => result(&name, Err(e)),
+            };
+        }
+        Some("edit_choices") => {
+            return match server.edit_choices() {
+                Ok(c) => edit_json("choices", &name, &c),
+                Err(e) => result(&name, Err(e)),
+            };
+        }
         // The text history after a line, for the card's History modal.
         Some("history") => {
             let since = msg.get("since").and_then(Value::as_u64).unwrap_or(0);

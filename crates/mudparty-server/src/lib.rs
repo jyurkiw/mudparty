@@ -6,6 +6,7 @@
 //! The hub and the proxy come in later steps.
 
 pub mod check;
+pub mod editor;
 pub mod history;
 pub mod proxy;
 pub mod view;
@@ -39,7 +40,8 @@ use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
 use view::Card;
 
-pub use check::{Checked, check};
+pub use check::{Checked, check, check_text};
+pub use editor::{Choices, EditChecked, EditInput, Opened, Saved};
 
 /// Waits before each reconnect of a lost link; the last one repeats (design §6.2).
 const RECONNECT: [u64; 4] = [5, 10, 30, 60];
@@ -171,7 +173,8 @@ struct Bot {
 pub struct Server {
     root: PathBuf,
     config: ServerConfig,
-    secrets: Secrets,
+    /// Passwords by account; the page's editor sets them (#110).
+    secrets: Mutex<Secrets>,
     bots: Mutex<BTreeMap<String, Bot>>,
     events: broadcast::Sender<BotEvent>,
     log: Mutex<ServerLog>,
@@ -234,7 +237,7 @@ impl Server {
         let server = Arc::new(Self {
             root: root.to_owned(),
             config,
-            secrets,
+            secrets: Mutex::new(secrets),
             bots: Mutex::new(BTreeMap::new()),
             events,
             log: Mutex::new(log),
@@ -571,11 +574,14 @@ impl Server {
             .ok_or_else(|| StartError::NoLogin(name.to_owned()))?;
         let password = self
             .secrets
+            .lock()
+            .expect("secrets lock")
             .password(&login.account)
+            .map(str::to_owned)
             .ok_or_else(|| StartError::NoPassword(login.account.clone()))?;
         let login = LoginSettings {
             account: login.account.clone(),
-            password: password.to_owned(),
+            password,
             takeover: login.takeover,
             step_timeout: STEP_TIMEOUT,
             // Steps written in the character's file (#33), or silvermere's dialogue.
@@ -704,6 +710,8 @@ impl Server {
             account: account.to_owned(),
             password: self
                 .secrets
+                .lock()
+                .expect("secrets lock")
                 .password(account)
                 .unwrap_or_default()
                 .to_owned(),

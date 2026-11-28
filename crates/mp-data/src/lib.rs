@@ -888,6 +888,56 @@ impl GameData {
             .map_err(err(&self.path))
     }
 
+    /// Every class, by number.
+    pub fn classes(&self) -> Result<Vec<Class>, DataError> {
+        let e = err(&self.path);
+        let mut q = self
+            .conn
+            .prepare("SELECT number, name, magery, magelvl FROM classes ORDER BY number")
+            .map_err(&e)?;
+        q.query_map([], |r| {
+            Ok(Class {
+                number: r.get(0)?,
+                name: r.get(1)?,
+                magery: r.get(2)?,
+                magelvl: r.get(3)?,
+            })
+        })
+        .map_err(&e)?
+        .collect::<Result<_, _>>()
+        .map_err(&e)
+    }
+
+    /// Every spell with a cast code, by number.
+    pub fn spells(&self) -> Result<Vec<Spell>, DataError> {
+        let e = err(&self.path);
+        let mut q = self
+            .conn
+            .prepare(
+                "SELECT number, name, short, mana, level, magery, magelvl, target, spell_type,
+                        energy
+                 FROM spells WHERE short <> '' ORDER BY number",
+            )
+            .map_err(&e)?;
+        q.query_map([], |r| {
+            Ok(Spell {
+                number: r.get(0)?,
+                name: r.get(1)?,
+                short: r.get(2)?,
+                mana: r.get(3)?,
+                level: r.get(4)?,
+                magery: r.get(5)?,
+                magelvl: r.get(6)?,
+                target: r.get(7)?,
+                spell_type: r.get(8)?,
+                energy: r.get(9)?,
+            })
+        })
+        .map_err(&e)?
+        .collect::<Result<_, _>>()
+        .map_err(&e)
+    }
+
     /// Every monster name, once each, sorted.
     pub fn monster_names(&self) -> Result<Vec<String>, DataError> {
         let e = err(&self.path);

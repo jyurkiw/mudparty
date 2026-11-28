@@ -22,7 +22,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use mp_config::{
-    CharacterConfig, ConfigError, Place, Routine, RoutineRef, RuleSpec, load_character,
+    CharacterConfig, ConfigError, Place, Routine, RoutineRef, RuleSpec, character_from_text,
     load_routine, load_server,
 };
 use mp_data::GameData;
@@ -43,8 +43,19 @@ pub struct Checked {
 /// Checks `file`, a character's, a routine's or a places local file, on the data root
 /// `root`; `level`, when given, is the character's, for the level exits on its walks.
 pub fn check(root: &Path, file: &Path, level: Option<u32>) -> anyhow::Result<Checked> {
-    let config = load_server(&root.join("mudparty.toml"))?.value;
     let text = std::fs::read_to_string(file).with_context(|| file.display().to_string())?;
+    check_text(root, file, &text, level)
+}
+
+/// Checks `text` as if it were `file`, without reading or writing it: the page's editor
+/// checks a change before it's saved (#110). A routine's own file is still read from disk.
+pub fn check_text(
+    root: &Path,
+    file: &Path,
+    text: &str,
+    level: Option<u32>,
+) -> anyhow::Result<Checked> {
+    let config = load_server(&root.join("mudparty.toml"))?.value;
     let mut out = Problems {
         root,
         list: Vec::new(),
@@ -68,10 +79,10 @@ pub fn check(root: &Path, file: &Path, level: Option<u32>) -> anyhow::Result<Che
         gd: &gd,
         level,
     };
-    let printed = match kind(file, &text) {
-        Kind::Local => world.local(&mut out, file, &text),
+    let printed = match kind(file, text) {
+        Kind::Local => world.local(&mut out, file, text),
         Kind::Routine => world.routine_file(&mut out, file),
-        Kind::Character => world.character(&mut out, file),
+        Kind::Character => world.character(&mut out, file, text),
     };
     Ok(out.done(printed))
 }
@@ -148,9 +159,9 @@ struct World<'a> {
 }
 
 impl World<'_> {
-    fn character(&self, out: &mut Problems, file: &Path) -> String {
-        let mut c: CharacterConfig = match load_character(file) {
-            Ok(l) => l.value,
+    fn character(&self, out: &mut Problems, file: &Path, text: &str) -> String {
+        let mut c: CharacterConfig = match character_from_text(file, text) {
+            Ok(c) => c,
             Err(e) => {
                 out.config(file, &e);
                 return String::new();
