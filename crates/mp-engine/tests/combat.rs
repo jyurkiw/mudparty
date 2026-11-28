@@ -649,3 +649,81 @@ fn a_room_shown_with_nobody_else_here_empties_the_roster() {
         .prompt(80);
     assert_eq!(f.combat.monsters(), ["giant rat"]);
 }
+
+/// A warrior bot: melee only, assisting the leader Raijin.
+fn warrior() -> CombatSettings {
+    let mut set = settings();
+    set.tiers = vec![];
+    set
+}
+
+/// silvermere's answer to an attack command while the player is already fighting
+/// (`commands/combat.rs`): the old fight broken off, `*Combat Off*` with its own prompt,
+/// then the new one, `*Combat Engaged*`.
+fn reengaged(f: &mut Fight) -> &mut Fight {
+    f.msg(Msg::CombatOff).prompt(80).msg(Msg::CombatEngaged)
+}
+
+// An attack sent while already fighting is answered off, prompt, engaged: the fight goes
+// on, so nothing more is sent. Read as a stop, the bot resent at that prompt, and every
+// answer asked for the next; two bots, each line of one redrawing the other's prompt, kept
+// it up ten times a second (#119).
+#[test]
+fn the_break_off_an_attack_of_the_bot_s_own_causes_is_no_stop() {
+    let mut f = Fight::new(warrior());
+    f.here("Raijin, giant rat")
+        .leader_attacks("giant rat")
+        .prompt(80);
+    assert_eq!(f.take_sent(), ["a giant rat"]);
+    reengaged(&mut f).prompt(80);
+    f.leader_attacks("giant rat").prompt(80).prompt(80);
+    assert!(f.take_sent().is_empty());
+}
+
+// The user's backscroll (#119): two giant rats, the bot fighting one, the leader's dies.
+// The party's experience line can't say which died, so the bot takes up "giant rat" again,
+// a fight it's already in. The answer must end it there.
+#[test]
+fn one_of_two_same_named_monsters_dying_sends_one_attack_at_most() {
+    let mut f = Fight::new(warrior());
+    f.here("Raijin, giant rat, giant rat")
+        .leader_attacks("giant rat")
+        .prompt(80);
+    f.msg(Msg::CombatEngaged).wait(5);
+    f.msg(Msg::ExpGain { exp: 3 }).prompt(80);
+    assert_eq!(f.take_sent(), ["a giant rat", "a giant rat"]);
+    // The game's answer, then the other bot's and the leader's lines redrawing the prompt.
+    reengaged(&mut f).prompt(80);
+    for _ in 0..20 {
+        f.leader_attacks("giant rat").prompt(80);
+    }
+    assert!(f.take_sent().is_empty());
+}
+
+// A change of attack is a command too, answered the same way: the new one is running.
+#[test]
+fn a_change_of_attack_answered_off_then_engaged_is_not_sent_again() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin, practice dummy")
+        .leader_attacks("practice dummy")
+        .prompt(40);
+    assert_eq!(f.take_sent(), ["mmis practice dummy"]);
+    f.msg(Msg::CombatEngaged).wait(5).prompt(70);
+    assert_eq!(f.take_sent(), ["lbol practice dummy"]);
+    f.msg(Msg::CombatOff).prompt(70).msg(Msg::CombatEngaged);
+    f.wait(5).prompt(70);
+    assert!(f.take_sent().is_empty());
+}
+
+// A break-off the bot didn't ask for still ends the attack, though one of its own came
+// just before it was answered.
+#[test]
+fn an_off_once_its_attack_is_answered_ends_the_attack() {
+    let mut f = Fight::new(warrior());
+    f.here("Raijin, giant rat")
+        .leader_attacks("giant rat")
+        .prompt(80);
+    f.msg(Msg::CombatEngaged).prompt(80);
+    f.wait(1).msg(Msg::CombatOff).prompt(80);
+    assert_eq!(f.take_sent(), ["a giant rat", "a giant rat"]);
+}

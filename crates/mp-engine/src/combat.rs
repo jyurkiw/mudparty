@@ -13,6 +13,13 @@
 //!   cast at the corpse. Death lines are per-monster flavour and are not read.
 //! - **`*Combat Off*` alone is no death**: a `break` or an interrupted round prints it too,
 //!   so the fight is taken up again while the target is still here.
+//! - **An attack's own break-off is no stop**: an attack sent while already fighting is
+//!   answered `*Combat Off*` (the old fight broken off, with its own prompt), then
+//!   `*Combat Engaged*`. An off that comes while the bot's attack is unanswered is that,
+//!   and the attack is still running. Read as a stop, the attack went out again at the
+//!   off's prompt, and every answer asked for the next: two bots, each line of one
+//!   redrawing the other's prompt, kept it up ten times a second (#119). A kill can set it
+//!   off: the party's experience line doesn't say which of two same-named monsters died.
 //! - **Shared names**: an attack on a shared name goes to the first monster of that name.
 //! - **Refusals**: an attack at a name nobody here has is no attack. A melee line is taken as
 //!   speech: `You say "a kobold"` with fast talk on (a new character's default), else
@@ -118,9 +125,9 @@ pub struct Combat {
     /// An `Also here:` line came since the last prompt: the room display being read has
     /// its list.
     also_here_seen: bool,
-    /// The attack sent and its target, until the game takes it up (`*Combat Engaged*`) or
-    /// refuses it.
-    asked: Option<(Attack, String)>,
+    /// The attack sent, its target and when it went, until the game takes it up
+    /// (`*Combat Engaged*`) or refuses it (#118, #119).
+    asked: Option<(Attack, String, Instant)>,
 }
 
 impl Combat {
@@ -275,6 +282,12 @@ impl Combat {
                 self.engaged = true;
                 self.asked = None;
             }
+            // The break-off of the bot's own attack, answered in a round, is no stop.
+            Item::Event(Event::CombatOff)
+                if self
+                    .asked
+                    .as_ref()
+                    .is_some_and(|(_, _, at)| now.duration_since(*at) < self.set.round) => {}
             Item::Event(Event::CombatOff) => {
                 self.engaged = false;
                 self.current = None;
@@ -307,7 +320,7 @@ impl Combat {
 
     /// The monster the game says the bot's attack found nobody by (see the module notes).
     fn refused(&self, line: &str) -> Option<String> {
-        let (attack, target) = self.asked.as_ref()?;
+        let (attack, target, _) = self.asked.as_ref()?;
         let line = line.trim();
         let said = format!("You say \"{}\"", attack.command(target));
         let refused = match attack {
@@ -469,7 +482,7 @@ impl Combat {
             return Vec::new();
         }
         let cmd = want.command(&target);
-        self.asked = Some((want.clone(), target));
+        self.asked = Some((want.clone(), target, now));
         self.current = Some(want);
         self.last_change = Some(now);
         vec![cmd]
