@@ -2436,3 +2436,111 @@ Selling loot by itself waits for a rule saying what to keep.
 6. The sheet's item actions (#101).
 
 They're web interface work, in 1.1 with #95's. Picking up coins is #102 (Later).
+
+## 16. Building and editing character files on the page (designed 2026-11-27)
+
+1.1's main piece (#58, goal #95). Until now every character file was written by hand, and
+the first party test showed how easily one goes wrong: a `.yml` file ignored, `melee`
+left out, a `name:` that didn't match its file. The page now builds and edits them.
+Routines stay hand-written in this round; 1.2 builds them on the map (#71).
+
+Settled with the user:
+- character files only;
+- forms, plus a YAML tab;
+- a form's save rewrites the file, after a warning when it has comments;
+- an Edit button on each card, and a New character button in the header.
+
+### 16.1 The editor
+
+**Edit** on a card opens the editor in a modal, as the sheet opens. **New character** in
+the page's header opens it empty. The editor has a tab for each part of the file, and a
+YAML tab.
+
+| Tab | What it edits | Pickers and checks |
+|---|---|---|
+| **Character** | `name` (new files only), `class`, `autostart` | Classes from the game data. |
+| **Login** | `login.account`, the password, `takeover` | The password is written to `secrets.yaml` and never shown again: the tab says only whether one is set. Written `login.steps` are the YAML tab's. |
+| **Party** | `party.leader`, `invite_by_injection`, `role`; `remote.allow`, `channels`, `warn_denied` | Leaders and allowed players from the character files, or typed. |
+| **Combat** | `targeting` (in order), `tiers`, `room_tiers`, `melee`; the `automation` switches | Rules added and moved in a list. `priority` names come from the game data's monsters, as you type. Spells come from those the class can cast (the spell's magic kind is the class's, and its magic level within the class's), with each spell's mana. A warning when targeting is set but there's no melee and no tier. |
+| **Rest** | `start_when_any`, `stop_when_all`, `command`, `tell_leader` | Amounts as % or points. `meditate` only for a class with it. |
+| **Gear** | `gear:`: item, use, shop | Items from the compiled room files' shops, with the shops that sell each. |
+| **Routine** | none, or a routine from `routines/`, with its parameters | Each parameter shown with the routine's default, filled in to change it. |
+| **YAML** | the whole file, as text | Checked as it's typed. |
+
+`statline`, `statline_restore`, written `login.steps`, `stealth_opener` and `unattended`
+have no form yet: they're edited in the YAML tab. A form shows a note when the file sets
+one, so saving the form keeps it.
+
+### 16.2 Forms and the YAML tab
+
+- **The forms edit the parsed file.** The server reads the file into a `CharacterConfig` and sends it to the page as JSON. The forms change that, and a save sends it back. The server writes it with `to_yaml`, so every setting is written out, defaults too, as `check` prints it.
+- **Comments.** A file with comments loses them on a form save. The editor says so when it opens such a file, before anything is saved.
+- **The YAML tab** edits the text itself, and saves it as typed, comments and all. Switching from the forms to the YAML tab shows the forms' changes as YAML. Switching back reads the text into the forms, or stays on the YAML tab, showing why, if the text doesn't read.
+
+### 16.3 Checking before saving
+
+What's checked, from the forms or the YAML tab, a moment after each change:
+
+1. **Reading:** `CharacterConfig::from_yaml`, the same check the server uses. Any problem blocks the save.
+2. **`check`** (*§14.9*): places that don't name a room or can't be walked to, a routine that doesn't load, an item no shop sells. These block the save too.
+3. **The validator** (#93): traps such as targeting with no melee or tiers, or `name:` not matching the file. These are warnings: shown, not blocking.
+
+Each problem is shown at the setting it concerns, as `check` names it (`combat.tiers[0].spell`), and listed above the Save button.
+
+### 16.4 Saving
+
+- **Atomic:** the file is written beside itself and renamed into place, so the server's watcher never reads half a file.
+- **New files** go to `characters/<name>.yaml`, named after the character, always `.yaml`. A name that already has a file is refused.
+- **Conflicts:** the editor holds the file's revision from when it opened (the content hash, `files::revision`). A save whose file has changed on disk since is refused. The editor then offers to load the new version, or to see the two side by side in the YAML tab.
+- **The password** goes into `secrets.yaml` under the account, replacing an old one, other accounts left alone, written the same atomic way. The page never reads passwords back.
+- **After a save** the card shows the new file at once, as for a hand edit. A running bot takes it through #94's reload. Until #94 is built, the editor says the bot needs a Stop and Start.
+
+### 16.5 New characters
+
+**New character** asks for a name, a class, the account and its password, then opens the
+other tabs. The character must exist in the game: mudparty doesn't create characters.
+silvermere's database holds them (`characters`), so the server can suggest characters that
+have no file yet, with their class, read-only from `gamedata.silvermere_db`. That copy is
+only as fresh as silvermere's last save.
+
+### 16.6 The server's side
+
+New messages on the page's feed, `v: 1`:
+
+| Page → server | Server → page |
+|---|---|
+| `edit_open { name }` | `edit { name, rev, config, yaml, comments, password_set }` |
+| `edit_check { name, config | yaml }` | `edit_checked { problems, warnings, yaml }` |
+| `edit_save { name, rev, config | yaml, password? }` | `result`, or `edit_conflict { rev, yaml }` |
+| `edit_choices` | `choices { classes, spells, monsters, items, routines, characters, unfiled }` |
+
+`edit_choices` comes from the game data and the files:
+- classes, with their magic kind and level;
+- spells, with cast code, name, mana and magic kind;
+- monster names;
+- shop items and the shops selling each;
+- routines, with their parameters and defaults;
+- the character files;
+- characters in silvermere's database that have no file yet.
+
+It's sent once when the editor opens.
+
+### 16.7 Not in this round
+
+- Editing routines and places (1.2, with the map, #71).
+- Deleting or renaming a character file.
+- A form for `statline`, `login.steps`, `stealth_opener` or `unattended`.
+- Applying a saved file to a running bot (#94).
+
+### 16.8 Build order
+
+1. The server's editing messages: open, check, save with the revision and the password,
+   and the choices (#110).
+2. The YAML tab: open, check as typed, save (#111). It's useful alone, since it covers
+   every setting.
+3. The form tabs, in this order: Character, Login, Combat (the one that most needs help),
+   Rest, Party, Gear, Routine (#112).
+4. New character, with the unfiled characters from silvermere's database (#113).
+5. The validator's warnings (#93) and reload (#94), as they come.
+
+#58 is the whole of it.
