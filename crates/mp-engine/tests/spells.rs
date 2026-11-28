@@ -30,6 +30,7 @@ fn block(from: Option<u32>, to: Option<u32>, spells: Vec<SpellRule>) -> LevelBlo
     LevelBlock {
         levels: Span::new(from, to),
         spells,
+        heals: vec![],
     }
 }
 
@@ -37,6 +38,7 @@ fn facts(name: &str, room: bool, line: &str) -> SpellFacts {
     SpellFacts {
         name: s(name),
         room,
+        party: false,
         cast_line: s(line),
     }
 }

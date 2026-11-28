@@ -289,6 +289,46 @@ combat:
 - **`check`**: names any cast code the game data hasn't.
 - **The older form**: `tiers` and `room_tiers` still work, read as a block for every level after these.
 
+A block's `heals` come before its attacks, at most one heal a round:
+
+```yaml
+schema: 1
+name: Ermias
+class: Cleric
+login:
+  account: Ermias
+combat:
+  melee: a
+  by_level:
+    - levels: 10-
+      heals:
+        - cast: mrai         # a party spell, by the game data: cast bare
+          when: { hp_below: 70%, allies: 2-, min_mp: 30% }
+        - cast: mahe
+          on: [self, party]  # or names: [Raijin]
+          when: { hp_below: 50%, min_mp: 10 }
+        - cast: mihe
+          on: [self]
+          when: { hp_below: 80%, enemies: 0 }   # only out of a fight
+      spells:
+        - cast: mmis
+```
+
+- **`on`**: whom a heal is for.
+  - `self`, the default.
+  - `party`: the other characters this server runs, while the room display lists them here.
+  - names.
+- **Who goes first**: the most hurt, by share of their maximum. A heal for the healer goes out as the bare code.
+- **`hp_below`**: the target's HP line, a share or points. It's needed.
+- **`min_mp`**: the healer's own MP held in reserve.
+- **`allies`**: how many are below the line.
+  - For a party spell, that's everyone in the party here, the healer too.
+  - By default, a party spell goes when one of them is.
+- **`enemies` and `routine`**: work as they do for spells.
+- **Where HP comes from**: each character's own prompts, passed on by the server. So players the server doesn't run aren't healed. A share needs the maximum, which the bot's statline shows (`%H`).
+- **In a fight**: a heal breaks off silvermere's auto-combat, so the bot takes its attack up again the round after.
+- **Switches**: heals stop with `@auto-combat off` but not with `@auto-nuke off`.
+
 A bot sets its own statline (the file's `statline`) so it can read its HP and MP, but
 it leaves the character as it found it. Before changing anything it reads the character's
 statline with `pro` and keeps it in `mudparty.sqlite`, and it puts it back when it logs off

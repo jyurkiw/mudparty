@@ -42,6 +42,16 @@
 //!   its code). A single-target spell's casts are counted per monster, and a kill gives the
 //!   next of that name its own; a room spell's per room, until the room is clear.
 //!
+//! - **Heals** (#126): a level block's `heals` come before its attacks, one cast a round.
+//!   Whom a heal is for comes from the healer's own prompt, and from the HP the server
+//!   passes on for each other character it runs (`set_ally`), read off that character's
+//!   prompts. Another character is healed only while the room display lists it
+//!   (`Also here:`), and not once it has left. A cast breaks off silvermere's auto-combat
+//!   (`*Combat Off*`, `commands/cast.rs` `stop_autocombat`), so no attack goes out in the
+//!   heal's round, and the attack is taken up again after it. A heal with no target is the
+//!   healer's own (silvermere's cast with no target, for a Self or Single spell); a party
+//!   spell goes out bare.
+//!
 //! The room's monsters come from the `Also here:` list. A name counts as a monster only if
 //! it is, or ends with, a monster name from the game data (`large kobold` is a `kobold`), so
 //! a player is never attacked by mistake.
@@ -49,7 +59,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use mp_config::{Amount, LevelBlock, Melee, RoomTier, Rule, Span, SpellRule, SpellWhen, Tier};
+use mp_config::{
+    Amount, HealRule, LevelBlock, Melee, RoomTier, Rule, Span, SpellRule, SpellWhen, Tier, Whom,
+};
 use mp_parse::{Event, Item};
 
 /// What the engine needs to fight.
@@ -87,8 +99,24 @@ pub struct SpellFacts {
     pub name: String,
     /// It goes at the whole room, cast with its bare code.
     pub room: bool,
+    /// It heals the whole party here, cast with its bare code (#126).
+    pub party: bool,
     /// The caster's line of a cast, `%s` and `%d` in it.
     pub cast_line: String,
+}
+
+/// Another character's HP, as the server last read it off that character's prompt (#126).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllyHp {
+    pub hp: i32,
+    pub max_hp: Option<i32>,
+}
+
+/// A heal rule as the engine runs it: whether it's a party spell.
+#[derive(Debug, Clone)]
+struct Healing {
+    rule: HealRule,
+    party: bool,
 }
 
 /// A spell rule as the engine runs it: whether it's cast at the room.
@@ -186,11 +214,35 @@ pub struct Combat {
     tiers: Vec<Planned>,
     /// Casts counted by (cast code, monster in lower case): a room spell's monster is "".
     casts: HashMap<(String, String), u32>,
+    /// Each level block's heals, by the block's place in `blocks`.
+    heals: Vec<Vec<Healing>>,
+    /// The other characters the server runs, by first name in lower case.
+    allies: HashMap<String, (String, AllyHp)>,
+    /// The players in the room, as the game last listed them.
+    players: Vec<String>,
+    /// The healer's own HP and maximum, from the last prompt.
+    hp: Option<i32>,
+    max_hp: Option<i32>,
+    /// When the last heal went: one a round, and no attack in its round.
+    healed_at: Option<Instant>,
 }
 
 impl Combat {
     pub fn new(set: CombatSettings) -> Self {
         let room = |cast: &str| set.spell_facts.get(cast).is_some_and(|f| f.room);
+        let heals = set
+            .by_level
+            .iter()
+            .map(|b| {
+                b.heals
+                    .iter()
+                    .map(|h| Healing {
+                        rule: h.clone(),
+                        party: set.spell_facts.get(&h.cast).is_some_and(|f| f.party),
+                    })
+                    .collect()
+            })
+            .collect();
         let blocks = set
             .by_level
             .iter()
@@ -256,6 +308,24 @@ impl Combat {
             blocks,
             tiers,
             casts: HashMap::new(),
+            heals,
+            allies: HashMap::new(),
+            players: Vec::new(),
+            hp: None,
+            max_hp: None,
+            healed_at: None,
+        }
+    }
+
+    /// Another character the server runs, and its HP; `None` when it has gone (#126).
+    pub fn set_ally(&mut self, name: &str, hp: Option<AllyHp>) {
+        match hp {
+            Some(hp) => {
+                self.allies.insert(lower(name), (name.to_owned(), hp));
+            }
+            None => {
+                self.allies.remove(&lower(name));
+            }
         }
     }
 
@@ -363,16 +433,25 @@ impl Combat {
                     .filter(|n| self.is_monster(n))
                     .cloned()
                     .collect();
+                self.players = names
+                    .iter()
+                    .filter(|n| !self.is_monster(n) && !n.eq_ignore_ascii_case(&self.set.name))
+                    .cloned()
+                    .collect();
             }
             // A room display lists who else is here before its exits, and leaves the line
             // out when nobody is: exits with no list since the last prompt mean an empty
             // room (a move, or a look after the last monster died or left).
-            Item::Event(Event::ObviousExits) if !self.also_here_seen => self.roster.clear(),
+            Item::Event(Event::ObviousExits) if !self.also_here_seen => {
+                self.roster.clear();
+                self.players.clear();
+            }
             // Gone: off the roster, so a target that ran is let go at the next prompt.
             Item::Event(Event::Left { who }) => {
                 if let Some(i) = self.roster.iter().position(|r| r.eq_ignore_ascii_case(who)) {
                     self.roster.remove(i);
                 }
+                self.players.retain(|p| !p.eq_ignore_ascii_case(who));
             }
             Item::Event(Event::MovesToAttack { who, target })
             | Item::Event(Event::MovesToCast { who, target, .. })
@@ -434,6 +513,10 @@ impl Combat {
                 self.mp = v.mp.unwrap_or(0);
                 if v.max_mp.is_some() {
                     self.max_mp = v.max_mp;
+                }
+                self.hp = Some(v.hp);
+                if v.max_hp.is_some() {
+                    self.max_hp = v.max_hp;
                 }
                 return self.decide(now);
             }
@@ -587,11 +670,96 @@ impl Combat {
         self.mp >= cost && min
     }
 
-    /// The spells for the bot's level: the first block that holds it, else the tiers.
+    /// The level block for the bot's level: the first that holds it.
+    fn block(&self) -> Option<usize> {
+        let l = self.level?;
+        self.blocks.iter().position(|(span, _)| span.holds(l))
+    }
+
+    /// The spells for the bot's level: the block's, else the tiers.
     fn plan(&self) -> &[Planned] {
-        self.level
-            .and_then(|l| self.blocks.iter().find(|(span, _)| span.holds(l)))
-            .map_or(&self.tiers[..], |(_, rules)| &rules[..])
+        self.block()
+            .map_or(&self.tiers[..], |i| &self.blocks[i].1[..])
+    }
+
+    /// A rule's `routine` holds: none given, or the routine running is one of them.
+    fn under_routine(&self, globs: &[String]) -> bool {
+        globs.is_empty()
+            || self
+                .set
+                .routine
+                .as_deref()
+                .is_some_and(|r| globs.iter().any(|g| glob(g, r)))
+    }
+
+    /// The heal to cast now, if any (see the module notes): the first rule of the block
+    /// with someone to heal that the healer's MP can pay for.
+    fn healing(&self) -> Option<String> {
+        let rules = &self.heals[self.block()?];
+        let monsters = u32::try_from(self.roster.len()).unwrap_or(u32::MAX);
+        // The others here, with their HP.
+        let here: Vec<&(String, AllyHp)> = self
+            .players
+            .iter()
+            .filter_map(|p| self.allies.get(&lower(p)))
+            .collect();
+        for h in rules {
+            let w = &h.rule.when;
+            if w.enemies.is_some_and(|e| !e.holds(monsters))
+                || !self.under_routine(&w.routine)
+                || !self.affordable(&h.rule.cast, w.min_mp)
+            {
+                continue;
+            }
+            let hurt =
+                |hp: i32, max: Option<i32>| crate::rest::below(Some(w.hp_below), Some(hp), max);
+            let me_hurt = self.hp.is_some_and(|hp| hurt(hp, self.max_hp));
+            if h.party {
+                let n = here.iter().filter(|(_, a)| hurt(a.hp, a.max_hp)).count()
+                    + usize::from(me_hurt);
+                let n = u32::try_from(n).unwrap_or(u32::MAX);
+                if w.allies.map_or(n >= 1, |s| n >= 1 && s.holds(n)) {
+                    return Some(h.rule.cast.clone());
+                }
+                continue;
+            }
+            // Those it's for that are hurt: `None` for the healer, with their share of
+            // their maximum in thousandths (points alone count as whole).
+            let share = |hp: i32, max: Option<i32>| {
+                max.filter(|m| *m > 0)
+                    .map_or(1000, |m| i64::from(hp) * 1000 / i64::from(m))
+            };
+            let mut hurt_ones: Vec<(Option<&str>, i64)> = Vec::new();
+            for whom in &h.rule.on {
+                match whom {
+                    Whom::Me if me_hurt => {
+                        hurt_ones.push((None, share(self.hp.unwrap_or(0), self.max_hp)));
+                    }
+                    Whom::Me => {}
+                    Whom::Party => hurt_ones.extend(
+                        here.iter()
+                            .filter(|(_, a)| hurt(a.hp, a.max_hp))
+                            .map(|(n, a)| (Some(n.as_str()), share(a.hp, a.max_hp))),
+                    ),
+                    Whom::Named(name) => hurt_ones.extend(
+                        here.iter()
+                            .filter(|(n, a)| n.eq_ignore_ascii_case(name) && hurt(a.hp, a.max_hp))
+                            .map(|(n, a)| (Some(n.as_str()), share(a.hp, a.max_hp))),
+                    ),
+                }
+            }
+            hurt_ones.sort_by_key(|(n, s)| (*s, n.map(lower)));
+            hurt_ones.dedup_by_key(|(n, _)| n.map(lower));
+            let n = u32::try_from(hurt_ones.len()).unwrap_or(u32::MAX);
+            if n == 0 || w.allies.is_some_and(|s| !s.holds(n)) {
+                continue;
+            }
+            return Some(match hurt_ones[0].0 {
+                None => h.rule.cast.clone(),
+                Some(name) => format!("{} {name}", h.rule.cast),
+            });
+        }
+        None
     }
 
     /// The rule's conditions hold, here, at this target.
@@ -608,13 +776,7 @@ impl Combat {
             } else {
                 w.monsters.iter().any(|g| glob(g, target))
             };
-        let routine = w.routine.is_empty()
-            || self
-                .set
-                .routine
-                .as_deref()
-                .is_some_and(|r| w.routine.iter().any(|g| glob(g, r)));
-        enemies && monsters && routine
+        enemies && monsters && self.under_routine(&w.routine)
     }
 
     /// Casts left under `max_casts`: at this monster, or in this room for a room spell.
@@ -658,6 +820,14 @@ impl Combat {
         if self.roster.is_empty() {
             self.casts.retain(|(_, m), _| !m.is_empty());
         }
+        // A heal first, one a round; no attack goes out in its round.
+        let heal_round = self
+            .healed_at
+            .is_some_and(|at| now.duration_since(at) < self.set.round);
+        if !heal_round && let Some(cast) = self.healing() {
+            self.healed_at = Some(now);
+            return vec![cast];
+        }
         // A kill order preempts the current target; otherwise a target is kept until it
         // dies or leaves, so the bot doesn't flip between monsters.
         let ordered = self.kill_order.as_deref().and_then(|k| self.here(k));
@@ -688,6 +858,9 @@ impl Combat {
                 .last_change
                 .is_some_and(|at| now.duration_since(at) < self.set.round)
         {
+            return Vec::new();
+        }
+        if heal_round {
             return Vec::new();
         }
         let cmd = want.command(&target);

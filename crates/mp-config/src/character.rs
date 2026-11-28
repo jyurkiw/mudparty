@@ -330,6 +330,104 @@ pub struct LevelBlock {
     /// left and works on the target is cast; when none does, `melee`.
     #[serde(default)]
     pub spells: Vec<SpellRule>,
+    /// Healing spells (#126), top-down, ahead of any attack: the first rule with someone to
+    /// heal that the healer's MP can pay for is cast, at most one a round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heals: Vec<HealRule>,
+}
+
+/// A healing spell, whom it's for, and when.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealRule {
+    /// The cast code (`mihe`). A party spell (the game data's: healing rain) goes out bare,
+    /// for everyone in the party here, and `on` doesn't apply.
+    pub cast: String,
+    /// `self`, `party` (the other characters the server runs that are in the room) or
+    /// names; the most hurt of them, by share of their maximum, is healed first.
+    #[serde(default = "d_on")]
+    pub on: Vec<Whom>,
+    pub when: HealWhen,
+}
+
+/// When a heal is cast: every condition given must hold.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealWhen {
+    /// Whom it's for has HP below this: a share of the maximum (`50%`) or points.
+    pub hp_below: Amount,
+    /// The healer's own MP is at least this, as well as the spell's cost: its reserve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_mp: Option<Amount>,
+    /// How many are below `hp_below`: of `on`, or for a party spell of the party here,
+    /// the healer too. `2-`, `1-3`, or one number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allies: Option<Span>,
+    /// How many monsters are in the room: `0` for a heal only out of a fight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enemies: Option<Span>,
+    /// The routines the rule runs under, by name (globs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routine: Vec<String>,
+}
+
+impl Default for HealWhen {
+    /// Below 0%: never, until a line is given.
+    fn default() -> Self {
+        Self {
+            hp_below: Amount::Percent(0),
+            min_mp: None,
+            allies: None,
+            enemies: None,
+            routine: Vec::new(),
+        }
+    }
+}
+
+/// Whom a heal is for: `self`, `party`, or a character's first name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Whom {
+    Me,
+    Party,
+    Named(String),
+}
+
+fn d_on() -> Vec<Whom> {
+    vec![Whom::Me]
+}
+
+impl<'de> Deserialize<'de> for Whom {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.trim() {
+            "self" => Self::Me,
+            "party" => Self::Party,
+            name => Self::Named(name.to_owned()),
+        })
+    }
+}
+
+impl Serialize for Whom {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            Self::Me => "self",
+            Self::Party => "party",
+            Self::Named(n) => n,
+        })
+    }
+}
+
+impl JsonSchema for Whom {
+    fn schema_name() -> Cow<'static, str> {
+        "Whom".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "`self`, `party`, or a character's first name.",
+            "type": "string"
+        })
+    }
 }
 
 /// An attack spell and when to cast it.
@@ -833,6 +931,37 @@ impl CharacterConfig {
                             "a name can't be empty",
                         ));
                     }
+                }
+            }
+            for (j, h) in b.heals.iter().enumerate() {
+                let at = format!("{at}.heals[{j}]");
+                if h.cast.trim().is_empty() {
+                    return Err(ConfigError::at(format!("{at}.cast"), "a spell is needed"));
+                }
+                if h.on.is_empty() {
+                    return Err(ConfigError::at(
+                        format!("{at}.on"),
+                        "whom it's for: self, party, or names",
+                    ));
+                }
+                if h.on
+                    .iter()
+                    .any(|w| matches!(w, Whom::Named(n) if n.is_empty()))
+                {
+                    return Err(ConfigError::at(format!("{at}.on"), "a name can't be empty"));
+                }
+                check_amount(&format!("{at}.when.hp_below"), Some(h.when.hp_below))?;
+                check_amount(&format!("{at}.when.min_mp"), h.when.min_mp)?;
+                for (field, span) in [("allies", h.when.allies), ("enemies", h.when.enemies)] {
+                    if let Some(s) = span {
+                        check_span(&format!("{at}.when.{field}"), s)?;
+                    }
+                }
+                if h.when.routine.iter().any(|n| n.trim().is_empty()) {
+                    return Err(ConfigError::at(
+                        format!("{at}.when.routine"),
+                        "a name can't be empty",
+                    ));
                 }
             }
         }

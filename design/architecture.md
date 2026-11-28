@@ -714,6 +714,20 @@ combat:
   - `..., but the spell is resisted.` (`cast_fail_at`, `cast_resisted`; the spell's name).
 
   Only the spell going out is counted. A single-target spell's casts are per monster, and a kill gives the next of that name its own. A room spell's are per room, until the room is clear of monsters.
+
+**Heals (#126).** A block's `heals` come before its attacks, one cast a round:
+`cast`, `on` (`self`, `party`, names), and `when` (`hp_below`, needed; `min_mp`, the
+healer's reserve; `allies`; `enemies`; `routine`).
+
+- **Whose HP**: the healer's own comes from its prompt.
+  - The others' come from the server. It keeps each running character's last `Report::Vitals` and passes changes to every other session as `Command::Ally`. A session keeps them across links, and the server hands them to a session when it starts.
+  - The user chose this over polling `par` (2026-11-28), so a player the server doesn't run isn't healed.
+- **Who is here**: another character is healed only while the room display lists it (`Also here:`), and not once it has left.
+- **The pick**:
+  - A single-target heal goes at the most hurt of those it's for, by share of their maximum, with points alone counting as whole.
+  - With no target, silvermere casts a Self or Single spell at the caster, so the healer's own heal goes out bare.
+  - A party spell (`TGT_` 10 and 13) goes out bare. `allies` then counts everyone in the party here below the line, the healer too.
+- **In a fight**: every cast breaks off silvermere's auto-combat (`commands/cast.rs` `stop_autocombat`: `*Combat Off*`). So no attack goes out in the heal's round, and the attack is taken up again after it. A cast also ends a rest (`cast_no_target` clears RESTING).
 - **Engaged** is `*Combat Engaged*`; **off** is `*Combat Off*`. A monster death line ends
   the target.
 

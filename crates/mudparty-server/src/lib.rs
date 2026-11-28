@@ -30,7 +30,7 @@ use mp_config::{
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
 use mp_engine::{
-    AutoSwitch, CircuitSettings, CombatSettings, Command, Effect, GearSettings, Inviter,
+    AllyHp, AutoSwitch, CircuitSettings, CombatSettings, Command, Effect, GearSettings, Inviter,
     LairClocks, LairSettings, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
     RestSettings, RoomBook, RoomInfo, RouteRules, RoutineSettings, RuleSettings, ScriptStep, Seat,
     SessionHandle, SessionSpec, SessionState, SpellFacts, Upstream, spawn, spawn_seated,
@@ -187,6 +187,9 @@ pub struct Server {
     /// The compiled room files in `places/` (#63), for naming rooms; none read is empty.
     places: Places,
     runs: AtomicU64,
+    /// Each running character's HP, off its last prompt: passed to the others for their
+    /// heals (#126).
+    hp: Mutex<BTreeMap<String, AllyHp>>,
     /// The party as the web page shows it, by name.
     cards: Mutex<BTreeMap<String, Card>>,
     /// Counts changes to `cards`, for the page's feed.
@@ -248,6 +251,7 @@ impl Server {
             gamedata: Arc::new(Mutex::new(None)),
             places,
             runs: AtomicU64::new(0),
+            hp: Mutex::new(BTreeMap::new()),
             cards: Mutex::new(BTreeMap::new()),
             changed: watch::Sender::new(0),
             texts: Mutex::new(HashMap::new()),
@@ -338,6 +342,12 @@ impl Server {
                     .iter()
                     .flat_map(|b| b.spells.iter().map(|r| r.cast.as_str())),
             )
+            .chain(
+                c.combat
+                    .by_level
+                    .iter()
+                    .flat_map(|b| b.heals.iter().map(|h| h.cast.as_str())),
+            )
             .filter_map(|short| Some((short.to_owned(), gd.spell_by_short(short).ok()??)))
             .collect();
         let spell_costs = spells
@@ -348,10 +358,11 @@ impl Server {
         let spell_facts = spells
             .into_iter()
             .map(|(short, s)| {
-                let room = s.hits_room();
+                let (room, party) = (s.hits_room(), s.hits_party());
                 let facts = SpellFacts {
                     name: s.name,
                     room,
+                    party,
                     cast_line: s.cast_line,
                 };
                 (short, facts)
@@ -885,10 +896,32 @@ impl Server {
                 seated,
             },
         );
+        // What the others' prompts last said, for its heals (#126).
+        if let Some(b) = bots.get(&name) {
+            for (other, hp) in self.hp.lock().expect("hp lock").iter() {
+                if *other != name {
+                    b.handle.send(Command::Ally {
+                        name: other.clone(),
+                        hp: Some(*hp),
+                    });
+                }
+            }
+        }
         let me = Arc::clone(self);
         let who = name;
         tokio::spawn(async move {
             while let Some(report) = rx.recv().await {
+                match &report {
+                    Report::Vitals(v) => me.share_hp(
+                        &who,
+                        Some(AllyHp {
+                            hp: v.hp,
+                            max_hp: v.max_hp,
+                        }),
+                    ),
+                    Report::State(SessionState::Offline(_)) => me.share_hp(&who, None),
+                    _ => {}
+                }
                 if let Report::State(SessionState::Offline(off)) = &report {
                     let mut bots = me.bots.lock().expect("bots lock");
                     if bots.get(&who).is_some_and(|b| b.run == run) {
@@ -958,6 +991,30 @@ impl Server {
                 });
             }
         });
+    }
+
+    /// Keeps `name`'s HP, or lets it go, and passes it to every other character running
+    /// (#126). A change only: the session reports vitals when its prompt changes.
+    fn share_hp(&self, name: &str, hp: Option<AllyHp>) {
+        {
+            let mut known = self.hp.lock().expect("hp lock");
+            match hp {
+                Some(hp) => {
+                    known.insert(name.to_owned(), hp);
+                }
+                None => {
+                    known.remove(name);
+                }
+            }
+        }
+        for (other, b) in self.bots.lock().expect("bots lock").iter() {
+            if other != name {
+                b.handle.send(Command::Ally {
+                    name: name.to_owned(),
+                    hp,
+                });
+            }
+        }
     }
 
     /// Logs `name` off and waits for it. `None` if it had no session.

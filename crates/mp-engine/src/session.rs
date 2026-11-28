@@ -26,7 +26,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
 use crate::capture::{Captured, Capturer};
-use crate::combat::{Combat, CombatSettings};
+use crate::combat::{AllyHp, Combat, CombatSettings};
 use crate::history::{HistLine, HistoryFilter};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
 use crate::pacing::{Action, Pacer, PacingSettings};
@@ -226,6 +226,9 @@ pub enum Command {
     /// Send `line` and hand back its output as `Report::Captured`, under the page's `id`:
     /// `help strength`, `look club`. A seated character's line is injected.
     Capture { id: String, line: String },
+    /// Another character the server runs, and its HP off its own prompt, for heals (#126);
+    /// `None` when it has gone.
+    Ally { name: String, hp: Option<AllyHp> },
 }
 
 /// What a session is doing.
@@ -461,6 +464,8 @@ struct Runner {
     exp_known: Option<ExpKnown>,
     /// The character's level, as `exp` or a training last said (#56).
     level: Option<u32>,
+    /// The other characters the server runs and their HP, kept across links (#126).
+    allies: BTreeMap<String, AllyHp>,
     last_vitals: Option<Vitals>,
     /// What goes in the text history: told what the bot sends, so its echoes stay out.
     history: HistoryFilter,
@@ -480,6 +485,18 @@ impl Runner {
     fn event(&mut self, kind: &str, fields: serde_json::Value) {
         if let Some(l) = &mut self.logs {
             let _ = l.event(kind, fields);
+        }
+    }
+
+    /// Keeps another character's HP for the heals, or lets it go (#126).
+    fn ally(&mut self, name: &str, hp: Option<AllyHp>) {
+        match hp {
+            Some(hp) => {
+                self.allies.insert(name.to_owned(), hp);
+            }
+            None => {
+                self.allies.remove(name);
+            }
         }
     }
 
@@ -1202,6 +1219,9 @@ impl Runner {
         if let Some(c) = &mut combat {
             c.set_nuke(self.auto.nuke);
             c.set_hold(!self.auto.held_by.is_empty());
+            for (name, hp) in &self.allies {
+                c.set_ally(name, Some(*hp));
+            }
         }
         let remote = self.spec.remote.clone().map(Remote::new);
         let mut party = self.spec.party.clone().map(PartyJoin::new);
@@ -1629,6 +1649,12 @@ impl Runner {
                         self.report(Report::Walk(WalkState::Failed("not able to walk now".into())));
                     }
                     Some(Command::RefreshSheet) => sheet_due = true,
+                    Some(Command::Ally { name, hp }) => {
+                        self.ally(&name, hp);
+                        if let Some(c) = &mut combat {
+                            c.set_ally(&name, hp);
+                        }
+                    }
                     Some(Command::Capture { id, line }) if in_game && logging_off.is_none() => {
                         self.decision("capture", json!({"id": id, "line": line}));
                         capturer.ask(&id, &line, Instant::now());
@@ -1799,6 +1825,7 @@ async fn run_from(
         exp_since: None,
         exp_known: None,
         level: None,
+        allies: BTreeMap::new(),
         last_vitals: None,
         history: HistoryFilter::default(),
         spec,
@@ -1881,6 +1908,7 @@ async fn run_from(
                         }
                         // The sheets are read again after the login anyway.
                         Some(Command::RefreshSheet) => {}
+                        Some(Command::Ally { name, hp }) => r.ally(&name, hp),
                         Some(Command::Capture { id, line }) => {
                             r.report(Report::Captured(Captured { id, line, text: String::new(), answered: false }));
                         }
