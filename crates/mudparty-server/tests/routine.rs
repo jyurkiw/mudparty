@@ -137,7 +137,9 @@ async fn a_bot_camps_rests_up_the_stairs_and_comes_back() {
     .await;
     // The game's clock runs as the test waits, and the arena's monsters (an acid slime)
     // come and hit a bot that doesn't fight back. Enough HP that they can't push it below
-    // the retreat line keeps the camp a camp until the test hurts it.
+    // the retreat line keeps the camp a camp until the test hurts it, and without the
+    // slime's acid nothing puts the boosted max HP back (#129).
+    sm.without_hit_spells().await;
     sm.on_world(|w| {
         for id in w.session_ids() {
             if let Some(p) = w.session_mut(id).and_then(|s| s.character.as_mut())

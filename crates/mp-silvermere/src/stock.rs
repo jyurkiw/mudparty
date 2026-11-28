@@ -22,7 +22,7 @@ use silvermere_db::Db;
 use silvermere_engine::{EngineInput, SeededRng, SystemClock, World};
 use silvermere_import::{ImportOptions, Importer};
 use silvermere_testkit::TelnetClient;
-use silvermere_types::ids::{MapId, RoomId};
+use silvermere_types::ids::{MapId, RoomId, SpellNo};
 
 use crate::client::WAIT;
 
@@ -376,6 +376,22 @@ impl StockSilvermere {
     /// Runs `f` on the game's world, on the engine thread.
     pub async fn on_world(&self, f: impl FnOnce(&mut World) + Send + 'static) {
         run_on(&self.running.to_engine, f).await;
+    }
+
+    /// Takes the hit spells off every monster's attacks: the arena's acid slime burns with
+    /// one. A monster's spell on a player recalculates the player's stats (silvermere's
+    /// `monsters/cast.rs` calls `items::equip::recalc`), which puts a max HP a test raised
+    /// back to the class's own, and the HP down to it. A test that boosts HP so the
+    /// monsters can't matter calls this first (#129).
+    pub async fn without_hit_spells(&self) {
+        self.on_world(|w| {
+            for m in w.monsters.values_mut() {
+                for a in &mut m.attacks {
+                    a.hitspell = SpellNo(0);
+                }
+            }
+        })
+        .await;
     }
 
     pub async fn stop(self) -> anyhow::Result<()> {
