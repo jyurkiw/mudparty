@@ -231,3 +231,12 @@ fn a_trainer_is_found_for_a_class() {
     );
     assert!(p.trainers(None, Some("newhaven")).contains(&(1, 2147)));
 }
+
+// What kind of shop a room is, for the page's Sell (#101).
+#[test]
+fn a_room_s_shop_kind_is_known() {
+    let (_dir, p) = places();
+    assert_eq!(p.shop_kind((1, 2141)), Some("specific"));
+    assert_eq!(p.shop_kind((1, 2147)), Some("training"));
+    assert_eq!(p.shop_kind((1, 2150)), None);
+}

@@ -7,7 +7,11 @@
 //!   is `start`, `stop`, `toggle` (`switch`, `on`), `command` (`text`), `kill` (`target`),
 //!   `wait`, `ok`, `join` (`leader`), `goto` (`room`: a key or a place, and `avoid`: places), `pause` or `resume`. See [`Order`]. For a character played in MudPlay,
 //!   `command` injects, as `inject` (`text`) does;
-//! - server → page `result`: the answer to each order, `ok` and a `message`.
+//! - server → page `result`: the answer to each order, `ok` and a `message`;
+//! - server → page `captured`: a command's output for a `capture` order (`id`, `line`,
+//!   `text`, `answered`), to every page, which match it by `id`;
+//! - page → server `history` (`name`, `since`): the character's text history after line
+//!   `since`, answered with a `history` message (`lines`: `seq`, `at`, `kind`, `text`).
 //!
 //! There is no login, so the page is served on loopback only.
 
@@ -24,7 +28,9 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
-use crate::{Order, Server};
+use crate::{BotEvent, Order, Server};
+use mp_engine::Report;
+use tokio::sync::broadcast::error::RecvError;
 
 /// The page: HTML and a small script, no build step.
 const PAGE: &str = include_str!("../static/index.html");
@@ -63,6 +69,7 @@ fn party(server: &Server) -> String {
 }
 
 async fn feed(mut socket: WebSocket, server: Arc<Server>) {
+    let mut events = server.subscribe();
     let mut changes = server.watch_party();
     changes.mark_unchanged();
     if socket
@@ -87,6 +94,20 @@ async fn feed(mut socket: WebSocket, server: Arc<Server>) {
                     return;
                 }
             }
+            // A command's output the page asked for.
+            ev = events.recv() => match ev {
+                Ok(BotEvent::Session { name, report: Report::Captured(c) }) => {
+                    let out = json!({
+                        "v": 1, "type": "captured", "name": name, "id": c.id,
+                        "line": c.line, "text": c.text, "answered": c.answered,
+                    });
+                    if socket.send(Message::Text(out.to_string().into())).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
+            },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     let reply = handle(&server, &t);
@@ -122,6 +143,13 @@ fn handle(server: &Arc<Server>, text: &str) -> Value {
     }
     match msg.remove("type").as_ref().and_then(Value::as_str) {
         Some("order") => {}
+        // The text history after a line, for the card's History modal.
+        Some("history") => {
+            let since = msg.get("since").and_then(Value::as_u64).unwrap_or(0);
+            return json!({
+                "v": 1, "type": "history", "name": name, "lines": server.texts(&name, since),
+            });
+        }
         // Typing for a character played in MudPlay.
         Some("inject") => {
             let text = msg.get("text").and_then(Value::as_str).unwrap_or_default();

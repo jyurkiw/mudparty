@@ -815,6 +815,14 @@ rest:
   `fighting`, `resting`, `waiting` or `idle`), the target and the attack on it (a cast code
   or `melee`), the switches and who holds the bot, the party state, why it last went
   offline, a config error, and its last 8 events, each line sent shown as `> line`.
+  **Since the History modal** the page shows those events there instead, in each
+  character's text history (`mp-engine` `history.rs`, the server's `texts`, the feed's
+  `history` request): the game text the page doesn't show elsewhere (chat, fight lines,
+  arrivals and departures, unread text), the lines sent, and the card's notes. Left out:
+  what mudparty reads (sheets, `par`, `/room`, `pro`, `exp`, telepath acknowledgements),
+  room displays (up to their `Obvious exits:`), the output of informational commands
+  (`look`, `help`, `list`, `who`, `st`, `i`, ..., from their echo to the next prompt), and
+  the echo of every line sent. 500 lines a character, in the server's memory.
   Start/Stop, Wait/Ok, the toggles, the kill box and a command line. A `wait` or `ok` from
   the page holds the bot as `web`. The engine reports the target and attack
   (`Report::Fight`) and the room (`Report::Room`); a bot asks `/room` as it comes in and
@@ -880,6 +888,28 @@ to the next prompt. The wire text is from silvermere's catalogue:
   - **Not yet:** Spells, Appearance and Items; the keys; keeping sheets in
     `mudparty.sqlite` with their age; refreshing after a change (a level, a buy, an equip);
     the main character's Refresh by injection; the parsed-fields-over-text view.
+- **As built, part 2 (help, look and item actions):**
+  - **Capture** (`mp-engine` `capture.rs`): the page's `capture` order (`id`, `line`)
+    sends a line and hands back its output as `Report::Captured`, which the web feed
+    forwards as a `captured` message. The answer runs from the game's echo of the line to
+    the next prompt; lines before the echo aren't it, and after 15 s it gives up with what
+    came. A seated character's line is injected, as its command line's is.
+  - **Stats:** each label, and the race and class, asks `help <word>` (`help charm`,
+    `help Paladin`, `help experience` for the level and the experience) of that character,
+    or of anyone in the game; the answer shows in a second modal. What a word gives is the
+    help package's; silvermere's built-in topics (`help races`, `help experience`) always
+    answer.
+  - **Inventory:** coins, worth, weight and room for coins; the worn and held items as
+    `look` lists them, each with Remove; the carried ones with Equip, Drop, Give to another
+    character, and Sell when the room is a shop that buys (the compiled room files' shop
+    kind, on the card as `room.shop`). An item's name asks `look <item>`; Look asks
+    `look <name>`. Each action is a `command` order, then `refresh` for a bot.
+  - Selling through the banker (*§15.6*) comes with #100.
+  - **The XP bar:** a bot sends `exp` with `st` and `i`, and after a training. `ExpLine`
+    gives the experience held, the level, what's left and the next level's total
+    (`Report::Exp`, `mp-engine` `Experience`), and each `You gain <n> experience.` adds to
+    it between reads. The card draws it under MP, filled as `exp`'s own `[pct%]`
+    reckons it (held over the next level's total), with what's left to the next level.
 
 ---
 

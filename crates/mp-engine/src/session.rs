@@ -25,7 +25,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
+use crate::capture::{Captured, Capturer};
 use crate::combat::{Combat, CombatSettings};
+use crate::history::{HistLine, HistoryFilter};
 use crate::login::{Login, LoginAction, LoginFailure, LoginSettings};
 use crate::pacing::{Action, Pacer, PacingSettings};
 use crate::party::{PartyJoin, PartySettings, PartyState};
@@ -35,7 +37,7 @@ use crate::remote::{
 };
 use crate::rest::{RestSettings, Rester};
 use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen, TrainEnd};
-use crate::sheet::{SheetPart, SheetReader};
+use crate::sheet::{Experience, SheetPart, SheetReader};
 use crate::shop::{EquipState, Equipper, InventoryReader};
 use crate::walk::{RouteRules, WalkState, Walker};
 
@@ -44,6 +46,8 @@ const WALK_STEP_WAIT: Duration = Duration::from_secs(10);
 
 /// How long `i`, a `buy` or a `wield`/`wear` may go unanswered before it's sent again.
 const GEAR_WAIT: Duration = Duration::from_secs(10);
+/// How long the page's ask for a command's output may go unanswered (help, look).
+const CAPTURE_WAIT: Duration = Duration::from_secs(15);
 
 /// What a session needs to run.
 #[derive(Debug, Clone)]
@@ -219,6 +223,9 @@ pub enum Command {
     Goto { to: (u32, u32), rules: RouteRules },
     /// Read the sheets again (#10): `st` and `i`, once the bot isn't fighting or resting.
     RefreshSheet,
+    /// Send `line` and hand back its output as `Report::Captured`, under the page's `id`:
+    /// `help strength`, `look club`. A seated character's line is injected.
+    Capture { id: String, line: String },
 }
 
 /// What a session is doing.
@@ -299,6 +306,12 @@ pub enum Report {
     RoutineNote(String),
     /// A sheet part read whole (#10): the status display or the inventory, whoever asked.
     Sheet(SheetPart),
+    /// A command's output, asked for by the page (`Command::Capture`): help text, a look.
+    Captured(Captured),
+    /// Lines for the text history: chat, fights, comings and goings, unread text.
+    History(Vec<HistLine>),
+    /// Experience, for the card's XP bar: from `exp`, kept up by the kills since.
+    Exp(Experience),
 }
 
 /// A routine and the goal the session is carrying out for it (#53).
@@ -449,6 +462,8 @@ struct Runner {
     /// The character's level, as `exp` or a training last said (#56).
     level: Option<u32>,
     last_vitals: Option<Vitals>,
+    /// What goes in the text history: told what the bot sends, so its echoes stay out.
+    history: HistoryFilter,
 }
 
 impl Runner {
@@ -491,6 +506,7 @@ impl Runner {
             }
         }
         if !secret {
+            self.history.sent(line);
             self.report(Report::Sent(line.to_owned()));
         }
         let mut out = Vec::with_capacity(bytes.len());
@@ -1200,6 +1216,10 @@ impl Runner {
         // a refresh, once the bot is standing out of a fight.
         let mut sheet = SheetReader::default();
         let mut sheet_due = false;
+        // Experience, from `exp` (asked with the sheets) and the kills since.
+        let mut experience: Option<Experience> = None;
+        // Commands whose output the page asked for.
+        let mut capturer = Capturer::new(CAPTURE_WAIT);
         let mut in_game = false;
         let mut last_vitals: Option<Vitals> = None;
         // While logging off: when to give up, and how many `quit`s were sent.
@@ -1232,6 +1252,17 @@ impl Runner {
                     for t in reader.feed_traced(&data) {
                         if let Some(l) = &mut self.logs {
                             let _ = l.transcript_line(&t.plain);
+                        }
+                        if in_game
+                            && let Some(c) = capturer.on_line(&t.plain, matches!(t.item, Item::Prompt(_)))
+                        {
+                            self.report(Report::Captured(c));
+                        }
+                        if in_game {
+                            let kept = self.history.on_item(&t.plain, &t.item);
+                            if !kept.is_empty() {
+                                self.report(Report::History(kept));
+                            }
                         }
                         if in_game && let Some(part) = sheet.on_item(&t.item) {
                             let kind = match &part {
@@ -1361,18 +1392,27 @@ impl Runner {
                                 if let Some(k) = &mut self.exp_known {
                                     k.left = (k.left - exp).max(0);
                                 }
+                                if let Some(x) = &mut experience {
+                                    x.gain(*exp);
+                                    self.report(Report::Exp(*x));
+                                }
                             }
-                            // A new level: what it needs isn't known until `exp` again.
+                            // A new level: what it needs isn't known until `exp` again, and
+                            // the sheets have changed.
                             Item::Event(Event::Trained { level }) => {
                                 self.exp_known = None;
                                 self.level = Some(*level);
+                                sheet_due = true;
                             }
                             Item::Event(Event::TrainNoExp) => self.exp_known = None,
-                            Item::Event(Event::ExpLine { level, left, .. }) => {
+                            Item::Event(Event::ExpLine { exp, level, left, need, .. }) => {
                                 self.exp_known = Some(ExpKnown {
                                     level: *level,
                                     left: *left,
                                 });
+                                let x = Experience { exp: *exp, level: *level, left: *left, need: *need };
+                                experience = Some(x);
+                                self.report(Report::Exp(x));
                                 self.level = Some(*level);
                                 self.answer(&mut pacer, |q| q == Query::Exp, None, &Doing::of(&combat, &rester, now));
                             }
@@ -1575,6 +1615,22 @@ impl Runner {
                         self.report(Report::Walk(WalkState::Failed("not able to walk now".into())));
                     }
                     Some(Command::RefreshSheet) => sheet_due = true,
+                    Some(Command::Capture { id, line }) if in_game && logging_off.is_none() => {
+                        self.decision("capture", json!({"id": id, "line": line}));
+                        capturer.ask(&id, &line, Instant::now());
+                        if seat.is_some() {
+                            inject.queue.push_back(line);
+                            self.report(Report::Queued(inject.queue.iter().cloned().collect()));
+                            if self.inject_next(&mut stream, &mut inject, &typing).await.is_err() {
+                                return LinkEnd::Lost { was_in_game: true };
+                            }
+                        } else {
+                            pacer.push(line);
+                        }
+                    }
+                    Some(Command::Capture { id, line }) => {
+                        self.report(Report::Captured(Captured { id, line, text: String::new(), answered: false }));
+                    }
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
                     Some(Command::Logoff) => {
@@ -1646,6 +1702,9 @@ impl Runner {
                             let acts = p.on_tick(now);
                             self.queue(&mut pacer, "party", acts);
                         }
+                        for c in capturer.on_tick(now) {
+                            self.report(Report::Captured(c));
+                        }
                         // The sheets, when they're due: never in a fight, and never while
                         // resting, since `i` would stand the bot up. A seated character's
                         // fill from what its player types.
@@ -1656,6 +1715,7 @@ impl Runner {
                             sheet_due = false;
                             pacer.push("st");
                             pacer.push("i");
+                            pacer.push("exp");
                         }
                         if let Some(w) = &mut walker {
                             let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
@@ -1726,6 +1786,7 @@ async fn run_from(
         exp_known: None,
         level: None,
         last_vitals: None,
+        history: HistoryFilter::default(),
         spec,
         reports,
         logs,
@@ -1806,6 +1867,9 @@ async fn run_from(
                         }
                         // The sheets are read again after the login anyway.
                         Some(Command::RefreshSheet) => {}
+                        Some(Command::Capture { id, line }) => {
+                            r.report(Report::Captured(Captured { id, line, text: String::new(), answered: false }));
+                        }
                     }
                 }
             }

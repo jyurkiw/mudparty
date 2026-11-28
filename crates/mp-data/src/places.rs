@@ -829,6 +829,8 @@ struct Found {
     exits: Vec<String>,
     /// A training shop's class: `any class`, or the class's name.
     trains: Option<String>,
+    /// Its shop's kind (`weapons`, `general`, `bank`, ...), if it's a shop.
+    shop_kind: Option<String>,
 }
 
 /// Every area in a `places/` folder, with the local files' aliases, for naming rooms
@@ -876,6 +878,7 @@ impl Places {
                     slug,
                     name: room.name,
                     trains: room.shop.as_ref().and_then(|s| s.trains.clone()),
+                    shop_kind: room.shop.as_ref().map(|s| s.kind.clone()),
                     sells: room.shop.map(|s| s.sells).unwrap_or_default(),
                     lair_respawn: room.lair.map(|l| l.respawn),
                     exits: room
@@ -919,6 +922,15 @@ impl Places {
             .iter()
             .find(|f| f.key == key)
             .map(|f| f.name.as_str())
+    }
+
+    /// The kind of a room's shop (`weapons`, `general`, `bank`, `training`, ...); none for a
+    /// room that isn't a shop.
+    pub fn shop_kind(&self, key: (u32, u32)) -> Option<&str> {
+        self.rooms
+            .iter()
+            .find(|f| f.key == key)
+            .and_then(|f| f.shop_kind.as_deref())
     }
 
     /// A lair's respawn time as its file writes it (`2m`, or `server default` when the room

@@ -102,6 +102,41 @@ impl Ui {
         }
     }
 
+    /// Reads until the output of the capture `id` comes, ticking the game clock meanwhile.
+    async fn captured(&mut self, sm: &StockSilvermere, id: &str) -> Value {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            assert!(Instant::now() < deadline, "capture {id} never came");
+            sm.tick(1).await;
+            if let Ok(Some(Ok(Message::Text(t)))) =
+                timeout(Duration::from_millis(200), self.ws.next()).await
+            {
+                let v: Value = serde_json::from_str(&t).unwrap();
+                if v["type"] == "party" {
+                    self.party = v;
+                } else if v["type"] == "captured" && v["id"] == id {
+                    return v;
+                }
+            }
+        }
+    }
+
+    /// Asks for a character's text history and returns its lines.
+    async fn history(&mut self, name: &str) -> Vec<Value> {
+        let msg = json!({"v": 1, "type": "history", "name": name, "since": 0});
+        self.ws
+            .send(Message::Text(msg.to_string().into()))
+            .await
+            .unwrap();
+        loop {
+            let v = self.next().await;
+            if v["type"] == "history" {
+                assert_eq!(v["name"], name, "{v}");
+                return v["lines"].as_array().unwrap().clone();
+            }
+        }
+    }
+
     /// Sends an order and returns the server's answer to it.
     async fn order(&mut self, name: &str, order: Value) -> Value {
         let mut msg = json!({"v": 1, "type": "order", "name": name});
@@ -216,6 +251,56 @@ async fn the_page_shows_the_party_and_orders_its_bots() {
     assert_eq!(ermias["automation"]["rest"], false);
     let r = ui.order("Ermias", json!({"order": "start"})).await;
     assert_eq!(r["ok"], false, "a second start is refused: {r}");
+
+    // A command's output, for the sheet's help and look modals (#10, #101).
+    let r = ui
+        .order(
+            "Ermias",
+            json!({"order": "capture", "id": "races", "line": "help races"}),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let c = ui.captured(&sm, "races").await;
+    assert_eq!(c["name"], "Ermias");
+    assert_eq!(c["line"], "help races");
+    assert_eq!(c["answered"], true, "{c}");
+    assert!(c["text"].as_str().unwrap().contains("Human"), "{c}");
+    let r = ui
+        .order(
+            "Ermias",
+            json!({"order": "capture", "id": "me", "line": "look Ermias"}),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let c = ui.captured(&sm, "me").await;
+    assert!(c["text"].as_str().unwrap().contains("Ermias"), "{c}");
+
+    // The text history: what it sent and its notes, not the help and look it was asked
+    // for, which have windows of their own.
+    let lines = ui.history("Ermias").await;
+    let has = |kind: &str, text: &str| {
+        lines
+            .iter()
+            .any(|l| l["kind"] == kind && l["text"].as_str().unwrap().contains(text))
+    };
+    assert!(has("event", "in the game"), "{lines:?}");
+    assert!(has("sent", "> help races"), "{lines:?}");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l["kind"] == "text" && l["text"].as_str().unwrap().contains("Human")),
+        "the help's output stays out: {lines:?}"
+    );
+    let seqs: Vec<u64> = lines.iter().map(|l| l["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+    // Raijin is played in MudPlay but not connected: no session to ask.
+    let r = ui
+        .order(
+            "Raijin",
+            json!({"order": "capture", "id": "no", "line": "help races"}),
+        )
+        .await;
+    assert_eq!(r["ok"], false, "{r}");
 
     // The toggles.
     let r = ui

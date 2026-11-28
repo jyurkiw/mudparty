@@ -11,12 +11,12 @@ pub mod proxy;
 pub mod view;
 pub mod web;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use history::{History, Position};
@@ -101,6 +101,22 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+/// How many lines of each character's text history are kept.
+const TEXT_KEPT: usize = 500;
+
+/// A line of a character's text history (the card's History modal).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TextLine {
+    /// Its number, rising across every character: the page asks for those after the last.
+    pub seq: u64,
+    /// When it came, in milliseconds since 1970.
+    pub at: u64,
+    /// `chat`, `move`, `combat`, `text` (from the game), `sent` (a line sent to it) or
+    /// `event` (the card's own notes: in the game, resting, party).
+    pub kind: &'static str,
+    pub text: String,
+}
+
 /// An order from the web page (design §4.2) for one character.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(tag = "order", rename_all = "snake_case")]
@@ -134,6 +150,9 @@ pub enum Order {
     Resume,
     /// Read its sheets again (#10): `st` and `i`, once it isn't fighting or resting.
     Refresh,
+    /// Send `line` and give the page its output, under the page's `id` (`help strength`,
+    /// `look club`). Played in MudPlay, the line is injected.
+    Capture { id: String, line: String },
 }
 
 /// Who a `wait` or `ok` from the web page is from, in `held_by`.
@@ -166,6 +185,10 @@ pub struct Server {
     cards: Mutex<BTreeMap<String, Card>>,
     /// Counts changes to `cards`, for the page's feed.
     changed: watch::Sender<u64>,
+    /// Each character's text history (the card's History modal), newest last.
+    texts: Mutex<HashMap<String, VecDeque<TextLine>>>,
+    /// The last text line's number, across characters.
+    text_seq: AtomicU64,
     /// `mudparty.sqlite`, when it opens.
     history: Option<Arc<History>>,
     /// The server itself, for what a session asks of it (an invitation by injection).
@@ -221,6 +244,8 @@ impl Server {
             runs: AtomicU64::new(0),
             cards: Mutex::new(BTreeMap::new()),
             changed: watch::Sender::new(0),
+            texts: Mutex::new(HashMap::new()),
+            text_seq: AtomicU64::new(0),
             history,
             me: Mutex::new(Weak::new()),
         });
@@ -373,6 +398,37 @@ impl Server {
     }
 
     /// Changes `name`'s card, if it has one.
+    /// Adds lines to a character's text history, keeping the last [`TEXT_KEPT`].
+    fn add_text(&self, name: &str, lines: impl IntoIterator<Item = (&'static str, String)>) {
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let mut texts = self.texts.lock().expect("texts lock");
+        let list = texts.entry(name.to_owned()).or_default();
+        for (kind, text) in lines {
+            let seq = self.text_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            list.push_back(TextLine {
+                seq,
+                at,
+                kind,
+                text,
+            });
+            if list.len() > TEXT_KEPT {
+                list.pop_front();
+            }
+        }
+    }
+
+    /// A character's text history after line `since` (0 for all that's kept), oldest first.
+    pub fn texts(&self, name: &str, since: u64) -> Vec<TextLine> {
+        self.texts
+            .lock()
+            .expect("texts lock")
+            .get(name)
+            .map(|l| l.iter().filter(|t| t.seq > since).cloned().collect())
+            .unwrap_or_default()
+    }
+
     fn card(&self, name: &str, f: impl FnOnce(&mut Card)) {
         let mut cards = self.cards.lock().expect("cards lock");
         if let Some(c) = cards.get_mut(name) {
@@ -446,6 +502,10 @@ impl Server {
             Order::Pause => Command::Do(Effect::Stop(true)),
             Order::Resume => Command::Do(Effect::Stop(false)),
             Order::Refresh => Command::RefreshSheet,
+            Order::Capture { line, .. } if line.trim().is_empty() => {
+                return Err("an empty command".into());
+            }
+            Order::Capture { id, line } => Command::Capture { id, line },
             Order::Goto { room, avoid } => Command::Goto {
                 to: place(&self.places, &Place::Named(room), None)?,
                 rules: route_rules(
@@ -462,7 +522,8 @@ impl Server {
         let Some(bot) = bots.get(name) else {
             return Err(format!("{name} isn't running"));
         };
-        if bot.seated {
+        // A seated session injects a capture's line itself; nothing else goes to it.
+        if bot.seated && !matches!(cmd, Command::Capture { .. }) {
             return Err(format!("{name} is played in MudPlay"));
         }
         bot.handle.send(cmd);
@@ -754,9 +815,32 @@ impl Server {
                     .get(&who)
                     .is_some_and(|c| c.driver == Some("unattended"));
                 let rooms = GameRooms(Arc::clone(&me.gamedata));
-                me.card(&who, |card| {
-                    card.report(&report, |m, r| rooms.room(m, r).map(|i| i.name));
-                });
+                let places = &me.places;
+                if let Report::History(lines) = &report {
+                    // The text history isn't the card's: no redraw for it.
+                    me.add_text(&who, lines.iter().map(|l| (l.kind, l.text.clone())));
+                } else {
+                    let mut fresh = Vec::new();
+                    me.card(&who, |card| {
+                        let before = card.events_total();
+                        card.report(&report, |m, r| rooms.room(m, r).map(|i| i.name));
+                        // The room's shop, if any, for the sheet's Sell (#101).
+                        if let (Report::Room { map, room }, Some(here)) =
+                            (&report, card.room.as_mut())
+                        {
+                            here.shop = places.shop_kind((*map, *room)).map(str::to_owned);
+                        }
+                        fresh = card.events_since(before);
+                    });
+                    // The card's own notes go in the history too: lines sent, and changes.
+                    me.add_text(
+                        &who,
+                        fresh.into_iter().map(|e| {
+                            let kind = if e.starts_with("> ") { "sent" } else { "event" };
+                            (kind, e)
+                        }),
+                    );
+                }
                 match &report {
                     // MudPlay dropped: a bot now, taking the page's orders.
                     Report::Unattended => {

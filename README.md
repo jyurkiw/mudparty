@@ -565,8 +565,14 @@ unattended:
 A percentage needs the maximum HP. If your statline doesn't show it, the most HP the
 session has seen stands in for it, so points are the surer choice there.
 
-On the page, each character has a card showing HP and MP, room, what it's doing and
-against what, and its last few events. A bot's card has Start and Stop, Wait and Ok, the
+On the page, each character has a card showing HP and MP, a purple XP bar with the
+experience still needed for the next level (or that it's ready to train), room, and what
+it's doing and against what. Its **History** button opens what the character has seen, less what the page
+shows elsewhere: chat, fight lines, monsters coming and going, other text the page doesn't
+read, and, greyed, the lines sent and the card's notes (in the game, resting, the party).
+Room displays, the sheets, `par`, and the output of commands such as `look`, `help`,
+`list` and `who` are left out. Each kind can be hidden; the last 500 lines are kept, until
+the server stops. A bot's card has Start and Stop, Wait and Ok, the
 combat, nuke, rest and all switches, a kill box, a command line to the game, and a "Go"
 box that walks the bot to a room: a key like `1/2141`, or a place from the compiled room
 files (`weapons-shop`; see [Places](#places)). The bot plans its route from the game data,
@@ -575,11 +581,20 @@ game refuses, and waits out a fight on the way.
 
 Each card's **Sheet** button opens the character's sheet, with its level, charm and money
 on the card beside it. The **Stats** tab is the game's `st`, laid out and coloured as the
-game prints it. The **Inventory** tab is its `i`: coins, items and where they're worn,
-`Wealth:` and `Encumbrance:`, with what the coins are worth and how many more it can carry.
-A bot reads both after logging in, and **Refresh** reads them again once it isn't fighting
-or resting. They also fill whenever the output comes, as from `@do st`. The sheet is kept
-while the character is offline, until the server stops.
+game prints it. Each label, and the race and class, is a link to the game's own `help` for
+it, asked of that character (or anyone in the game) and shown in a window over the sheet.
+
+The **Inventory** tab lists the coins (what they're worth, the weight, how many more fit),
+then what's worn and held, as `look` shows it, then what's carried. Each item's name opens
+`look <item>`. Worn items can be removed. Carried ones can be equipped, dropped, given to
+another character, and sold when the character is in a shop that buys. **Look** shows
+`look <name>`.
+
+A bot reads both tabs after logging in, and **Refresh** reads them again once it isn't
+fighting or resting; an item action refreshes them after it. They also fill whenever the
+output comes, as from `@do st`. For a character you play in MudPlay, help, looks and item
+actions are typed into your session, and the sheet fills when you type `st` or `i`. The
+sheet is kept while the character is offline, until the server stops.
 
 In the game, a player on a bot's `remote.allow` list can command it by telepath or
 gangpath: `/Ermias @help` lists the commands.

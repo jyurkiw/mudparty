@@ -7,12 +7,12 @@
 <style>
   :root {
     --bg: #f4f4f1; --card: #fff; --ink: #1d1d1b; --dim: #6b6b66; --line: #dcdcd6;
-    --hp: #3a8f4a; --mp: #3e6fb8; --warn: #b8542e; --chip: #ecece6; --on: #2f6f3a;
+    --hp: #3a8f4a; --mp: #3e6fb8; --xp: #7b4bb3; --warn: #b8542e; --chip: #ecece6; --on: #2f6f3a;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #161615; --card: #20201e; --ink: #e8e8e3; --dim: #9a9a93; --line: #34342f;
-      --hp: #4fae60; --mp: #5b8ad6; --warn: #e07a50; --chip: #2c2c29; --on: #5fbf6e;
+      --hp: #4fae60; --mp: #5b8ad6; --xp: #9b6fd6; --warn: #e07a50; --chip: #2c2c29; --on: #5fbf6e;
     }
   }
   * { box-sizing: border-box; }
@@ -41,6 +41,7 @@
   .bar > i { position: absolute; inset: 0 auto 0 0; }
   .bar.hp > i { background: var(--hp); }
   .bar.mp > i { background: var(--mp); }
+  .bar.xp > i { background: var(--xp); }
   .bar > span { position: relative; font-size: 11px; padding-left: 4px; line-height: 14px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .badge { color: var(--warn); }
@@ -71,6 +72,36 @@
   pre.game .l { color: #3fd23f; }
   pre.game .v { color: #3fcfcf; }
   pre.game .m { color: #ff5555; }
+  pre.game .link, .link { cursor: pointer; text-decoration: underline dotted; }
+  pre.game .link:hover, .link:hover { text-decoration: underline; }
+  dialog#text { border: 1px solid var(--line); border-radius: 8px; padding: 0;
+                background: var(--card); color: var(--ink); width: min(680px, 94vw); }
+  dialog#text::backdrop { background: rgba(0, 0, 0, .25); }
+  dialog#history { border: 1px solid var(--line); border-radius: 8px; padding: 0;
+                   background: var(--card); color: var(--ink); width: min(820px, 96vw); }
+  dialog#history::backdrop { background: rgba(0, 0, 0, .35); }
+  .hist { height: min(60vh, 560px); overflow-y: auto; margin: 0; padding: 8px 12px;
+          background: #0c0c0c; color: #c0c0c0; border-radius: 6px;
+          font: 13px/1.35 ui-monospace, Consolas, "Courier New", monospace; }
+  .hist div { white-space: pre-wrap; word-break: break-word; }
+  .hist .t { color: #6b6b66; margin-right: 8px; }
+  .hist .chat { color: #e8e85f; }
+  .hist .move { color: #c78cf0; }
+  .hist .combat { color: #ff7b5f; }
+  .hist .sent { color: #3fcfcf; }
+  .hist .event { color: #7a7a74; font-style: italic; }
+  .kinds { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+  .kinds label { display: flex; gap: 4px; align-items: center; }
+  .money { display: flex; flex-direction: column; gap: 2px; }
+  .section { display: flex; flex-direction: column; gap: 4px; }
+  .section .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
+  .section .head button { font-weight: normal; }
+  table.items { border-collapse: collapse; width: 100%; }
+  table.items td { padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  table.items td.acts { text-align: right; white-space: nowrap; }
+  table.items td.acts button, .give select { margin-left: 4px; }
+  .give select { font: inherit; padding: 1px 2px; border: 1px solid var(--line); border-radius: 4px;
+                 background: var(--card); color: var(--ink); }
 </style>
 </head>
 <body>
@@ -82,6 +113,8 @@
 </header>
 <main id="party"></main>
 <dialog id="sheet"></dialog>
+<dialog id="text"></dialog>
+<dialog id="history"></dialog>
 <script>
 "use strict";
 let ws;
@@ -119,6 +152,19 @@ function bar(kind, cur, max) {
     el("span", {}, `${kind.toUpperCase()} ${cur}${max ? "/" + max : ""}`));
 }
 
+// The XP bar: held over the next level's total, as `exp` reckons it, and what's left.
+function xpBar(x) {
+  if (!x) return null;
+  const fill = el("i");
+  fill.style.width = x.pct + "%";
+  const next = x.level + 1;
+  const words = x.left > 0
+    ? `XP ${x.left.toLocaleString()} to level ${next}`
+    : `XP ready to train for level ${next}`;
+  return el("div", { class: "bar xp", title: `${x.exp.toLocaleString()} of ${x.need.toLocaleString()} (${x.pct}%)` },
+    fill, el("span", {}, words));
+}
+
 // A text box with a button; Enter sends it too.
 function box(placeholder, label, send, disabled) {
   const input = el("input", { placeholder, disabled });
@@ -146,12 +192,19 @@ function openSheet(name, tab) {
 }
 sheetBox.addEventListener("close", () => { sheetOpen = null; });
 
-// The game's text, drawn as MajorMUD draws it: a line of [text, colour] pieces, colour
-// `l` (the green labels), `v` (the cyan values), `m` (the red star of a changed stat), or
-// none.
-function gameLines(lines) {
+// The game's text, drawn as MajorMUD draws it: a line of [text, colour, topic] pieces,
+// colour `l` (the green labels), `v` (the cyan values), `m` (the red star of a changed
+// stat), or none. A piece with a topic is a link to the game's help for it.
+function gameLines(lines, help) {
+  const piece = ([text, c, topic]) => {
+    if (topic && help) {
+      return el("span", { class: (c || "") + " link", title: `help ${topic}`,
+        onclick: () => help(topic) }, text);
+    }
+    return c ? el("span", { class: c }, text) : text;
+  };
   return el("pre", { class: "game" }, ...lines.flatMap((line, i) => [
-    ...line.map(([text, c]) => c ? el("span", { class: c }, text) : text),
+    ...line.map(piece),
     i < lines.length - 1 ? "\n" : null,
   ]));
 }
@@ -162,37 +215,48 @@ const L = (v, w) => String(v).padEnd(w);
 // A stat's mark: the red star when it differs from its base, else a space.
 const mark = (marked) => marked ? ["*", "m"] : [" ", "v"];
 
-// `st` as silvermere prints it (display/status.rs, the catalogue's st_* lines).
-function statsTab(st) {
+// `st` as silvermere prints it (display/status.rs, the catalogue's st_* lines). Each label,
+// and the race and class, opens the game's help for it.
+function statsTab(m) {
+  const st = m.sheet.status;
   if (!st) return el("div", { class: "sheet-body note" }, "Not read yet. Refresh asks the game with st.");
+  const help = (topic) => askHelp(m, topic);
   const g = st.magic;
   const magery = !g
-    ? [[" ".repeat(39)], ["Traps:       ", "l"], [R(st.traps, 5), "v"]]
+    ? [[" ".repeat(39)], ["Traps:       ", "l", "traps"], [R(st.traps, 5), "v"]]
     : g.kind === "Kai"
-      ? [["Kai:  ", "l"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
-         [" ".repeat(22)], ["Traps:       ", "l"], [R(st.traps, 5), "v"]]
-      : [["Mana: ", "l"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
-         [" Spellcasting: ", "l"], [L(g.spellcasting ?? 0, 5), "v"], ["  Traps:       ", "l"],
-         [R(st.traps, 5), "v"]];
-  const stats = (a, al, b, bl, skill, sl) => [
-    [a, "l"], mark(al.marked), [L(al.value, 5), "v"], ["  " + b, "l"], mark(bl.marked),
-    [L(bl.value, 5), "v"], ["       " + skill, "l"], [R(sl, 5), "v"]];
+      ? [["Kai:  ", "l", "kai"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
+         [" ".repeat(22)], ["Traps:       ", "l", "traps"], [R(st.traps, 5), "v"]]
+      : [["Mana: ", "l", "mana"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
+         [" "], ["Spellcasting: ", "l", "spellcasting"], [L(g.spellcasting ?? 0, 5), "v"],
+         ["  "], ["Traps:       ", "l", "traps"], [R(st.traps, 5), "v"]];
+  const stats = (a, at, al, b, bt, bl, skill, skt, sl) => [
+    [a, "l", at], mark(al.marked), [L(al.value, 5), "v"], ["  "], [b, "l", bt], mark(bl.marked),
+    [L(bl.value, 5), "v"], ["       "], [skill, "l", skt], [R(sl, 5), "v"]];
   const lines = [
-    [["Name: ", "l"], [L(st.name, 29), "v"], ["    Lives/CP:  ", "l"], [R(st.lives, 5) + "/" + L(st.cp, 5), "v"]],
-    [["Race: ", "l"], [L(st.race, 11), "v"], [" Exp: ", "l"], [L(st.exp, 15), "v"],
-     [" Perception:  ", "l"], [R(st.perception, 5), "v"]],
-    [["Class: ", "l"], [L(st.class, 10), "v"], [" Level: ", "l"], [L(st.level, 5), "v"],
-     ["         Stealth:     ", "l"], [R(st.stealth, 5), "v"]],
-    [["Hits: ", "l"], [R(st.hp, 5) + "/" + L(st.max_hp, 5), "v"], [" Armour Class: ", "l"],
-     [R(st.ac, 3) + "/" + L(st.dr, 2), "v"], [" Thievery:    ", "l"], [R(st.thievery, 5), "v"]],
+    [["Name: ", "l"], [L(st.name, 29), "v"], ["    "], ["Lives/CP:  ", "l", "lives"],
+     [R(st.lives, 5) + "/" + L(st.cp, 5), "v"]],
+    [["Race: ", "l", st.race], [st.race, "v", st.race], [" ".repeat(Math.max(0, 11 - st.race.length))],
+     [" "], ["Exp: ", "l", "experience"], [L(st.exp, 15), "v"], [" "],
+     ["Perception:  ", "l", "perception"], [R(st.perception, 5), "v"]],
+    [["Class: ", "l", st.class], [st.class, "v", st.class], [" ".repeat(Math.max(0, 10 - st.class.length))],
+     [" "], ["Level: ", "l", "experience"], [L(st.level, 5), "v"], ["         "],
+     ["Stealth:     ", "l", "stealth"], [R(st.stealth, 5), "v"]],
+    [["Hits: ", "l", "hits"], [R(st.hp, 5) + "/" + L(st.max_hp, 5), "v"], [" "],
+     ["Armour Class: ", "l", "armour"], [R(st.ac, 3) + "/" + L(st.dr, 2), "v"], [" "],
+     ["Thievery:    ", "l", "thievery"], [R(st.thievery, 5), "v"]],
     magery,
-    [[" ".repeat(39) + "Picklocks:   ", "l"], [R(st.picklocks, 5), "v"]],
-    stats("Strength: ", st.strength, "Agility:", st.agility, "Tracking:    ", st.tracking),
-    stats("Intellect:", st.intellect, "Health: ", st.health, "Martial Arts:", st.martial_arts),
-    stats("Willpower:", st.willpower, "Charm:  ", st.charm, "MagicRes:    ", st.magic_res),
+    [[" ".repeat(39)], ["Picklocks:   ", "l", "picklocks"], [R(st.picklocks, 5), "v"]],
+    stats("Strength: ", "strength", st.strength, "Agility:", "agility", st.agility,
+          "Tracking:    ", "tracking", st.tracking),
+    stats("Intellect:", "intellect", st.intellect, "Health: ", "health", st.health,
+          "Martial Arts:", "martial arts", st.martial_arts),
+    stats("Willpower:", "willpower", st.willpower, "Charm:  ", "charm", st.charm,
+          "MagicRes:    ", "magic resistance", st.magic_res),
   ];
-  if (st.poisoned) lines.push([["You are Poisoned!", "m"]]);
-  return el("div", { class: "sheet-body" }, gameLines(lines));
+  if (st.poisoned) lines.push([["You are Poisoned!", "m", "poison"]]);
+  return el("div", { class: "sheet-body" }, gameLines(lines, help),
+    el("div", { class: "note" }, "Click a name for the game's help on it."));
 }
 
 // The coins as the carried list names them: `1 gold crown, 18 silver nobles`.
@@ -204,25 +268,114 @@ function coinWords(c) {
     .map(([one, many, n]) => `${n} ${n === 1 ? one : many}`);
 }
 
-// `i` as silvermere prints it (display/inventory.rs), keys left out, and what mudparty
-// works out from it beneath.
+// Shops that buy what's sold to them; banks, trainers, healers, inns and taverns don't.
+const NOT_BUYING = ["bank", "training", "hospital", "tavern", "inn", "deed_shop"];
+
+// The inventory, made to read easily: what's worn and held as `look` shows it, then a list
+// of what's carried with what can be done with each. An item's name opens `look <item>`.
 function inventoryTab(m) {
   const inv = m.sheet.inventory;
   if (!inv) return el("div", { class: "sheet-body note" }, "Not read yet. Refresh asks the game with i.");
-  const words = [...coinWords(inv.coins),
-    ...inv.items.map((i) => `${i.count > 1 ? i.count + " " : ""}${i.name}${i.place ? ` (${i.place})` : ""}`)];
+  const inGame = ["idle", "fighting", "resting", "waiting"].includes(m.mode);
+  const engine = m.driver === "engine";
+  // An item command, then the sheets again (a bot's; a played character's when typed).
+  const act = (line) => {
+    order(m.name, { order: "command", text: line });
+    if (engine) order(m.name, { order: "refresh" });
+  };
+  const look = (item) => ask(m, `look ${item}`, item);
+  const name = (i) => el("span", { class: "link item", title: `look ${i.name}`,
+    onclick: () => look(i.name) }, i.name);
+  const others = (lastMsg ? lastMsg.members : [])
+    .filter((x) => x.name !== m.name && x.running).map((x) => x.name);
+  const shop = m.room && m.room.shop;
+  const selling = shop && !NOT_BUYING.includes(shop);
+  const button = (label, line, disabled) =>
+    el("button", { disabled: !inGame || disabled, onclick: () => act(line) }, label);
+  const giveTo = (item) => {
+    if (!others.length) return null;
+    const pick = el("select", { disabled: !inGame }, ...others.map((o) => el("option", { value: o }, o)));
+    return el("span", { class: "give" }, pick,
+      el("button", { disabled: !inGame, onclick: () => act(`give ${item} to ${pick.value}`) }, "Give"));
+  };
+
+  const worn = inv.items.filter((i) => i.place);
+  const carried = inv.items.filter((i) => !i.place);
   const enc = inv.encumbrance;
-  const lines = [
-    [["You are carrying "], [words.length ? words.join(", ") : "Nothing!", "v"]],
-    [["Wealth: ", "l"], [`${inv.wealth ?? m.sheet.coins_value ?? 0} copper farthings`, "v"]],
-  ];
-  if (enc) lines.push([["Encumbrance: ", "l"], [`${enc.cur}/${enc.max} - ${enc.level} [${enc.pct}%]`, "v"]]);
+  const coins = coinWords(inv.coins);
   return el("div", { class: "sheet-body" },
-    gameLines(lines),
-    el("div", { class: "note" },
-      [`worth ${money(m.sheet.coins_value || 0)}`,
-       m.sheet.coins_room != null ? `room for ${m.sheet.coins_room.toLocaleString()} more coins` : null]
-        .filter(Boolean).join(" · ")));
+    el("div", { class: "money" },
+      el("div", {}, coins.length ? coins.join(", ") : "No coins."),
+      el("div", { class: "note" }, [
+        `worth ${money(m.sheet.coins_value || 0)}`,
+        enc ? `weight ${enc.cur}/${enc.max} (${enc.level}, ${enc.pct}%)` : null,
+        m.sheet.coins_room != null ? `room for ${m.sheet.coins_room.toLocaleString()} more coins` : null,
+      ].filter(Boolean).join(" · "))),
+    el("div", { class: "section" },
+      el("div", { class: "head" },
+        el("span", {}, `${m.name} is equipped with:`),
+        el("button", { disabled: !inGame, onclick: () => look(m.name) }, "Look")),
+      worn.length
+        ? el("table", { class: "items" }, ...worn.map((i) => el("tr", {},
+            el("td", {}, name(i)), el("td", { class: "note" }, i.place),
+            el("td", { class: "acts" }, button("Remove", `remove ${i.name}`)))))
+        : el("div", { class: "note" }, "Nothing.")),
+    el("div", { class: "section" },
+      el("div", { class: "head" }, el("span", {}, "Carrying:")),
+      carried.length
+        ? el("table", { class: "items" }, ...carried.map((i) => el("tr", {},
+            el("td", {}, name(i), i.count > 1 ? el("span", { class: "note" }, ` ×${i.count}`) : null),
+            el("td", { class: "acts" },
+              button("Equip", `equip ${i.name}`),
+              button("Drop", `drop ${i.name}`),
+              selling ? button("Sell", `sell ${i.name}`) : null,
+              giveTo(i.name)))))
+        : el("div", { class: "note" }, "No items.")),
+    !engine && m.driver ? el("div", { class: "note" },
+      "Played in MudPlay: an action is typed into your session, and the sheet fills when you type i.") : null,
+    selling ? el("div", { class: "note" }, `In a shop (${shop}): Sell offers each item to it.`) : null);
+}
+
+// A command's output, in a modal over the sheet: help text, a look. Answers arrive as
+// `captured` messages; `asks` maps each id to its title.
+const textBox = document.getElementById("text");
+const asks = new Map();
+let askSeq = 0;
+
+function ask(m, line, title) {
+  const id = `ask-${Date.now()}-${++askSeq}`;
+  asks.set(id, title);
+  order(m.name, { order: "capture", id, line });
+  showText(title, null, `${m.name}: ${line}`);
+}
+
+// Help is the game's, the same for everyone: asked of this character if it's in the game,
+// else of anyone who is.
+function askHelp(m, topic) {
+  const inGame = (x) => ["idle", "fighting", "resting", "waiting"].includes(x.mode);
+  const who = inGame(m) ? m : (lastMsg ? lastMsg.members.find(inGame) : null);
+  if (!who) { showText(`help ${topic}`, "", "Nobody is in the game to ask."); return; }
+  ask(who, `help ${topic}`, `help ${topic}`);
+}
+
+function showText(title, text, note) {
+  textBox.replaceChildren(
+    el("div", { class: "sheet-head" },
+      el("span", { class: "name" }, title),
+      el("button", { class: "close", onclick: () => textBox.close() }, "Close")),
+    el("div", { class: "sheet-body" },
+      text == null ? el("div", { class: "note" }, "Asking the game…")
+        : text === "" ? el("div", { class: "note" }, note || "The game gave no answer.")
+        : el("pre", { class: "game" }, text),
+      text != null && note && text !== "" ? el("div", { class: "note" }, note) : null));
+  if (!textBox.open) textBox.showModal();
+}
+
+function onCaptured(msg) {
+  if (!asks.has(msg.id)) return;
+  const title = asks.get(msg.id);
+  asks.delete(msg.id);
+  showText(title, msg.answered ? (msg.text || "(nothing)") : "", `${msg.name}: ${msg.line}`);
 }
 
 function drawSheet() {
@@ -243,7 +396,7 @@ function drawSheet() {
         onclick: () => order(m.name, { order: "refresh" }) }, "Refresh"),
       el("button", { onclick: () => sheetBox.close() }, "Close")),
     el("div", { class: "tabs" }, tab("stats", "Stats"), tab("inventory", "Inventory")),
-    sheetOpen.tab === "stats" ? statsTab(st) : inventoryTab(m));
+    sheetOpen.tab === "stats" ? statsTab(m) : inventoryTab(m));
 }
 
 // Where a character was last recorded, for a rescue.
@@ -297,6 +450,7 @@ function card(m) {
     m.main ? "Played in MudPlay, through the proxy." : "No login: can't run as a bot.")];
   controls.unshift(el("div", { class: "row" },
     el("button", { onclick: () => openSheet(m.name, "stats") }, "Sheet"),
+    el("button", { onclick: () => openHistory(m.name) }, "History"),
     m.sheet.status ? el("span", { class: "note" },
       `level ${m.sheet.status.level} · charm ${m.sheet.status.charm.value}`) : null,
     m.sheet.coins_value != null ? el("span", { class: "note" }, "· " + money(m.sheet.coins_value)) : null));
@@ -308,6 +462,7 @@ function card(m) {
       el("span", { class: "mode " + m.mode }, m.mode.replace("_", " "))),
     m.vitals ? bar("hp", m.vitals.hp, m.vitals.max_hp) : null,
     m.vitals ? bar("mp", m.vitals.mp, m.vitals.max_mp) : null,
+    xpBar(m.sheet.exp),
     el("div", {}, room),
     fight ? el("div", {}, "fighting " + fight) : null,
     m.party ? el("div", { class: "note" }, "party: " + m.party) : null,
@@ -316,8 +471,72 @@ function card(m) {
     m.driver === "unattended" ? el("div", { class: "note" }, "MudPlay left: staying online, idle") : null,
     m.last_position ? el("div", { class: "note" }, lastSeen(m.last_position)) : null,
     ...badges,
-    ...controls,
-    m.events.length ? el("ol", {}, ...m.events.map((e) => el("li", {}, e))) : null);
+    ...controls);
+}
+
+// The text history (the card's History button): chat, fights, comings and goings, and the
+// text nothing else on the page shows, as the server kept it. While it's open the page asks
+// for new lines every second and a half.
+const historyBox = document.getElementById("history");
+const KINDS = [["chat", "chat"], ["combat", "fights"], ["move", "comings and goings"],
+               ["text", "other text"], ["sent", "lines sent"], ["event", "notes"]];
+let historyOpen = null; // { name, lines, last, shown: Set of kinds, timer }
+
+function openHistory(name) {
+  if (historyOpen) clearInterval(historyOpen.timer);
+  historyOpen = { name, lines: [], last: 0, shown: new Set(KINDS.map(([k]) => k)), timer: null };
+  askHistory();
+  historyOpen.timer = setInterval(askHistory, 1500);
+  drawHistory(true);
+  if (!historyBox.open) historyBox.showModal();
+}
+historyBox.addEventListener("close", () => {
+  if (historyOpen) clearInterval(historyOpen.timer);
+  historyOpen = null;
+});
+
+function askHistory() {
+  if (historyOpen && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ v: 1, type: "history", name: historyOpen.name, since: historyOpen.last }));
+  }
+}
+
+function onHistory(msg) {
+  if (!historyOpen || msg.name !== historyOpen.name || !msg.lines.length) return;
+  historyOpen.lines.push(...msg.lines);
+  historyOpen.last = msg.lines[msg.lines.length - 1].seq;
+  if (historyOpen.lines.length > 500) historyOpen.lines.splice(0, historyOpen.lines.length - 500);
+  drawHistory(false);
+}
+
+function drawHistory(fresh) {
+  const h = historyOpen;
+  const old = historyBox.querySelector(".hist");
+  // Follow the newest line, unless the reader has scrolled up.
+  const follow = fresh || !old || old.scrollTop + old.clientHeight >= old.scrollHeight - 8;
+  const keep = old ? old.scrollTop : 0;
+  const time = (ms) => new Date(ms).toLocaleTimeString();
+  const list = el("div", { class: "hist" },
+    ...h.lines.filter((l) => h.shown.has(l.kind)).map((l) =>
+      el("div", { class: l.kind }, el("span", { class: "t" }, time(l.at)), l.text)));
+  const kinds = el("div", { class: "kinds" }, ...KINDS.map(([k, label]) => {
+    const box = el("input", { type: "checkbox", checked: h.shown.has(k) });
+    box.addEventListener("change", () => {
+      if (box.checked) h.shown.add(k); else h.shown.delete(k);
+      drawHistory(false);
+    });
+    return el("label", { class: k }, box, label);
+  }));
+  historyBox.replaceChildren(
+    el("div", { class: "sheet-head" },
+      el("span", { class: "name" }, `${h.name}: history`),
+      el("span", { class: "note" }, `${h.lines.length} lines`),
+      el("button", { class: "close", onclick: () => historyBox.close() }, "Close")),
+    el("div", { class: "sheet-body" }, kinds, list,
+      el("div", { class: "note" },
+        "What it saw, less what the sheet and card show: chat, fights, monsters coming and going, and other text. The last 500 lines, kept until the server stops.")));
+  if (follow) list.scrollTop = list.scrollHeight;
+  else list.scrollTop = keep;
 }
 
 function render(msg) {
@@ -341,6 +560,8 @@ function connect() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "party") render(msg);
+    else if (msg.type === "captured") onCaptured(msg);
+    else if (msg.type === "history") onHistory(msg);
     else if (msg.type === "result") {
       result.textContent = `${msg.name}: ${msg.message}`;
       result.className = msg.ok ? "" : "bad";
