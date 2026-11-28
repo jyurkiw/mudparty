@@ -45,6 +45,9 @@ fn settings() -> CombatSettings {
         ],
         leader_target_stale: Duration::from_secs(6),
         round: Duration::from_secs(5),
+        by_level: vec![],
+        spell_facts: Default::default(),
+        routine: None,
     }
 }
 

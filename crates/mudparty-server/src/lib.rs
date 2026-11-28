@@ -23,8 +23,9 @@ use anyhow::Context;
 use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
-    CharacterConfig, CircuitRule, Logging, LoginSteps, PartyRole, Place, RuleSpec, Secrets,
-    ServerConfig, character_from_text, load_character, load_routine, load_server, parse_duration,
+    CharacterConfig, CircuitRule, Logging, LoginSteps, PartyRole, Place, RoutineRef, RuleSpec,
+    Secrets, ServerConfig, character_from_text, load_character, load_routine, load_server,
+    parse_duration,
 };
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
@@ -32,7 +33,7 @@ use mp_engine::{
     AutoSwitch, CircuitSettings, CombatSettings, Command, Effect, GearSettings, Inviter,
     LairClocks, LairSettings, LoginSettings, Offline, PartySettings, RemoteSettings, Report,
     RestSettings, RoomBook, RoomInfo, RouteRules, RoutineSettings, RuleSettings, ScriptStep, Seat,
-    SessionHandle, SessionSpec, SessionState, Upstream, spawn, spawn_seated,
+    SessionHandle, SessionSpec, SessionState, SpellFacts, Upstream, spawn, spawn_seated,
 };
 use mp_log::{RollConfig, ServerLog, StreamRolls, SystemClock};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -325,18 +326,42 @@ impl Server {
             return None;
         };
         let monsters = gd.monster_names().unwrap_or_default();
-        let spells = c
+        let spells: Vec<_> = c
             .combat
             .tiers
             .iter()
             .map(|t| t.spell.as_str())
-            .chain(c.combat.room_tiers.iter().map(|t| t.spell.as_str()));
+            .chain(c.combat.room_tiers.iter().map(|t| t.spell.as_str()))
+            .chain(
+                c.combat
+                    .by_level
+                    .iter()
+                    .flat_map(|b| b.spells.iter().map(|r| r.cast.as_str())),
+            )
+            .filter_map(|short| Some((short.to_owned(), gd.spell_by_short(short).ok()??)))
+            .collect();
         let spell_costs = spells
-            .filter_map(|short| {
-                let s = gd.spell_by_short(short).ok()??;
-                Some((short.to_owned(), s.mana as i32))
+            .iter()
+            .map(|(short, s)| (short.clone(), s.mana as i32))
+            .collect();
+        // What the engine needs to tell a room spell and count its casts (#125).
+        let spell_facts = spells
+            .into_iter()
+            .map(|(short, s)| {
+                let room = s.hits_room();
+                let facts = SpellFacts {
+                    name: s.name,
+                    room,
+                    cast_line: s.cast_line,
+                };
+                (short, facts)
             })
             .collect();
+        let routine = match &c.routine {
+            Some(RoutineRef::Named { name, .. }) => Some(name.clone()),
+            Some(RoutineRef::Inline(r)) => Some(r.name.clone()),
+            None => None,
+        };
         Some(CombatSettings {
             name: c.name.clone(),
             leader: c.party.leader.clone(),
@@ -348,6 +373,9 @@ impl Server {
             monsters,
             leader_target_stale: self.config.stale.target,
             round: ROUND,
+            by_level: c.combat.by_level.clone(),
+            spell_facts,
+            routine,
         })
     }
 
@@ -1089,15 +1117,19 @@ impl std::fmt::Display for GamedataError {
 }
 
 /// `<root>/gamedata/gamedata.sqlite`, imported first from the `silvermere.db` that
-/// `config` names when it's missing (design §7.5); with the import's report when there was
-/// one.
+/// `config` names when it's missing, or was written by a mudparty of another
+/// [`mp_data::SCHEMA_VERSION`] (design §7.5); with the import's report when there was one.
 pub(crate) fn open_gamedata(
     root: &Path,
     config: &ServerConfig,
 ) -> Result<(GameData, Option<mp_data::ImportReport>), GamedataError> {
     let path = root.join("gamedata").join("gamedata.sqlite");
     let mut imported = None;
-    if !path.exists() {
+    let current = path.exists()
+        && GameData::open(&path)
+            .and_then(|gd| gd.schema())
+            .is_ok_and(|v| v == mp_data::SCHEMA_VERSION);
+    if !current {
         let source = root.join(&config.gamedata.silvermere_db);
         if !source.exists() {
             return Err(GamedataError::Missing(source));

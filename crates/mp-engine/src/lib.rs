@@ -16,7 +16,7 @@ mod shop;
 mod walk;
 
 pub use capture::{Captured, Capturer};
-pub use combat::{Combat, CombatSettings};
+pub use combat::{Combat, CombatSettings, SpellFacts};
 pub use history::{HistLine, HistoryFilter};
 pub use login::{Login, LoginAction, LoginFailure, LoginSettings, ScriptStep};
 pub use pacing::{Action, Pacer, PacingSettings};

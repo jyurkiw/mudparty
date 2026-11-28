@@ -142,9 +142,10 @@ fn warnings(c: &CharacterConfig, file: &str) -> Vec<String> {
         && combat.melee == Melee::None
         && combat.tiers.is_empty()
         && combat.room_tiers.is_empty()
+        && combat.by_level.iter().all(|b| b.spells.is_empty())
     {
         out.push(format!(
-            "{file}: combat: targeting picks targets, but with no melee and no tiers the bot never attacks; set `melee: a`, or add a tier"
+            "{file}: combat: targeting picks targets, but with no melee and no spells the bot never attacks; set `melee: a`, or add a spell"
         ));
     }
     out

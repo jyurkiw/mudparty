@@ -27,6 +27,21 @@
 //!   bot learns that a monster died unseen (#118): its attack went out after the leader's
 //!   kill, so it had no share of the kill and no `*Combat Off*`.
 //!
+//! - **Spell plans by level** (#125): the first `by_level` block whose levels hold the bot's
+//!   level gives the attack spells, top-down; the step-1 `tiers` and `room_tiers` are a block
+//!   for every level after them. A bot with level blocks starts no fight until it knows its
+//!   level: the session asks `exp` at once (a caster that went in with melee instead would
+//!   never stand out of the fight for the sheets, which ask it too). A rule is
+//!   passed over when one of its conditions fails, when MP can't pay for it, when it has used
+//!   up its casts, or when it had no effect on the target; then melee.
+//! - **Counting casts**: a spell repeats every round by itself, so its casts are counted
+//!   from the game's lines, never from what the bot sent. A round prints the caster's line,
+//!   the spell's message from the game data (`You fire a magic missile at kobold for 4
+//!   damage!`), or `You attempt to cast magic missile at kobold, but fail.`, or `..., but the
+//!   spell is resisted.` (silvermere's `cast_fail_at`, `cast_resisted`; the spell's name, not
+//!   its code). A single-target spell's casts are counted per monster, and a kill gives the
+//!   next of that name its own; a room spell's per room, until the room is clear.
+//!
 //! The room's monsters come from the `Also here:` list. A name counts as a monster only if
 //! it is, or ends with, a monster name from the game data (`large kobold` is a `kobold`), so
 //! a player is never attacked by mistake.
@@ -34,7 +49,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use mp_config::{Melee, RoomTier, Rule, Tier};
+use mp_config::{Amount, LevelBlock, Melee, RoomTier, Rule, Span, SpellRule, SpellWhen, Tier};
 use mp_parse::{Event, Item};
 
 /// What the engine needs to fight.
@@ -57,6 +72,40 @@ pub struct CombatSettings {
     /// A combat round: 5 s on a stock game (MudPlay GAME_MECHANICS "Combat round (5s)").
     /// At most one change of attack is sent in a round.
     pub round: Duration,
+    /// Attack spells planned by level (#125).
+    pub by_level: Vec<LevelBlock>,
+    /// What the game data says of the spells the plan names, by cast code.
+    pub spell_facts: HashMap<String, SpellFacts>,
+    /// The routine the bot runs, for the rules that name one.
+    pub routine: Option<String>,
+}
+
+/// A spell as the game data has it (#125).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpellFacts {
+    /// Its name, as the fail lines print it: `magic missile`.
+    pub name: String,
+    /// It goes at the whole room, cast with its bare code.
+    pub room: bool,
+    /// The caster's line of a cast, `%s` and `%d` in it.
+    pub cast_line: String,
+}
+
+/// A spell rule as the engine runs it: whether it's cast at the room.
+#[derive(Debug, Clone)]
+struct Planned {
+    rule: SpellRule,
+    room: bool,
+}
+
+impl Planned {
+    fn attack(&self) -> Attack {
+        if self.room {
+            Attack::Room(self.rule.cast.clone())
+        } else {
+            Attack::Spell(self.rule.cast.clone())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,10 +177,64 @@ pub struct Combat {
     /// The attack sent, its target and when it went, until the game takes it up
     /// (`*Combat Engaged*`) or refuses it (#118, #119).
     asked: Option<(Attack, String, Instant)>,
+    /// The bot's level, once `exp` has said it.
+    level: Option<u32>,
+    /// The maximum MP, from the last prompt that showed it.
+    max_mp: Option<i32>,
+    /// The level blocks, then the step-1 tiers as a block for every level.
+    blocks: Vec<(Span, Vec<Planned>)>,
+    tiers: Vec<Planned>,
+    /// Casts counted by (cast code, monster in lower case): a room spell's monster is "".
+    casts: HashMap<(String, String), u32>,
 }
 
 impl Combat {
     pub fn new(set: CombatSettings) -> Self {
+        let room = |cast: &str| set.spell_facts.get(cast).is_some_and(|f| f.room);
+        let blocks = set
+            .by_level
+            .iter()
+            .map(|b| {
+                let rules = b
+                    .spells
+                    .iter()
+                    .map(|r| Planned {
+                        rule: r.clone(),
+                        room: room(&r.cast),
+                    })
+                    .collect();
+                (b.levels, rules)
+            })
+            .collect();
+        // Step 1's lists: room tiers first, cast bare; tiers at the target, whatever the
+        // game data says.
+        let tiers = set
+            .room_tiers
+            .iter()
+            .map(|t| Planned {
+                rule: SpellRule {
+                    cast: t.spell.clone(),
+                    when: SpellWhen {
+                        min_mp: Some(Amount::Points(t.min_mp)),
+                        enemies: Some(Span::new(Some(t.min_enemies), None)),
+                        ..SpellWhen::default()
+                    },
+                    max_casts: None,
+                },
+                room: true,
+            })
+            .chain(set.tiers.iter().map(|t| Planned {
+                rule: SpellRule {
+                    cast: t.spell.clone(),
+                    when: SpellWhen {
+                        min_mp: Some(Amount::Points(t.min_mp)),
+                        ..SpellWhen::default()
+                    },
+                    max_casts: None,
+                },
+                room: false,
+            }))
+            .collect();
         Self {
             set,
             roster: Vec::new(),
@@ -148,7 +251,23 @@ impl Combat {
             hold: false,
             also_here_seen: false,
             asked: None,
+            level: None,
+            max_mp: None,
+            blocks,
+            tiers,
+            casts: HashMap::new(),
         }
+    }
+
+    /// The bot's level, for its level blocks (#125); `None` while it isn't known.
+    pub fn set_level(&mut self, level: Option<u32>) {
+        self.level = level;
+    }
+
+    /// Whether the bot fights by level blocks: it starts no fight until its level is known,
+    /// and the session asks `exp` for it.
+    pub fn wants_level(&self) -> bool {
+        !self.blocks.is_empty()
     }
 
     /// The monsters in the room, as the game last listed them.
@@ -276,6 +395,8 @@ impl Combat {
                     self.roster.push(name);
                 } else if let Some(name) = self.refused(line) {
                     self.gone(&name);
+                } else {
+                    self.count_cast(line);
                 }
             }
             Item::Event(Event::CombatEngaged) => {
@@ -311,11 +432,48 @@ impl Combat {
             Item::Prompt(v) => {
                 self.also_here_seen = false;
                 self.mp = v.mp.unwrap_or(0);
+                if v.max_mp.is_some() {
+                    self.max_mp = v.max_mp;
+                }
                 return self.decide(now);
             }
             _ => {}
         }
         Vec::new()
+    }
+
+    /// A round of the spell going out, by the game's line (see the module notes).
+    fn count_cast(&mut self, line: &str) {
+        let (Some(Attack::Spell(code) | Attack::Room(code)), Some(target)) =
+            (&self.current, &self.target)
+        else {
+            return;
+        };
+        let Some(facts) = self.set.spell_facts.get(code) else {
+            return;
+        };
+        let line = lower(line.trim());
+        let name = lower(&facts.name);
+        let cast = !facts.cast_line.is_empty()
+            && glob(
+                &facts.cast_line.replace("%s", "*").replace("%d", "*"),
+                &line,
+            );
+        let tried = line
+            .strip_prefix("you attempt to cast ")
+            .is_some_and(|rest| {
+                !name.is_empty()
+                    && (rest.starts_with(&format!("{name} at "))
+                        || rest.starts_with(&format!("{name},")))
+            });
+        if cast || tried {
+            let who = if matches!(self.current, Some(Attack::Room(_))) {
+                String::new()
+            } else {
+                lower(target)
+            };
+            *self.casts.entry((code.clone(), who)).or_default() += 1;
+        }
     }
 
     /// The monster the game says the bot's attack found nobody by (see the module notes).
@@ -341,6 +499,8 @@ impl Combat {
     fn gone(&mut self, name: &str) {
         self.roster.retain(|r| !r.eq_ignore_ascii_case(name));
         self.attackers.retain(|a| !a.eq_ignore_ascii_case(name));
+        let who = lower(name);
+        self.casts.retain(|(_, m), _| *m != who);
         if self
             .leader_target
             .as_ref()
@@ -366,6 +526,8 @@ impl Combat {
         if let Some(i) = self.roster.iter().position(|r| r.eq_ignore_ascii_case(&t)) {
             self.roster.remove(i);
         }
+        let who = lower(&t);
+        self.casts.retain(|(_, m), _| *m != who);
         if self
             .kill_order
             .as_deref()
@@ -411,36 +573,77 @@ impl Combat {
         None
     }
 
-    fn affordable(&self, spell: &str, min_mp: i32) -> bool {
+    /// MP covers the spell's cost and the rule's `min_mp`; a share of the maximum needs the
+    /// maximum known.
+    fn affordable(&self, spell: &str, min_mp: Option<Amount>) -> bool {
         let cost = self.set.spell_costs.get(spell).copied().unwrap_or(0);
-        self.mp >= min_mp.max(cost)
+        let min = match min_mp {
+            None => true,
+            Some(Amount::Points(n)) => self.mp >= n,
+            Some(Amount::Percent(p)) => self
+                .max_mp
+                .is_some_and(|max| i64::from(self.mp) * 100 >= i64::from(p) * i64::from(max)),
+        };
+        self.mp >= cost && min
+    }
+
+    /// The spells for the bot's level: the first block that holds it, else the tiers.
+    fn plan(&self) -> &[Planned] {
+        self.level
+            .and_then(|l| self.blocks.iter().find(|(span, _)| span.holds(l)))
+            .map_or(&self.tiers[..], |(_, rules)| &rules[..])
+    }
+
+    /// The rule's conditions hold, here, at this target.
+    fn applies(&self, p: &Planned, target: &str) -> bool {
+        let w = &p.rule.when;
+        let enemies = w
+            .enemies
+            .is_none_or(|e| e.holds(u32::try_from(self.roster.len()).unwrap_or(u32::MAX)));
+        let monsters = w.monsters.is_empty()
+            || if p.room {
+                self.roster
+                    .iter()
+                    .any(|m| w.monsters.iter().any(|g| glob(g, m)))
+            } else {
+                w.monsters.iter().any(|g| glob(g, target))
+            };
+        let routine = w.routine.is_empty()
+            || self
+                .set
+                .routine
+                .as_deref()
+                .is_some_and(|r| w.routine.iter().any(|g| glob(g, r)));
+        enemies && monsters && routine
+    }
+
+    /// Casts left under `max_casts`: at this monster, or in this room for a room spell.
+    fn casts_left(&self, p: &Planned, target: &str) -> bool {
+        let Some(max) = p.rule.max_casts else {
+            return true;
+        };
+        let who = if p.room { String::new() } else { lower(target) };
+        self.casts
+            .get(&(p.rule.cast.clone(), who))
+            .is_none_or(|n| *n < max)
     }
 
     fn works(&self, a: &Attack, target: &str) -> bool {
         !self.useless.contains(&(a.key(), lower(target)))
     }
 
-    /// The attack for `target` at the current MP: a room tier with enough enemies here, else
-    /// the first single-target tier that fits, else melee, else none.
+    /// The attack for `target` at the current MP: the first rule of the plan for the bot's
+    /// level that applies, can be paid for, has casts left and works on it; else melee, else
+    /// none.
     fn choose(&self, target: &str) -> Option<Attack> {
-        let room_tiers = if self.nuke {
-            &self.set.room_tiers[..]
-        } else {
-            &[]
-        };
-        let tiers = if self.nuke { &self.set.tiers[..] } else { &[] };
-        for t in room_tiers {
-            let a = Attack::Room(t.spell.clone());
-            if self.roster.len() >= t.min_enemies as usize
-                && self.affordable(&t.spell, t.min_mp)
+        let plan = if self.nuke { self.plan() } else { &[] };
+        for p in plan {
+            let a = p.attack();
+            if self.applies(p, target)
+                && self.affordable(&p.rule.cast, p.rule.when.min_mp)
+                && self.casts_left(p, target)
                 && self.works(&a, target)
             {
-                return Some(a);
-            }
-        }
-        for t in tiers {
-            let a = Attack::Spell(t.spell.clone());
-            if self.affordable(&t.spell, t.min_mp) && self.works(&a, target) {
                 return Some(a);
             }
         }
@@ -451,6 +654,10 @@ impl Combat {
     }
 
     fn decide(&mut self, now: Instant) -> Vec<String> {
+        // A room clear of monsters gives the room spells their casts back.
+        if self.roster.is_empty() {
+            self.casts.retain(|(_, m), _| !m.is_empty());
+        }
         // A kill order preempts the current target; otherwise a target is kept until it
         // dies or leaves, so the bot doesn't flip between monsters.
         let ordered = self.kill_order.as_deref().and_then(|k| self.here(k));
@@ -459,6 +666,8 @@ impl Combat {
             (Some(o), _) => Some(o),
             (None, Some(k)) => Some(k),
             (None, None) if self.hold => None,
+            // Which block to fight with isn't known yet (#125).
+            (None, None) if self.wants_level() && self.level.is_none() => None,
             (None, None) => self.pick(now),
         };
         if target != self.target {

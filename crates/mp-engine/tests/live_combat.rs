@@ -32,6 +32,9 @@ fn combat(targeting: Vec<Rule>) -> CombatSettings {
         monsters: vec![s("practice dummy")],
         leader_target_stale: Duration::from_secs(6),
         round: Duration::from_millis(200),
+        by_level: vec![],
+        spell_facts: Default::default(),
+        routine: None,
     }
 }
 

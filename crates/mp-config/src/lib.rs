@@ -12,9 +12,9 @@ mod server;
 mod units;
 
 pub use character::{
-    Amount, Automation, BOT_STATLINE, Channel, CharacterConfig, Combat, Gear, GearUse, Login,
-    LoginStep, LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier, Rule,
-    StealthOpener, Tier, Unattended,
+    Amount, Automation, BOT_STATLINE, Channel, CharacterConfig, Combat, Gear, GearUse, LevelBlock,
+    Login, LoginStep, LoginSteps, Melee, Party, PartyRole, Pools, Remote, Require, Rest, RoomTier,
+    Rule, Span, SpellRule, SpellWhen, StealthOpener, Tier, Unattended,
 };
 pub use error::ConfigError;
 pub use files::{Loaded, Secrets, character_from_text, load_character, load_server, revision};

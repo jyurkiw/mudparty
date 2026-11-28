@@ -159,6 +159,33 @@ struct World<'a> {
 }
 
 impl World<'_> {
+    /// Each spell the combat names, looked up in the game data (#125): a cast code it hasn't
+    /// would never go out.
+    fn spells(&self, out: &mut Problems, file: &Path, c: &CharacterConfig) {
+        let combat = &c.combat;
+        let planned = combat.by_level.iter().enumerate().flat_map(|(i, b)| {
+            b.spells
+                .iter()
+                .enumerate()
+                .map(move |(j, r)| (format!("combat.by_level[{i}].spells[{j}].cast"), &r.cast))
+        });
+        let tiers = combat
+            .tiers
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (format!("combat.tiers[{i}].spell"), &t.spell));
+        let room_tiers = combat
+            .room_tiers
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (format!("combat.room_tiers[{i}].spell"), &t.spell));
+        for (field, cast) in planned.chain(tiers).chain(room_tiers) {
+            if !matches!(self.gd.spell_by_short(cast), Ok(Some(_))) {
+                out.add(file, &field, &format!("no spell `{cast}` in the game data"));
+            }
+        }
+    }
+
     fn character(&self, out: &mut Problems, file: &Path, text: &str) -> String {
         let mut c: CharacterConfig = match character_from_text(file, text) {
             Ok(c) => c,
@@ -167,6 +194,7 @@ impl World<'_> {
                 return String::new();
             }
         };
+        self.spells(out, file, &c);
         let mut notes = Vec::new();
         let mut area = None;
         let mut reach = None;

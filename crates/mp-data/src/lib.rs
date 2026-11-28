@@ -294,9 +294,45 @@ pub struct Spell {
     pub level: i64,
     pub magery: i64,
     pub magelvl: i64,
+    /// silvermere's `TGT_` value: 3, 5, 9, 11 and 12 go at the whole room.
     pub target: i64,
     pub spell_type: i64,
     pub energy: i64,
+    /// The caster's line of a cast (#125), the spell message's first text, `%s` and `%d`
+    /// still in it: `You fire a %s at %s for %d damage!`. Empty when the spell has none.
+    pub cast_line: String,
+}
+
+impl Spell {
+    /// Whether the spell goes at everyone in the room rather than one target: silvermere's
+    /// Divided Area (3, 5), Divided Attack Area (9), Full Area (11) and Full Attack Area
+    /// (12). It is cast with its bare code.
+    pub fn hits_room(&self) -> bool {
+        matches!(self.target, 3 | 5 | 9 | 11 | 12)
+    }
+}
+
+/// What this mudparty writes into `meta.schema`: a file of another one is imported again.
+/// 2 added the spells' cast lines (#125).
+pub const SCHEMA_VERSION: u32 = 2;
+
+const SPELL_COLUMNS: &str =
+    "number, name, short, mana, level, magery, magelvl, target, spell_type, energy, cast_line";
+
+fn spell_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Spell> {
+    Ok(Spell {
+        number: r.get(0)?,
+        name: r.get(1)?,
+        short: r.get(2)?,
+        mana: r.get(3)?,
+        level: r.get(4)?,
+        magery: r.get(5)?,
+        magelvl: r.get(6)?,
+        target: r.get(7)?,
+        spell_type: r.get(8)?,
+        energy: r.get(9)?,
+        cast_line: r.get(10)?,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +360,8 @@ CREATE TABLE exits (
 CREATE TABLE spells (
   number INTEGER PRIMARY KEY, name TEXT NOT NULL, short TEXT NOT NULL, mana INTEGER NOT NULL,
   level INTEGER NOT NULL, magery INTEGER NOT NULL, magelvl INTEGER NOT NULL,
-  target INTEGER NOT NULL, spell_type INTEGER NOT NULL, energy INTEGER NOT NULL);
+  target INTEGER NOT NULL, spell_type INTEGER NOT NULL, energy INTEGER NOT NULL,
+  cast_line TEXT NOT NULL);
 CREATE INDEX spells_short ON spells (short COLLATE NOCASE);
 CREATE TABLE classes (
   number INTEGER PRIMARY KEY, name TEXT NOT NULL, magery INTEGER NOT NULL,
@@ -419,28 +456,16 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
     let spells: Vec<Spell> = {
         let mut q = src
             .prepare(
-                "SELECT number, name, shortnm, mana, level, magery, magelvl, target, spell_type,
-                        energy
-                 FROM spells ORDER BY number",
+                "SELECT s.number, s.name, s.shortnm, s.mana, s.level, s.magery, s.magelvl,
+                        s.target, s.spell_type, s.energy, COALESCE(m.text0, '')
+                 FROM spells s LEFT JOIN messages m ON m.number = s.msgnum
+                 ORDER BY s.number",
             )
             .map_err(&e)?;
-        q.query_map([], |row| {
-            Ok(Spell {
-                number: row.get(0)?,
-                name: row.get(1)?,
-                short: row.get(2)?,
-                mana: row.get(3)?,
-                level: row.get(4)?,
-                magery: row.get(5)?,
-                magelvl: row.get(6)?,
-                target: row.get(7)?,
-                spell_type: row.get(8)?,
-                energy: row.get(9)?,
-            })
-        })
-        .map_err(&e)?
-        .collect::<Result<_, _>>()
-        .map_err(&e)?
+        q.query_map([], spell_row)
+            .map_err(&e)?
+            .collect::<Result<_, _>>()
+            .map_err(&e)?
     };
 
     let classes: Vec<Class> = {
@@ -510,7 +535,7 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
         ("gamedata_rev", rev.as_str()),
         ("source", "silvermere"),
         ("source_path", &silvermere_db.display().to_string()),
-        ("schema", "1"),
+        ("schema", &SCHEMA_VERSION.to_string()),
     ] {
         txn.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2)",
@@ -560,7 +585,7 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
     }
     for s in &spells {
         txn.execute(
-            "INSERT INTO spells VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO spells VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 s.number,
                 s.name,
@@ -571,7 +596,8 @@ pub fn import(silvermere_db: &Path, out: &Path) -> Result<ImportReport, DataErro
                 s.magelvl,
                 s.target,
                 s.spell_type,
-                s.energy
+                s.energy,
+                s.cast_line
             ],
         )
         .map_err(&o)?;
@@ -622,6 +648,17 @@ impl GameData {
             conn,
             path: path.to_owned(),
         })
+    }
+
+    /// `meta.schema`: the [`SCHEMA_VERSION`] of the mudparty that wrote the file.
+    pub fn schema(&self) -> Result<u32, DataError> {
+        let v: String = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                r.get(0)
+            })
+            .map_err(err(&self.path))?;
+        Ok(v.parse().unwrap_or(0))
     }
 
     /// `gamedata_rev`.
@@ -865,24 +902,9 @@ impl GameData {
     pub fn spell_by_short(&self, short: &str) -> Result<Option<Spell>, DataError> {
         self.conn
             .query_row(
-                "SELECT number, name, short, mana, level, magery, magelvl, target, spell_type,
-                        energy
-                 FROM spells WHERE short = ?1 COLLATE NOCASE",
+                &format!("SELECT {SPELL_COLUMNS} FROM spells WHERE short = ?1 COLLATE NOCASE"),
                 params![short],
-                |r| {
-                    Ok(Spell {
-                        number: r.get(0)?,
-                        name: r.get(1)?,
-                        short: r.get(2)?,
-                        mana: r.get(3)?,
-                        level: r.get(4)?,
-                        magery: r.get(5)?,
-                        magelvl: r.get(6)?,
-                        target: r.get(7)?,
-                        spell_type: r.get(8)?,
-                        energy: r.get(9)?,
-                    })
-                },
+                spell_row,
             )
             .optional()
             .map_err(err(&self.path))
@@ -913,29 +935,14 @@ impl GameData {
         let e = err(&self.path);
         let mut q = self
             .conn
-            .prepare(
-                "SELECT number, name, short, mana, level, magery, magelvl, target, spell_type,
-                        energy
-                 FROM spells WHERE short <> '' ORDER BY number",
-            )
+            .prepare(&format!(
+                "SELECT {SPELL_COLUMNS} FROM spells WHERE short <> '' ORDER BY number"
+            ))
             .map_err(&e)?;
-        q.query_map([], |r| {
-            Ok(Spell {
-                number: r.get(0)?,
-                name: r.get(1)?,
-                short: r.get(2)?,
-                mana: r.get(3)?,
-                level: r.get(4)?,
-                magery: r.get(5)?,
-                magelvl: r.get(6)?,
-                target: r.get(7)?,
-                spell_type: r.get(8)?,
-                energy: r.get(9)?,
-            })
-        })
-        .map_err(&e)?
-        .collect::<Result<_, _>>()
-        .map_err(&e)
+        q.query_map([], spell_row)
+            .map_err(&e)?
+            .collect::<Result<_, _>>()
+            .map_err(&e)
     }
 
     /// Every monster name, once each, sorted.
