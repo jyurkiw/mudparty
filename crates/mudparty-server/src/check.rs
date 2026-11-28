@@ -169,6 +169,12 @@ impl World<'_> {
                 .enumerate()
                 .map(move |(j, r)| (format!("combat.by_level[{i}].spells[{j}].cast"), &r.cast))
         });
+        let heals = combat.by_level.iter().enumerate().flat_map(|(i, b)| {
+            b.heals
+                .iter()
+                .enumerate()
+                .map(move |(j, h)| (format!("combat.by_level[{i}].heals[{j}].cast"), &h.cast))
+        });
         let tiers = combat
             .tiers
             .iter()
@@ -179,7 +185,7 @@ impl World<'_> {
             .iter()
             .enumerate()
             .map(|(i, t)| (format!("combat.room_tiers[{i}].spell"), &t.spell));
-        for (field, cast) in planned.chain(tiers).chain(room_tiers) {
+        for (field, cast) in planned.chain(heals).chain(tiers).chain(room_tiers) {
             if !matches!(self.gd.spell_by_short(cast), Ok(Some(_))) {
                 out.add(file, &field, &format!("no spell `{cast}` in the game data"));
             }

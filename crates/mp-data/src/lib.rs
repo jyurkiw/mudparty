@@ -310,6 +310,12 @@ impl Spell {
     pub fn hits_room(&self) -> bool {
         matches!(self.target, 3 | 5 | 9 | 11 | 12)
     }
+
+    /// Whether the spell goes at the caster's whole party (#126): silvermere's Divided Party
+    /// Area (10) and Full Party Area (13), healing rain. It is cast with its bare code.
+    pub fn hits_party(&self) -> bool {
+        matches!(self.target, 10 | 13)
+    }
 }
 
 /// What this mudparty writes into `meta.schema`: a file of another one is imported again.
