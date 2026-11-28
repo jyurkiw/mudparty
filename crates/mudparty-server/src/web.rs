@@ -5,9 +5,12 @@
 //!   running bots, on connecting and then on each change, at most four a second;
 //! - page → server `order`: `{ "name": <character>, "order": <what>, ... }`, where `order`
 //!   is `start`, `stop`, `toggle` (`switch`, `on`), `command` (`text`), `kill` (`target`),
-//!   `wait`, `ok`, `join` (`leader`), `goto` (`room`: a key or a place, and `avoid`: places), `pause` or `resume`. See [`Order`]. For a character played in MudPlay,
-//!   `command` injects, as `inject` (`text`) does;
-//! - server → page `result`: the answer to each order, `ok` and a `message`;
+//!   `wait`, `ok`, `join` (`leader`), `goto` (`room`: a key or a place, and `avoid`:
+//!   places), `pause`, `resume`, `refresh`, `capture` (`id`, `line`) or `reload` (read the
+//!   file again, restarting a running bot on it; #94). See [`Order`]. For a character
+//!   played in MudPlay, `command` injects, as `inject` (`text`) does;
+//! - server → page `result`: the answer to each order, `ok` and a `message`, with `order`
+//!   naming the order it answers;
 //! - server → page `captured`: a command's output for a `capture` order (`id`, `line`,
 //!   `text`, `answered`), to every page, which match it by `id`;
 //! - page → server `history` (`name`, `since`): the character's text history after line
@@ -221,8 +224,12 @@ fn handle(server: &Arc<Server>, text: &str) -> Value {
         }
         other => return result(&name, Err(format!("unknown message type {other:?}"))),
     }
-    match serde_json::from_value::<Order>(Value::Object(msg)) {
+    // The result names the order it answers, so the page can put it on the right control.
+    let kind = msg.get("order").cloned().unwrap_or(Value::Null);
+    let mut answer = match serde_json::from_value::<Order>(Value::Object(msg)) {
         Ok(order) => result(&name, server.order(&name, order)),
         Err(e) => result(&name, Err(format!("not an order: {e}"))),
-    }
+    };
+    answer["order"] = kind;
+    answer
 }
