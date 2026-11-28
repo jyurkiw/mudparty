@@ -53,6 +53,24 @@
   ol { margin: 0; padding-left: 18px; color: var(--dim); font-size: 12px;
        font-family: ui-monospace, Consolas, monospace; }
   ol li { white-space: pre-wrap; word-break: break-word; }
+  /* The character sheet (#10): a modal from each card's Sheet button. */
+  dialog#sheet { border: 1px solid var(--line); border-radius: 8px; padding: 0;
+                 background: var(--card); color: var(--ink); width: min(720px, 96vw); }
+  dialog#sheet::backdrop { background: rgba(0, 0, 0, .35); }
+  .sheet-head { display: flex; gap: 8px; align-items: baseline; padding: 12px 14px;
+                border-bottom: 1px solid var(--line); }
+  .sheet-head .name { font-size: 16px; }
+  .sheet-head .close { margin-left: auto; }
+  .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
+  .tabs button.on { border-color: var(--mp); color: var(--mp); }
+  .sheet-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+  /* The game's own text, in its own colours: green labels, cyan values, a red star. */
+  pre.game { margin: 0; padding: 10px 12px; border-radius: 6px; background: #0c0c0c;
+             color: #c0c0c0; font: 13px/1.35 ui-monospace, Consolas, "Courier New", monospace;
+             white-space: pre-wrap; overflow-x: auto; }
+  pre.game .l { color: #3fd23f; }
+  pre.game .v { color: #3fcfcf; }
+  pre.game .m { color: #ff5555; }
 </style>
 </head>
 <body>
@@ -63,12 +81,17 @@
   <span id="result"></span>
 </header>
 <main id="party"></main>
+<dialog id="sheet"></dialog>
 <script>
 "use strict";
 let ws;
 const party = document.getElementById("party");
 const link = document.getElementById("link");
 const result = document.getElementById("result");
+const sheetBox = document.getElementById("sheet");
+// The open sheet, if any, and the last party message to draw it from.
+let sheetOpen = null; // { name, tab }
+let lastMsg = null;
 
 function order(name, fields) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -102,6 +125,125 @@ function box(placeholder, label, send, disabled) {
   const go = () => { if (input.value.trim()) { send(input.value); input.value = ""; } };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
   return el("div", { class: "row" }, input, el("button", { onclick: go, disabled }, label));
+}
+
+// Copper as the coins it's worth, highest first: `2 gold 5 silver 3 copper`.
+function money(copper) {
+  if (!copper) return "no money";
+  const parts = [];
+  for (const [name, each] of [["runic", 1000000], ["platinum", 10000], ["gold", 100],
+                              ["silver", 10], ["copper", 1]]) {
+    const n = Math.floor(copper / each);
+    if (n) { parts.push(`${n} ${name}`); copper -= n * each; }
+  }
+  return parts.join(" ");
+}
+
+function openSheet(name, tab) {
+  sheetOpen = { name, tab };
+  drawSheet();
+  if (!sheetBox.open) sheetBox.showModal();
+}
+sheetBox.addEventListener("close", () => { sheetOpen = null; });
+
+// The game's text, drawn as MajorMUD draws it: a line of [text, colour] pieces, colour
+// `l` (the green labels), `v` (the cyan values), `m` (the red star of a changed stat), or
+// none.
+function gameLines(lines) {
+  return el("pre", { class: "game" }, ...lines.flatMap((line, i) => [
+    ...line.map(([text, c]) => c ? el("span", { class: c }, text) : text),
+    i < lines.length - 1 ? "\n" : null,
+  ]));
+}
+
+// printf's widths: `%5d` right, `%-5d` left.
+const R = (v, w) => String(v).padStart(w);
+const L = (v, w) => String(v).padEnd(w);
+// A stat's mark: the red star when it differs from its base, else a space.
+const mark = (marked) => marked ? ["*", "m"] : [" ", "v"];
+
+// `st` as silvermere prints it (display/status.rs, the catalogue's st_* lines).
+function statsTab(st) {
+  if (!st) return el("div", { class: "sheet-body note" }, "Not read yet. Refresh asks the game with st.");
+  const g = st.magic;
+  const magery = !g
+    ? [[" ".repeat(39)], ["Traps:       ", "l"], [R(st.traps, 5), "v"]]
+    : g.kind === "Kai"
+      ? [["Kai:  ", "l"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
+         [" ".repeat(22)], ["Traps:       ", "l"], [R(st.traps, 5), "v"]]
+      : [["Mana: ", "l"], mark(g.marked), [R(g.mp, 4) + "/" + L(g.max_mp, 5), "v"],
+         [" Spellcasting: ", "l"], [L(g.spellcasting ?? 0, 5), "v"], ["  Traps:       ", "l"],
+         [R(st.traps, 5), "v"]];
+  const stats = (a, al, b, bl, skill, sl) => [
+    [a, "l"], mark(al.marked), [L(al.value, 5), "v"], ["  " + b, "l"], mark(bl.marked),
+    [L(bl.value, 5), "v"], ["       " + skill, "l"], [R(sl, 5), "v"]];
+  const lines = [
+    [["Name: ", "l"], [L(st.name, 29), "v"], ["    Lives/CP:  ", "l"], [R(st.lives, 5) + "/" + L(st.cp, 5), "v"]],
+    [["Race: ", "l"], [L(st.race, 11), "v"], [" Exp: ", "l"], [L(st.exp, 15), "v"],
+     [" Perception:  ", "l"], [R(st.perception, 5), "v"]],
+    [["Class: ", "l"], [L(st.class, 10), "v"], [" Level: ", "l"], [L(st.level, 5), "v"],
+     ["         Stealth:     ", "l"], [R(st.stealth, 5), "v"]],
+    [["Hits: ", "l"], [R(st.hp, 5) + "/" + L(st.max_hp, 5), "v"], [" Armour Class: ", "l"],
+     [R(st.ac, 3) + "/" + L(st.dr, 2), "v"], [" Thievery:    ", "l"], [R(st.thievery, 5), "v"]],
+    magery,
+    [[" ".repeat(39) + "Picklocks:   ", "l"], [R(st.picklocks, 5), "v"]],
+    stats("Strength: ", st.strength, "Agility:", st.agility, "Tracking:    ", st.tracking),
+    stats("Intellect:", st.intellect, "Health: ", st.health, "Martial Arts:", st.martial_arts),
+    stats("Willpower:", st.willpower, "Charm:  ", st.charm, "MagicRes:    ", st.magic_res),
+  ];
+  if (st.poisoned) lines.push([["You are Poisoned!", "m"]]);
+  return el("div", { class: "sheet-body" }, gameLines(lines));
+}
+
+// The coins as the carried list names them: `1 gold crown, 18 silver nobles`.
+function coinWords(c) {
+  return [["runic coins", "runic coins", c.runic], ["platinum piece", "platinum pieces", c.platinum],
+          ["gold crown", "gold crowns", c.gold], ["silver noble", "silver nobles", c.silver],
+          ["copper farthing", "copper farthings", c.copper]]
+    .filter(([, , n]) => n > 0)
+    .map(([one, many, n]) => `${n} ${n === 1 ? one : many}`);
+}
+
+// `i` as silvermere prints it (display/inventory.rs), keys left out, and what mudparty
+// works out from it beneath.
+function inventoryTab(m) {
+  const inv = m.sheet.inventory;
+  if (!inv) return el("div", { class: "sheet-body note" }, "Not read yet. Refresh asks the game with i.");
+  const words = [...coinWords(inv.coins),
+    ...inv.items.map((i) => `${i.count > 1 ? i.count + " " : ""}${i.name}${i.place ? ` (${i.place})` : ""}`)];
+  const enc = inv.encumbrance;
+  const lines = [
+    [["You are carrying "], [words.length ? words.join(", ") : "Nothing!", "v"]],
+    [["Wealth: ", "l"], [`${inv.wealth ?? m.sheet.coins_value ?? 0} copper farthings`, "v"]],
+  ];
+  if (enc) lines.push([["Encumbrance: ", "l"], [`${enc.cur}/${enc.max} - ${enc.level} [${enc.pct}%]`, "v"]]);
+  return el("div", { class: "sheet-body" },
+    gameLines(lines),
+    el("div", { class: "note" },
+      [`worth ${money(m.sheet.coins_value || 0)}`,
+       m.sheet.coins_room != null ? `room for ${m.sheet.coins_room.toLocaleString()} more coins` : null]
+        .filter(Boolean).join(" · ")));
+}
+
+function drawSheet() {
+  const m = lastMsg && lastMsg.members.find((x) => x.name === sheetOpen.name);
+  if (!m) { sheetBox.replaceChildren(el("div", { class: "sheet-body" }, "No such character.")); return; }
+  const st = m.sheet.status;
+  const inGame = ["idle", "fighting", "resting", "waiting"].includes(m.mode);
+  const canRefresh = inGame && m.driver === "engine";
+  const tab = (id, label) => el("button", { class: sheetOpen.tab === id ? "on" : "",
+    onclick: () => { sheetOpen.tab = id; drawSheet(); } }, label);
+  sheetBox.replaceChildren(
+    el("div", { class: "sheet-head" },
+      el("span", { class: "name" }, m.name),
+      el("span", { class: "class" }, st ? `${st.race} ${st.class}, level ${st.level}` : (m.class || "")),
+      el("button", { class: "close", disabled: !canRefresh,
+        title: canRefresh ? "Ask the game again (st and i), once it isn't fighting or resting"
+          : "Only a bot in the game can refresh",
+        onclick: () => order(m.name, { order: "refresh" }) }, "Refresh"),
+      el("button", { onclick: () => sheetBox.close() }, "Close")),
+    el("div", { class: "tabs" }, tab("stats", "Stats"), tab("inventory", "Inventory")),
+    sheetOpen.tab === "stats" ? statsTab(st) : inventoryTab(m));
 }
 
 // Where a character was last recorded, for a rescue.
@@ -153,6 +295,11 @@ function card(m) {
     box("command for the game", "Send", (t) => order(m.name, { order: "command", text: t }), !inGame),
   ] : [el("div", { class: "note" },
     m.main ? "Played in MudPlay, through the proxy." : "No login: can't run as a bot.")];
+  controls.unshift(el("div", { class: "row" },
+    el("button", { onclick: () => openSheet(m.name, "stats") }, "Sheet"),
+    m.sheet.status ? el("span", { class: "note" },
+      `level ${m.sheet.status.level} · charm ${m.sheet.status.charm.value}`) : null,
+    m.sheet.coins_value != null ? el("span", { class: "note" }, "· " + money(m.sheet.coins_value)) : null));
 
   return el("section", { class: "card" + (m.main ? " main" : "") },
     el("div", { class: "top" },
@@ -174,6 +321,8 @@ function card(m) {
 }
 
 function render(msg) {
+  lastMsg = msg;
+  if (sheetOpen) drawSheet();
   // Keep what's half-typed in a box across a redraw.
   const typed = [...party.querySelectorAll("input")].map((i) => i.value);
   const focus = [...party.querySelectorAll("input")].indexOf(document.activeElement);

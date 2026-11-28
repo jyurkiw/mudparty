@@ -9,6 +9,7 @@ mod remote;
 mod rest;
 mod routine;
 mod session;
+mod sheet;
 mod shop;
 mod walk;
 
@@ -28,6 +29,9 @@ pub use routine::{
 pub use session::{
     AutoState, Command, Inviter, Offline, Report, Seat, SeatInput, SessionHandle, SessionSpec,
     SessionState, StatlineStore, Upstream, spawn, spawn_seated,
+};
+pub use sheet::{
+    Coins, Encumbrance, Inventory, Magic, SheetItem, SheetPart, SheetReader, Stat, Status,
 };
 pub use shop::{Carried, EquipState, Equipper, InventoryReader, parse_carried};
 pub use walk::{RouteRules, WalkState, WalkStep, Walker};

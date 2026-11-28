@@ -35,6 +35,7 @@ use crate::remote::{
 };
 use crate::rest::{RestSettings, Rester};
 use crate::routine::{Goal, Routine, RoutinePart, RoutineSettings, Seen, TrainEnd};
+use crate::sheet::{SheetPart, SheetReader};
 use crate::shop::{EquipState, Equipper, InventoryReader};
 use crate::walk::{RouteRules, WalkState, Walker};
 
@@ -216,6 +217,8 @@ pub enum Command {
     /// Walk to this room, `(map, room)`, by the game data's exits (#52), keeping to
     /// `rules` (#64).
     Goto { to: (u32, u32), rules: RouteRules },
+    /// Read the sheets again (#10): `st` and `i`, once the bot isn't fighting or resting.
+    RefreshSheet,
 }
 
 /// What a session is doing.
@@ -294,6 +297,8 @@ pub enum Report {
     Routine(RoutinePart),
     /// Something the routine says for the card: an item of gear skipped, and why (#55).
     RoutineNote(String),
+    /// A sheet part read whole (#10): the status display or the inventory, whoever asked.
+    Sheet(SheetPart),
 }
 
 /// A routine and the goal the session is carrying out for it (#53).
@@ -1191,6 +1196,10 @@ impl Runner {
         }
         let mut pacer = Pacer::new(self.spec.pacing.clone());
         let mut seen = Watched::default();
+        // The sheets (#10): read from whatever output comes; asked for after login and on
+        // a refresh, once the bot is standing out of a fight.
+        let mut sheet = SheetReader::default();
+        let mut sheet_due = false;
         let mut in_game = false;
         let mut last_vitals: Option<Vitals> = None;
         // While logging off: when to give up, and how many `quit`s were sent.
@@ -1223,6 +1232,14 @@ impl Runner {
                     for t in reader.feed_traced(&data) {
                         if let Some(l) = &mut self.logs {
                             let _ = l.transcript_line(&t.plain);
+                        }
+                        if in_game && let Some(part) = sheet.on_item(&t.item) {
+                            let kind = match &part {
+                                SheetPart::Status(_) => "status",
+                                SheetPart::Inventory(_) => "inventory",
+                            };
+                            self.decision("sheet", json!({"part": kind}));
+                            self.report(Report::Sheet(part));
                         }
                         if !in_game {
                             // The room shown on the way in is the first roster; the
@@ -1275,6 +1292,8 @@ impl Runner {
                                         probe = Some(Instant::now() + self.spec.login.step_timeout);
                                         // Where the bot came in, for the web page's card.
                                         pacer.push("/room");
+                                        // Its sheets, once its statline is set.
+                                        sheet_due = true;
                                         if let Some(p) = &mut party {
                                             let acts = p.start(Instant::now());
                                             self.queue(&mut pacer, "party", acts);
@@ -1555,6 +1574,7 @@ impl Runner {
                         self.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "not in the game, or played in MudPlay"}));
                         self.report(Report::Walk(WalkState::Failed("not able to walk now".into())));
                     }
+                    Some(Command::RefreshSheet) => sheet_due = true,
                     None => return LinkEnd::Done(Offline::Dropped),
                     Some(Command::Logoff) if !in_game => return LinkEnd::Done(Offline::LoggedOff),
                     Some(Command::Logoff) => {
@@ -1625,6 +1645,17 @@ impl Runner {
                         if let Some(p) = &mut party {
                             let acts = p.on_tick(now);
                             self.queue(&mut pacer, "party", acts);
+                        }
+                        // The sheets, when they're due: never in a fight, and never while
+                        // resting, since `i` would stand the bot up. A seated character's
+                        // fill from what its player types.
+                        let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
+                        let standing = last_vitals.is_none_or(|v| v.rest == mp_parse::Rest::Standing)
+                            && !rester.as_ref().is_some_and(Rester::resting);
+                        if sheet_due && probe.is_none() && seat.is_none() && !unattended && !fighting && standing {
+                            sheet_due = false;
+                            pacer.push("st");
+                            pacer.push("i");
                         }
                         if let Some(w) = &mut walker {
                             let fighting = combat.as_ref().is_some_and(|c| c.target().is_some());
@@ -1773,6 +1804,8 @@ async fn run_from(
                             r.decision("goto_dropped", json!({"to": format!("{}/{}", to.0, to.1), "why": "reconnecting"}));
                             r.report(Report::Walk(WalkState::Failed("reconnecting".into())));
                         }
+                        // The sheets are read again after the login anyway.
+                        Some(Command::RefreshSheet) => {}
                     }
                 }
             }

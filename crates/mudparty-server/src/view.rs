@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use mp_config::{Automation, CharacterConfig};
 
 use crate::history::Position;
-use mp_engine::{AutoState, Offline, Report, SessionState};
+use mp_engine::{AutoState, Inventory, Offline, Report, SessionState, SheetPart, Status};
 use mp_parse::{Rest, Vitals};
 use serde::Serialize;
 
@@ -53,10 +53,23 @@ pub struct Card {
     pub routine: Option<String>,
     /// Where it was last known to be, for a rescue (from `mudparty.sqlite`).
     pub last_position: Option<Position>,
+    /// Its character sheet (#10), as last read; kept while it's offline.
+    pub sheet: CardSheet,
     #[serde(skip)]
     state: Option<SessionState>,
     #[serde(skip)]
     resting: bool,
+}
+
+/// A character's sheet parts (#10), each as the game last showed it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CardSheet {
+    pub status: Option<Status>,
+    pub inventory: Option<Inventory>,
+    /// How many more coins it could carry, from the inventory's weight line.
+    pub coins_room: Option<i64>,
+    /// Their coins' value in copper, worked out from the coins carried.
+    pub coins_value: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -136,6 +149,7 @@ impl Card {
             walk: None,
             routine: None,
             last_position: None,
+            sheet: CardSheet::default(),
             state: None,
             resting: false,
         };
@@ -225,6 +239,12 @@ impl Card {
                 self.event(if *on { "resting" } else { "rested" }.into());
             }
             Report::Automation(a) => self.automation = a.clone().into(),
+            Report::Sheet(SheetPart::Status(s)) => self.sheet.status = Some((**s).clone()),
+            Report::Sheet(SheetPart::Inventory(i)) => {
+                self.sheet.coins_room = i.coins_room();
+                self.sheet.coins_value = Some(i.coins.copper_value());
+                self.sheet.inventory = Some((**i).clone());
+            }
             Report::Fight { target, tier } => {
                 if target.is_some() && *target != self.target {
                     self.event(format!("fighting {}", target.as_deref().unwrap_or("")));
