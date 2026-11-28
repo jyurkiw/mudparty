@@ -246,6 +246,19 @@ async fn create(
     Ok(())
 }
 
+/// Makes `dir` an empty folder for a world. A folder of the same name may be left from an
+/// earlier run: one whose test panicked never reached [`StockSilvermere::stop`], and
+/// Windows reuses process ids. Its write-ahead log would replay onto the fresh copy, so it
+/// goes first (#120). No live process shares the name, as the id is in it.
+fn fresh_dir(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::create_dir_all(dir)
+}
+
 /// A running silvermere on a copy of the stock world.
 pub struct StockSilvermere {
     running: silvermere::Running,
@@ -263,7 +276,7 @@ impl StockSilvermere {
             .parent()
             .expect("a folder")
             .join(format!("t{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+        fresh_dir(&dir)?;
         let db_path = dir.join("test.db");
         std::fs::copy(&template, &db_path)?;
         let url = format!("sqlite://{}", db_path.display());
@@ -369,5 +382,46 @@ impl StockSilvermere {
         self.running.stop().await?;
         let _ = std::fs::remove_dir_all(&self.dir);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // A test that panics never reaches `stop`, so its folder stays, write-ahead log and
+    // all; Windows hands its process id to a later run, whose world then lands in the same
+    // folder. SQLite would replay the old log onto the fresh copy ("an account named Ermias
+    // exists already"), so the folder is emptied first (#120).
+    #[test]
+    fn a_world_s_folder_is_emptied_of_an_earlier_run() {
+        let dir = std::env::temp_dir().join(format!(
+            "mudparty-fresh-dir-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("test.db"), b"old").unwrap();
+        std::fs::write(dir.join("test.db-wal"), b"old log").unwrap();
+        std::fs::write(dir.join("assets").join("x"), b"old").unwrap();
+        super::fresh_dir(&dir).unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn a_world_s_folder_is_made_when_missing() {
+        let dir = std::env::temp_dir()
+            .join(format!("mudparty-fresh-dir-new-{}", std::process::id()))
+            .join("t1-0");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        super::fresh_dir(&dir).unwrap();
+        assert!(dir.is_dir());
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 }
