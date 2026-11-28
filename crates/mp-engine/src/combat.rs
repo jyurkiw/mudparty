@@ -189,6 +189,28 @@ impl Combat {
         })
     }
 
+    /// The monster a line says came in: `A angry giant rat creeps into the room from
+    /// nowhere.`, `kobold moves into the room from above.`. Arrivals print each monster's own
+    /// words (silvermere's `monster_arrival_text`, from the game data's `arrivemsg`), so the
+    /// name is read off the front: an `A`, `An` or `The`, then the longest run of words that
+    /// is, or ends with, a monster's name. Whatever follows `into the room` (nowhere, a
+    /// direction, above, below) doesn't matter.
+    fn arrival(&self, line: &str) -> Option<String> {
+        let line = line.trim();
+        let before = &line[..line.find(" into the room")?];
+        let mut words: Vec<&str> = before.split_whitespace().collect();
+        if words
+            .first()
+            .is_some_and(|w| ["a", "an", "the"].contains(&lower(w).as_str()))
+        {
+            words.remove(0);
+        }
+        (1..=words.len())
+            .rev()
+            .map(|k| words[..k].join(" "))
+            .find(|name| self.is_monster(name))
+    }
+
     fn here(&self, name: &str) -> Option<String> {
         self.roster
             .iter()
@@ -225,7 +247,18 @@ impl Combat {
                     .as_deref()
                     .is_some_and(|l| l.eq_ignore_ascii_case(who)) =>
             {
+                // The leader's attack says the monster is here, though the bot may never
+                // have seen it arrive (#105).
+                if self.is_monster(target) && self.here(target).is_none() {
+                    self.roster.push(target.clone());
+                }
                 self.leader_target = Some((target.clone(), now));
+            }
+            // A monster walking in, in its own words (#105).
+            Item::Text(line) => {
+                if let Some(name) = self.arrival(line) {
+                    self.roster.push(name);
+                }
             }
             Item::Event(Event::CombatEngaged) => self.engaged = true,
             Item::Event(Event::CombatOff) => {
