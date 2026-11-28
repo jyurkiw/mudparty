@@ -51,3 +51,31 @@ async fn a_mage_casts_at_the_arena_dummy_by_hand() {
     assert!(spent, "no cast cost mana; saw {:#?}", c.seen);
     sm.stop().await.unwrap();
 }
+
+// A monster's hit spell on a player recalculates the player's stats, putting a max HP a
+// test raised back to the class's own (#129): the arena's acid slime has one. A test that
+// boosts HP takes them off first.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_monsters_hit_spells_can_be_taken_off() {
+    let sm = StockSilvermere::start(&[StockChar::new("Ermias", "Mage")], true)
+        .await
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let count = move |tx: std::sync::mpsc::Sender<usize>| {
+        move |w: &mut silvermere_engine::World| {
+            let n = w
+                .monsters
+                .values()
+                .flat_map(|m| m.attacks.iter())
+                .filter(|a| a.hitspell.0 != 0)
+                .count();
+            tx.send(n).unwrap();
+        }
+    };
+    sm.on_world(count(tx.clone())).await;
+    assert!(rx.recv().unwrap() > 0, "the stock world has hit spells");
+    sm.without_hit_spells().await;
+    sm.on_world(count(tx)).await;
+    assert_eq!(rx.recv().unwrap(), 0);
+    sm.stop().await.unwrap();
+}

@@ -123,7 +123,9 @@ async fn a_bot_trains_up_to_its_level_and_no_further() {
         *r == Report::State(SessionState::InGame)
     })
     .await;
-    // The arena's monsters come while the clock runs; enough HP that they don't matter.
+    // The arena's monsters come while the clock runs; enough HP that they don't matter,
+    // and without their hit spells nothing puts the boosted max HP back (#129).
+    sm.without_hit_spells().await;
     sm.on_world(|w| {
         for id in w.session_ids() {
             if let Some(p) = w.session_mut(id).and_then(|s| s.character.as_mut())
