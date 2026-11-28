@@ -131,3 +131,24 @@ fn text_after_a_prompt_with_no_clear_line_stays_one_line() {
         ["[HP=32/MA=27]:--- Telepath Sent to Raijin ---"]
     );
 }
+
+// silvermere's help boxes (help human, help warrior) line their columns up with
+// cursor-forward, `ESC[nC`; on its cleared screen that shows as n spaces.
+#[test]
+fn a_cursor_forward_shows_as_spaces() {
+    let (lines, _) =
+        feed_all(&[b"\xba \x1b[0;1mStatistics\x1b[9CAbilities\x1b[7C\x1b[0;34m\xba\r\n"]);
+    assert_eq!(plain(&lines), ["║ Statistics         Abilities       ║"]);
+}
+
+#[test]
+fn a_cursor_forward_with_no_count_is_one_space() {
+    let (lines, _) = feed_all(&[b"a\x1b[Cb\x1b[0Cc\x1b[1Cd\r\n"]);
+    assert_eq!(plain(&lines), ["a b c d"]);
+}
+
+#[test]
+fn a_cursor_forward_split_across_reads_is_spaces() {
+    let (lines, _) = feed_all(&[b"Charm\x1b[", b"5C40\r\n"]);
+    assert_eq!(plain(&lines), ["Charm     40"]);
+}
