@@ -13,6 +13,13 @@
 //!   cast at the corpse. Death lines are per-monster flavour and are not read.
 //! - **`*Combat Off*` alone is no death**: a `break` or an interrupted round prints it too,
 //!   so the fight is taken up again while the target is still here.
+//! - **An attack's own break-off is no stop**: an attack sent while already fighting is
+//!   answered `*Combat Off*` (the old fight broken off, with its own prompt), then
+//!   `*Combat Engaged*`. An off that comes while the bot's attack is unanswered is that,
+//!   and the attack is still running. Read as a stop, the attack went out again at the
+//!   off's prompt, and every answer asked for the next: two bots, each line of one
+//!   redrawing the other's prompt, kept it up ten times a second (#119). A kill can set it
+//!   off: the party's experience line doesn't say which of two same-named monsters died.
 //! - **Shared names**: an attack on a shared name goes to the first monster of that name.
 //!
 //! The room's monsters come from the `Also here:` list. A name counts as a monster only if
@@ -99,6 +106,9 @@ pub struct Combat {
     /// The attack last sent, while it is running.
     current: Option<Attack>,
     engaged: bool,
+    /// When the last attack went out, until the game answers it with `*Combat Engaged*`
+    /// (#119).
+    unanswered: Option<Instant>,
     kill_order: Option<String>,
     leader_target: Option<(String, Instant)>,
     attackers: Vec<String>,
@@ -123,6 +133,7 @@ impl Combat {
             target: None,
             current: None,
             engaged: false,
+            unanswered: None,
             kill_order: None,
             leader_target: None,
             attackers: Vec::new(),
@@ -260,7 +271,15 @@ impl Combat {
                     self.roster.push(name);
                 }
             }
-            Item::Event(Event::CombatEngaged) => self.engaged = true,
+            Item::Event(Event::CombatEngaged) => {
+                self.engaged = true;
+                self.unanswered = None;
+            }
+            // The break-off of the bot's own attack, answered in a round, is no stop.
+            Item::Event(Event::CombatOff)
+                if self
+                    .unanswered
+                    .is_some_and(|at| now.duration_since(at) < self.set.round) => {}
             Item::Event(Event::CombatOff) => {
                 self.engaged = false;
                 self.current = None;
@@ -414,6 +433,7 @@ impl Combat {
         let cmd = want.command(&target);
         self.current = Some(want);
         self.last_change = Some(now);
+        self.unanswered = Some(now);
         vec![cmd]
     }
 }
