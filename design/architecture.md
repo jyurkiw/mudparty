@@ -616,6 +616,15 @@ combat:
   puts its target on the roster too, if it's a monster's name: the leader is in the room
   and attacking it, though the bot may not have seen it come in. Before #105 a party bot,
   which never looks round, assisted only against the monsters it saw as it arrived.
+- **Refused attacks** (#118): an attack at a name nobody here has is no attack. Melee is
+  taken as speech, `You say "a kobold"` with fast talk on (a new character's default) or
+  `Your command had no effect.` with it off; a spell is `You do not see kobold here!`. The
+  engine reads the answer to its own attack only: the name leaves the roster (all of it, as
+  an attack at a shared name goes to the first), and the next target is picked. This is how
+  the bot learns of a monster that died unseen. Its attack can reach the game after the
+  leader's kill (behind the login's own lines, or on a slow host), and a bot not yet
+  fighting the monster gets no share of the kill and no `*Combat Off*`, and the death
+  lines aren't read. Before #118 it kept that target for good and never assisted again.
 - **Kills:** a kill is the experience line
   (`You gain <n> experience.`), or, past the experience a character may hold untrained,
   `You have progressed too far without training to acquire anymore experience!` in its
