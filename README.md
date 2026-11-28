@@ -351,8 +351,10 @@ gear:                        # what it carries, kept by the routine's gear rule
 
 A bot that walks through town shouldn't have `priority: ["*"]`: shopkeepers are monsters
 too, and it would attack them as it shops (#89). Name the monsters it should fight
-instead. `fight_back` answers only a monster's `moves to attack you!` line for now, since
-most attacks print the monster's own words (#85).
+instead. A monster walking in (`A angry giant rat creeps into the room from nowhere.`) is
+seen, and so is any monster the leader attacks. `fight_back` answers only a monster's
+`moves to attack you!` line for now, since most attacks print the monster's own words
+(#85).
 
 A one-off routine may be written in the character's file instead, as `routine: { do: [...] }`.
 

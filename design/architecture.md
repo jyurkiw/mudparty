@@ -605,8 +605,18 @@ combat:
 
 - **The room's monsters** come from the room display (`Also here:`) and from departure
   lines (`<monster> just left to the north.`, or upwards, downwards): a target that leaves
-  is let go, and the next is picked. Arrivals print each monster's own words from the game
-  data, and aren't read yet (#85); a camp's look finds them. A kill is the experience line
+  is let go, and the next is picked.
+- **Arrivals** (#105) print each monster's own words from the game data (`A angry giant rat
+  creeps into the room from nowhere.`, silvermere's `monster_arrival_text`), or `<monster>
+  moves into the room from the east.` The engine reads any line with `into the room` in it:
+  after an `A`, `An` or `The`, the longest run of words that is, or ends with, a monster's
+  name is the monster (`angry giant rat` is a `giant rat`). What follows `into the room`
+  (nowhere, a direction, above, below) doesn't matter. A player walking in names no monster.
+- **The leader's attack** (`<Leader> moves to attack <target>.`, or `moves to cast … upon`)
+  puts its target on the roster too, if it's a monster's name: the leader is in the room
+  and attacking it, though the bot may not have seen it come in. Before #105 a party bot,
+  which never looks round, assisted only against the monsters it saw as it arrived.
+- **Kills:** a kill is the experience line
   (`You gain <n> experience.`), or, past the experience a character may hold untrained,
   `You have progressed too far without training to acquire anymore experience!` in its
   place.

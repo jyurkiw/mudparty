@@ -105,6 +105,75 @@ impl Fight {
     }
 }
 
+/// A bot fighting whatever its priority list names, as a camp's or a hunter's does.
+fn hunter(globs: &[&str]) -> CombatSettings {
+    let mut set = settings();
+    set.targeting = vec![Rule::Priority(globs.iter().map(|g| s(g)).collect())];
+    set
+}
+
+// A monster that walks in prints its own words from the game data (#105). The name is
+// read off the front: the longest run of words that's a monster's name.
+#[test]
+fn a_monster_that_creeps_in_joins_the_room() {
+    let mut f = Fight::new(hunter(&["*rat*"]));
+    f.here("Raijin").prompt(80);
+    assert!(f.take_sent().is_empty());
+    f.msg(Msg::MonsterArrivalText {
+        text: s("A angry giant rat creeps into the room from nowhere."),
+    })
+    .prompt(80);
+    assert_eq!(f.take_sent(), ["lbol angry giant rat"]);
+    assert_eq!(f.combat.monsters(), ["angry giant rat"]);
+}
+
+#[test]
+fn arrivals_from_any_way_in_are_read() {
+    let mut f = Fight::new(hunter(&["*"]));
+    f.here("Raijin").prompt(80);
+    f.msg(Msg::MonsterArrivalText {
+        text: s("An orc shaman slithers quietly into the room from the north."),
+    });
+    f.msg(Msg::MonsterArrivesAbove { mon: s("kobold") });
+    f.msg(Msg::MonsterArrivesDir {
+        mon: s("giant rat"),
+        dir: s("east"),
+    });
+    assert_eq!(f.combat.monsters(), ["orc shaman", "kobold", "giant rat"]);
+}
+
+#[test]
+fn a_player_walking_in_is_not_a_monster() {
+    let mut f = Fight::new(hunter(&["*"]));
+    f.here("Raijin").prompt(80);
+    f.msg(Msg::ArriveDir {
+        who: s("Bob"),
+        dir: s("south"),
+        drag: s(""),
+    });
+    f.msg(Msg::MonsterArrivalText {
+        text: s("A strange wind blows into the room from nowhere."),
+    })
+    .prompt(80);
+    assert!(f.combat.monsters().is_empty());
+    assert!(f.take_sent().is_empty());
+}
+
+// The leader's attack line says the monster is in the room, though the bot never saw it
+// arrive (#105): assist it.
+#[test]
+fn the_leader_s_target_is_assisted_though_unseen_till_then() {
+    let mut f = Fight::new(settings());
+    f.here("Raijin").prompt(80);
+    f.leader_attacks("kobold").prompt(80);
+    assert_eq!(f.take_sent(), ["lbol kobold"]);
+    // Not a monster's name: no fight.
+    let mut f = Fight::new(settings());
+    f.here("Raijin").prompt(80);
+    f.leader_attacks("Bob").prompt(80);
+    assert!(f.take_sent().is_empty());
+}
+
 #[test]
 fn an_empty_room_starts_no_fight() {
     let mut f = Fight::new(settings());
