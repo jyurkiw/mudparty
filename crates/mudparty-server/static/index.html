@@ -36,13 +36,14 @@
   .mode { margin-left: auto; padding: 1px 8px; border-radius: 10px; background: var(--chip); }
   .mode.fighting { color: var(--warn); }
   .mode.offline { color: var(--dim); }
-  .bar { height: 14px; background: var(--chip); border-radius: 3px; position: relative;
+  .bar { height: 18px; background: var(--chip); border-radius: 3px; position: relative;
          overflow: hidden; }
   .bar > i { position: absolute; inset: 0 auto 0 0; }
   .bar.hp > i { background: var(--hp); }
   .bar.mp > i { background: var(--mp); }
   .bar.xp > i { background: var(--xp); }
-  .bar > span { position: relative; font-size: 11px; padding-left: 4px; line-height: 14px; }
+  .bar > span { position: relative; display: block; font-size: 12px; line-height: 18px;
+                padding-left: 6px; white-space: nowrap; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .badge { color: var(--warn); }
   button { font: inherit; padding: 2px 8px; border: 1px solid var(--line);
