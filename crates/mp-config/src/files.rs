@@ -46,7 +46,17 @@ pub fn load_server(path: &Path) -> Result<Loaded<ServerConfig>, ConfigError> {
 /// Reads `characters/<name>.yaml`. The file's name must be the character's.
 pub fn load_character(path: &Path) -> Result<Loaded<CharacterConfig>, ConfigError> {
     let text = read(path)?;
-    let value = CharacterConfig::from_yaml(&text).map_err(|e| e.in_file(path))?;
+    let value = character_from_text(path, &text)?;
+    Ok(Loaded {
+        value,
+        rev: revision(text.as_bytes()),
+    })
+}
+
+/// Reads a character's YAML as if it were the file at `path`, whose name must be the
+/// character's: what the page's editor checks before it saves (#110).
+pub fn character_from_text(path: &Path, text: &str) -> Result<CharacterConfig, ConfigError> {
+    let value = CharacterConfig::from_yaml(text).map_err(|e| e.in_file(path))?;
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -58,10 +68,7 @@ pub fn load_character(path: &Path) -> Result<Loaded<CharacterConfig>, ConfigErro
         )
         .in_file(path));
     }
-    Ok(Loaded {
-        value,
-        rev: revision(text.as_bytes()),
-    })
+    Ok(value)
 }
 
 /// `secrets.yaml`: each account's password. Printing it never shows one.
@@ -100,5 +107,21 @@ impl Secrets {
     /// The password for `account`.
     pub fn password(&self, account: &str) -> Option<&str> {
         self.accounts.get(account).map(String::as_str)
+    }
+
+    /// Sets `account`'s password, replacing any it had (#110).
+    pub fn set_password(&mut self, account: &str, password: &str) {
+        self.accounts
+            .insert(account.to_owned(), password.to_owned());
+    }
+
+    /// As `secrets.yaml` writes it: every account, in order.
+    pub fn to_yaml(&self) -> String {
+        let mut out = String::from("accounts:\n");
+        for (account, password) in &self.accounts {
+            let quote = |s: &str| serde_json::to_string(s).expect("a string always writes");
+            out.push_str(&format!("  {}: {}\n", quote(account), quote(password)));
+        }
+        out
     }
 }

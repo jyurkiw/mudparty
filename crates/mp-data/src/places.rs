@@ -924,6 +924,18 @@ impl Places {
             .map(|f| f.name.as_str())
     }
 
+    /// Every item a shop sells, with the rooms of the shops that sell it, by item name
+    /// (#110).
+    pub fn items_sold(&self) -> BTreeMap<String, Vec<(u32, u32)>> {
+        let mut out: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+        for f in &self.rooms {
+            for item in &f.sells {
+                out.entry(item.clone()).or_default().push(f.key);
+            }
+        }
+        out
+    }
+
     /// The kind of a room's shop (`weapons`, `general`, `bank`, `training`, ...); none for a
     /// room that isn't a shop.
     pub fn shop_kind(&self, key: (u32, u32)) -> Option<&str> {
