@@ -1216,6 +1216,8 @@ impl Runner {
         // a refresh, once the bot is standing out of a fight.
         let mut sheet = SheetReader::default();
         let mut sheet_due = false;
+        // When `exp` went for a bot that fights by level blocks and doesn't know its level.
+        let mut asked_level: Option<Instant> = None;
         // Experience, from `exp` (asked with the sheets) and the kills since.
         let mut experience: Option<Experience> = None;
         // Commands whose output the page asked for.
@@ -1458,6 +1460,7 @@ impl Runner {
                         if let Some(c) = &mut combat
                             && ((driving && self.auto.fights()) || !prompt)
                         {
+                            c.set_level(self.level);
                             let commands = c.on_item(&t.item, now);
                             let target = c.target().map(str::to_owned);
                             for cmd in commands {
@@ -1483,6 +1486,17 @@ impl Runner {
                             }
                         }
                         let ended = self.watch_walk(&mut walker, &mut walk_seen);
+                        // A bot that fights by level asks its level at once (#125).
+                        if in_game
+                            && driving
+                            && self.level.is_none()
+                            && matches!(t.item, Item::Prompt(_))
+                            && combat.as_ref().is_some_and(Combat::wants_level)
+                            && asked_level.is_none_or(|at| now.duration_since(at) >= GEAR_WAIT)
+                        {
+                            pacer.push("exp");
+                            asked_level = Some(now);
+                        }
                         if let Some(run) = running.as_mut().filter(|_| driving && !unattended) {
                             self.feed_gear(run, Some(&t.item), &mut pacer, now);
                             self.drive_routine(run, ended, &mut pacer, &mut walker, &mut walk_seen, &mut combat, &mut rester, last_vitals, room_now, now);

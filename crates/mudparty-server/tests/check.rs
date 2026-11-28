@@ -268,3 +268,23 @@ fn a_train_rule_needs_a_trainer_it_can_walk_to() {
         c.problems
     );
 }
+
+// A cast code the game data hasn't would never go out (#125): each spell a file names, in its
+// level blocks and its tiers, is looked up.
+#[test]
+fn a_spell_the_game_data_hasn_t_is_said() {
+    let mage = format!(
+        "{ERMIAS}combat:\n  by_level:\n    - levels: 1-\n      spells:\n        - cast: mmis\n        - cast: zzap\n  tiers:\n    - {{ spell: blarg, min_mp: 1 }}\n"
+    );
+    let dir = root(ARENA, &mage);
+    let c = run(dir.path(), "characters/Ermias.yaml", Some(1));
+    assert_eq!(
+        c.problems,
+        [
+            "characters/Ermias.yaml: combat.by_level[0].spells[1].cast: no spell `zzap` in the game data",
+            "characters/Ermias.yaml: combat.tiers[0].spell: no spell `blarg` in the game data",
+        ],
+        "{}",
+        c.text
+    );
+}

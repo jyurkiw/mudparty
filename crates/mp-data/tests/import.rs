@@ -76,10 +76,31 @@ async fn silvermere_db() -> (TestDb, PathBuf) {
              resstat, magery, msgnum, mana, maxinc, maxlvls, magelvl, mininc, minlvls, durinc,
              durlvls, shortnm)
          VALUES (1, 'magic missile', '', '', 0, 0, 0, 500, 1, 1, 5, 1, 0, 0, 0, 2, 0, 0, 0,
-             1, 0, 3, 0, 0, 1, 0, 0, 0, 0, 'mmis')",
+             1, 3242, 3, 0, 0, 1, 0, 0, 0, 0, 'mmis')",
         [],
     )
     .unwrap();
+    // A room spell (target 12, Full Attack Area), and the caster lines both print (#125).
+    conn.execute(
+        "INSERT INTO spells (number, name, desc0, desc1, resist, levelcap, flags, energy, level,
+             minval, maxval, spell_type, resmode, diff, durlvl, target, duration, element,
+             resstat, magery, msgnum, mana, maxinc, maxlvls, magelvl, mininc, minlvls, durinc,
+             durlvls, shortnm)
+         VALUES (120, 'fireball', '', '', 0, 0, 0, 500, 15, 1, 5, 1, 0, 0, 0, 12, 0, 0, 0,
+             1, 99, 34, 0, 0, 1, 0, 0, 0, 0, 'fbal')",
+        [],
+    )
+    .unwrap();
+    for (n, text) in [
+        (3242, "You fire a %s at %s for %d damage!"),
+        (99, "The fireball explodes, %scausing %d damage!"),
+    ] {
+        conn.execute(
+            "INSERT INTO messages (number, text0, text1, text2) VALUES (?1, ?2, '', '')",
+            rusqlite::params![n, text],
+        )
+        .unwrap();
+    }
     (t, path)
 }
 
@@ -151,6 +172,26 @@ async fn spells_and_classes_are_imported() {
     );
 }
 
+// What the bot counts a cast by (#125): the caster's line from the spell's message, and
+// whether the spell goes at the whole room.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spell_carries_its_cast_line_and_whether_it_hits_the_room() {
+    let (_t, src) = silvermere_db().await;
+    let dir = tempfile::tempdir().unwrap();
+    import(&src, &out(dir.path())).unwrap();
+    let gd = GameData::open(&out(dir.path())).unwrap();
+    let mmis = gd.spell_by_short("mmis").unwrap().unwrap();
+    assert_eq!(mmis.cast_line, "You fire a %s at %s for %d damage!");
+    assert!(!mmis.hits_room());
+    let fbal = gd.spell_by_short("fbal").unwrap().unwrap();
+    assert_eq!(
+        fbal.cast_line,
+        "The fireball explodes, %scausing %d damage!"
+    );
+    assert!(fbal.hits_room());
+    assert_eq!(gd.schema().unwrap(), mp_data::SCHEMA_VERSION);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_revision_follows_the_content() {
     let (_t, src) = silvermere_db().await;
@@ -183,7 +224,7 @@ async fn the_import_replaces_the_old_file_whole() {
             report.classes,
             report.monsters
         ),
-        (5, 5, 1, 1, 3)
+        (5, 5, 2, 1, 3)
     );
     let names: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()

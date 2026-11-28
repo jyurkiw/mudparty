@@ -678,6 +678,42 @@ combat:
   `Your weapon has no effect against this monster!` marks melee likewise.
 - Room tiers follow their own settings and are never cast at a lone monster just because
   nothing else can hurt it (MudPlay's client policy, recorded in *GAME_MECHANICS*).
+
+**Spells planned by level (#125).** `combat.by_level` holds blocks of attack spell rules,
+each for a range of levels; the tiers above are a block for every level after them.
+
+```yaml
+combat:
+  by_level:
+    - levels: 8-               # 3-5, 8-, -7, or one level
+      spells:                  # top-down, as tiers are
+        - cast: fbal
+          when: { enemies: 3-, min_mp: 40% }
+          max_casts: 2
+        - cast: lbol
+          when: { min_mp: 25%, monsters: ["*shaman*"], routine: [kobold-loop] }
+          max_casts: 4
+        - cast: mmis
+```
+
+- **The block** is the first whose levels hold the bot's level, which comes from `exp`.
+  A bot with blocks asks `exp` as soon as it's in the game and starts no fight until it
+  knows. A caster that went in with melee would never stand out of the fight for its
+  sheets, which ask `exp` too.
+- **A rule is passed over** when any of these hold:
+  - a condition fails: `min_mp` (points or a share of the maximum), `enemies` (monsters in the room), `monsters` (globs on the target, or on anyone here for a room spell), or `routine` (globs on the routine's name);
+  - MP can't pay for the spell;
+  - it has used up its casts;
+  - it had no effect on the target.
+
+  Then the next rule is tried, then melee.
+- **Room or single target** is the game data's spell target. silvermere's `TGT_` values 3, 5, 9, 11 and 12 go at the whole room, and are cast bare.
+- **Counting casts**: a spell repeats every round by itself, so each cast is counted from what the game prints:
+  - the caster's line, the spell message's `text0` from the game data, with `%s` and `%d` read as anything (`You fire a %s at %s for %d damage!`, imported as `spells.cast_line` in game data schema 2);
+  - `You attempt to cast <name> at <target>, but fail.`;
+  - `..., but the spell is resisted.` (`cast_fail_at`, `cast_resisted`; the spell's name).
+
+  Only the spell going out is counted. A single-target spell's casts are per monster, and a kill gives the next of that name its own. A room spell's are per room, until the room is clear of monsters.
 - **Engaged** is `*Combat Engaged*`; **off** is `*Combat Off*`. A monster death line ends
   the target.
 

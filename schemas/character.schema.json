@@ -155,6 +155,13 @@
     "Combat": {
       "additionalProperties": false,
       "properties": {
+        "by_level": {
+          "description": "Attack spells planned by level (#125): the first block whose `levels` hold the\nbot's level is used. `tiers` and `room_tiers`, the step-1 form, are read as a block\nfor every level after these. A bot with blocks starts no fight until `exp` has said\nits level.",
+          "items": {
+            "$ref": "#/$defs/LevelBlock"
+          },
+          "type": "array"
+        },
         "melee": {
           "$ref": "#/$defs/Melee",
           "default": "none"
@@ -252,6 +259,28 @@
           "type": "string"
         }
       ]
+    },
+    "LevelBlock": {
+      "additionalProperties": false,
+      "description": "The spells for a range of levels (#125).",
+      "properties": {
+        "levels": {
+          "$ref": "#/$defs/Span",
+          "description": "`1-7`, `8-` (8 and up), `-7`, or one level, `12`."
+        },
+        "spells": {
+          "default": [],
+          "description": "Attack spells, top-down: the first rule that applies, can be paid for, has casts\nleft and works on the target is cast; when none does, `melee`.",
+          "items": {
+            "$ref": "#/$defs/SpellRule"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "levels"
+      ],
+      "type": "object"
     },
     "Login": {
       "additionalProperties": false,
@@ -706,6 +735,88 @@
         }
       ],
       "description": "A rule: a map with one key (rest, circuit, camp, gear or train), or the bare word `gear` or `train`."
+    },
+    "Span": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "pattern": "^\\s*(\\d+\\s*-\\s*\\d*|-\\s*\\d+|\\d+\\s*\\+|\\d+)\\s*$",
+          "type": "string"
+        }
+      ],
+      "description": "A range, both ends included: `3-5`, `8-` or `3+`, `-7`, or one number."
+    },
+    "SpellRule": {
+      "additionalProperties": false,
+      "description": "An attack spell and when to cast it.",
+      "properties": {
+        "cast": {
+          "description": "The cast code the game accepts (`mmis`). Whether it goes at one monster or the whole\nroom is the game data's.",
+          "type": "string"
+        },
+        "max_casts": {
+          "description": "Cast at most this many times: at each monster for a single-target spell, in each\nroom (until it's clear of monsters) for a room spell. The casts are counted from the\ngame's own lines, failures and resisted casts too.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "when": {
+          "$ref": "#/$defs/SpellWhen"
+        }
+      },
+      "required": [
+        "cast"
+      ],
+      "type": "object"
+    },
+    "SpellWhen": {
+      "additionalProperties": false,
+      "description": "When a spell rule applies: every condition given must hold; none given always holds.",
+      "properties": {
+        "enemies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Span"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many monsters are in the room: `3-`, `1-2`, or `1`."
+        },
+        "min_mp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The bot's MP is at least this (`40%` of its maximum, or points), as well as the\nspell's own cost."
+        },
+        "monsters": {
+          "description": "Monster names, case-blind globs: the target for a single-target spell, anyone in the\nroom for a room spell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "routine": {
+          "description": "The routines the rule runs under, by name (globs); a bot running none never matches.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     },
     "StealthOpener": {
       "additionalProperties": false,

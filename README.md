@@ -2,9 +2,9 @@
 
 A party client and server for MajorMUD on [silvermere](https://github.com/jyurkiw/silvermere).
 You play your main character in MudPlay. mudparty runs the rest of the party as headless
-bots, each with its own link to the game. The bots log in, join your party, fight with spell
-tiers, rest and tell you to wait, and answer MegaMud-style @ commands. A web page shows
-the whole party and lets you order the bots around.
+bots, each with its own link to the game. The bots log in, join your party, fight with
+spells planned by level, rest and tell you to wait, and answer MegaMud-style @ commands.
+A web page shows the whole party and lets you order the bots around.
 
 **[The wiki](https://github.com/jyurkiw/mudparty/wiki)** covers every setting and every
 script you write by hand, with worked examples: a party you lead from MudPlay, and a bot
@@ -246,6 +246,48 @@ schema: 1
 name: Raijin
 class: Warrior
 ```
+
+A caster's attack spells can be planned by level, in `combat.by_level`. The first block
+whose `levels` hold the bot's level is used, and its spells are read from the top: the
+first rule that applies, that MP can pay for, that has casts left and that works on the
+target is cast. When none does, the bot melees (`melee`), or does nothing with `none`. As
+MP comes back it climbs back up the list.
+
+```yaml
+schema: 1
+name: Ermias
+class: Mage
+login:
+  account: Ermias
+combat:
+  targeting:
+    - assist_leader: true
+  melee: a
+  by_level:
+    - levels: 1-7            # 3-5, 8- (8 and up), -7, or one level
+      spells:
+        - cast: mmis
+    - levels: 8-
+      spells:
+        - cast: fbal         # a room spell, by the game data: cast bare
+          when: { enemies: 3-, min_mp: 40% }
+          max_casts: 2       # in this room, until it's clear
+        - cast: lbol
+          when: { min_mp: 25%, monsters: ["*shaman*"], routine: [kobold-loop] }
+          max_casts: 4       # at each monster
+        - cast: mmis
+```
+
+- **`when`**: every condition given must hold.
+  - `min_mp`: points, or a share of the maximum; the spell's cost must be met too.
+  - `enemies`: how many monsters are in the room, a range like `levels`.
+  - `monsters`: case-blind globs. A single-target spell checks its target; a room spell checks anyone in the room.
+  - `routine`: the routines the rule runs under, by name.
+- **`max_casts`**: the bot counts each cast from the game's own lines (the spell's message, or the failed or resisted cast), never from what it sent, since a spell repeats every round by itself.
+- **Room spells**: the game data says which spells go at the whole room.
+- **The level**: it comes from `exp`. The bot asks for it as soon as it's in the game, and starts no fight until it knows.
+- **`check`**: names any cast code the game data hasn't.
+- **The older form**: `tiers` and `room_tiers` still work, read as a block for every level after these.
 
 A bot sets its own statline (the file's `statline`) so it can read its HP and MP, but
 it leaves the character as it found it. Before changing anything it reads the character's

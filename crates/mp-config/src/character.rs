@@ -312,6 +312,166 @@ pub struct Combat {
     pub melee: Melee,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stealth_opener: Option<StealthOpener>,
+    /// Attack spells planned by level (#125): the first block whose `levels` hold the
+    /// bot's level is used. `tiers` and `room_tiers`, the step-1 form, are read as a block
+    /// for every level after these. A bot with blocks starts no fight until `exp` has said
+    /// its level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_level: Vec<LevelBlock>,
+}
+
+/// The spells for a range of levels (#125).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LevelBlock {
+    /// `1-7`, `8-` (8 and up), `-7`, or one level, `12`.
+    pub levels: Span,
+    /// Attack spells, top-down: the first rule that applies, can be paid for, has casts
+    /// left and works on the target is cast; when none does, `melee`.
+    #[serde(default)]
+    pub spells: Vec<SpellRule>,
+}
+
+/// An attack spell and when to cast it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpellRule {
+    /// The cast code the game accepts (`mmis`). Whether it goes at one monster or the whole
+    /// room is the game data's.
+    pub cast: String,
+    #[serde(default, skip_serializing_if = "SpellWhen::is_empty")]
+    pub when: SpellWhen,
+    /// Cast at most this many times: at each monster for a single-target spell, in each
+    /// room (until it's clear of monsters) for a room spell. The casts are counted from the
+    /// game's own lines, failures and resisted casts too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_casts: Option<u32>,
+}
+
+/// When a spell rule applies: every condition given must hold; none given always holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpellWhen {
+    /// The bot's MP is at least this (`40%` of its maximum, or points), as well as the
+    /// spell's own cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_mp: Option<Amount>,
+    /// How many monsters are in the room: `3-`, `1-2`, or `1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enemies: Option<Span>,
+    /// Monster names, case-blind globs: the target for a single-target spell, anyone in the
+    /// room for a room spell.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monsters: Vec<String>,
+    /// The routines the rule runs under, by name (globs); a bot running none never matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routine: Vec<String>,
+}
+
+impl SpellWhen {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A range of whole numbers, both ends included, either open: `3-5`, `8-` or `3+` (8 and
+/// up), `-7` (up to 7), or one number, `12`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub from: Option<u32>,
+    pub to: Option<u32>,
+}
+
+impl Span {
+    pub fn new(from: Option<u32>, to: Option<u32>) -> Self {
+        Self { from, to }
+    }
+
+    pub fn holds(&self, n: u32) -> bool {
+        self.from.is_none_or(|f| n >= f) && self.to.is_none_or(|t| n <= t)
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let t = text.trim();
+        let end = |s: &str| -> Option<Option<u32>> {
+            let s = s.trim();
+            if s.is_empty() {
+                Some(None)
+            } else {
+                s.parse().ok().map(Some)
+            }
+        };
+        if let Some(from) = t.strip_suffix('+') {
+            return Some(Self::new(Some(from.trim().parse().ok()?), None));
+        }
+        match t.split_once('-') {
+            Some((a, b)) => {
+                let (from, to) = (end(a)?, end(b)?);
+                (from.is_some() || to.is_some()).then_some(Self { from, to })
+            }
+            None => {
+                let n = t.parse().ok()?;
+                Some(Self::new(Some(n), Some(n)))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.from, self.to) {
+            (Some(a), Some(b)) if a == b => write!(f, "{a}"),
+            (Some(a), Some(b)) => write!(f, "{a}-{b}"),
+            (Some(a), None) => write!(f, "{a}-"),
+            (None, Some(b)) => write!(f, "-{b}"),
+            (None, None) => f.write_str("-"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Span {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            One(u32),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::One(n) => Ok(Self::new(Some(n), Some(n))),
+            Raw::Text(t) => Self::parse(&t).ok_or_else(|| {
+                de::Error::custom(format!(
+                    "{t:?} isn't a range: `3-5`, `8-` or `3+`, `-7`, or one number"
+                ))
+            }),
+        }
+    }
+}
+
+impl Serialize for Span {
+    /// One number as a number, anything else as its text.
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match (self.from, self.to) {
+            (Some(a), Some(b)) if a == b => s.serialize_u32(a),
+            _ => s.serialize_str(&self.to_string()),
+        }
+    }
+}
+
+impl JsonSchema for Span {
+    fn schema_name() -> Cow<'static, str> {
+        "Span".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A range, both ends included: `3-5`, `8-` or `3+`, `-7`, or one number.",
+            "anyOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "string", "pattern": r"^\s*(\d+\s*-\s*\d*|-\s*\d+|\d+\s*\+|\d+)\s*$" }
+            ]
+        })
+    }
 }
 
 /// A targeting rule (design §6.4), written as a one-key map: `- assist_leader: true`.
@@ -647,6 +807,35 @@ impl CharacterConfig {
                 return Err(ConfigError::at(format!("{at}.min_enemies"), "at least 1"));
             }
         }
+        for (i, b) in self.combat.by_level.iter().enumerate() {
+            let at = format!("combat.by_level[{i}]");
+            check_span(&format!("{at}.levels"), b.levels)?;
+            for (j, r) in b.spells.iter().enumerate() {
+                let at = format!("{at}.spells[{j}]");
+                if r.cast.trim().is_empty() {
+                    return Err(ConfigError::at(format!("{at}.cast"), "a spell is needed"));
+                }
+                if r.max_casts == Some(0) {
+                    return Err(ConfigError::at(
+                        format!("{at}.max_casts"),
+                        "at least 1; leave it out for no limit",
+                    ));
+                }
+                check_amount(&format!("{at}.when.min_mp"), r.when.min_mp)?;
+                if let Some(e) = r.when.enemies {
+                    check_span(&format!("{at}.when.enemies"), e)?;
+                }
+                for (field, names) in [("monsters", &r.when.monsters), ("routine", &r.when.routine)]
+                {
+                    if names.iter().any(|n| n.trim().is_empty()) {
+                        return Err(ConfigError::at(
+                            format!("{at}.when.{field}"),
+                            "a name can't be empty",
+                        ));
+                    }
+                }
+            }
+        }
         let start = self.rest.start_when_any;
         let stop = self.rest.stop_when_all;
         for (name, a) in [
@@ -707,6 +896,16 @@ fn check_tier(at: &str, spell: &str, min_mp: i32) -> Result<(), ConfigError> {
         return Err(ConfigError::at(format!("{at}.min_mp"), "must be 0 or more"));
     }
     Ok(())
+}
+
+fn check_span(at: &str, s: Span) -> Result<(), ConfigError> {
+    match (s.from, s.to) {
+        (Some(a), Some(b)) if b < a => Err(ConfigError::at(
+            at,
+            format!("{a}-{b} runs backwards; the smaller number first"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn check_amount(at: &str, a: Option<Amount>) -> Result<(), ConfigError> {
