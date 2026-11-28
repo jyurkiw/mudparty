@@ -154,6 +154,35 @@ impl Inventory {
     }
 }
 
+/// Experience, as `exp` shows it, and kept up as kills add to it: for the card's XP bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Experience {
+    /// Experience held.
+    pub exp: i64,
+    pub level: u32,
+    /// Still needed for the next level; 0 when it can train.
+    pub left: i64,
+    /// The next level's total.
+    pub need: i64,
+}
+
+impl Experience {
+    /// How far to the next level's total, as `exp`'s own `[pct%]` reckons it: held over
+    /// needed, 0 to 100.
+    pub fn pct(&self) -> u32 {
+        if self.need <= 0 {
+            return 100;
+        }
+        u32::try_from((self.exp.max(0) * 100 / self.need).clamp(0, 100)).unwrap_or(100)
+    }
+
+    /// After a kill that gained `gained`.
+    pub fn gain(&mut self, gained: i64) {
+        self.exp += gained;
+        self.left = (self.left - gained).max(0);
+    }
+}
+
 /// A sheet part, read whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "part", rename_all = "snake_case")]

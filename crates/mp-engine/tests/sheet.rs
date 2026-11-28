@@ -288,3 +288,24 @@ fn an_empty_inventory_and_the_rarer_coins() {
         "a prompt ends it without the weight line"
     );
 }
+
+// The card's XP bar (#10): `exp`'s figures, kept up by the kills since.
+#[test]
+fn experience_is_kept_up_by_kills() {
+    use mp_engine::Experience;
+    let mut x = Experience {
+        exp: 346,
+        level: 1,
+        left: 1304,
+        need: 1650,
+    };
+    assert_eq!(x.pct(), 20, "346 of 1650, as exp's [pct%] reckons it");
+    x.gain(1000);
+    assert_eq!((x.exp, x.left, x.pct()), (1346, 304, 81));
+    x.gain(500);
+    assert_eq!(
+        (x.left, x.pct()),
+        (0, 100),
+        "ready to train, and no further"
+    );
+}

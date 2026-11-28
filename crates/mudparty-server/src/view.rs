@@ -59,6 +59,9 @@ pub struct Card {
     state: Option<SessionState>,
     #[serde(skip)]
     resting: bool,
+    /// Events ever added, so the server can tell which are new (for the text history).
+    #[serde(skip)]
+    events_total: u64,
 }
 
 /// A character's sheet parts (#10), each as the game last showed it.
@@ -70,6 +73,21 @@ pub struct CardSheet {
     pub coins_room: Option<i64>,
     /// Their coins' value in copper, worked out from the coins carried.
     pub coins_value: Option<u64>,
+    /// Experience, for the XP bar: from `exp`, kept up by the kills since.
+    pub exp: Option<CardExp>,
+}
+
+/// Experience, as the XP bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CardExp {
+    pub exp: i64,
+    pub level: u32,
+    /// Still needed for the next level; 0 when it can train.
+    pub left: i64,
+    /// The next level's total.
+    pub need: i64,
+    /// Held over needed, as `exp`'s `[pct%]`.
+    pub pct: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -88,6 +106,9 @@ pub struct CardRoom {
     pub room: u32,
     /// From the game data; `None` for a room it doesn't have.
     pub name: Option<String>,
+    /// The kind of its shop, from the compiled room files (`weapons`, `general`, `bank`),
+    /// if it is one.
+    pub shop: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -152,6 +173,7 @@ impl Card {
             sheet: CardSheet::default(),
             state: None,
             resting: false,
+            events_total: 0,
         };
         card.configure(c);
         card
@@ -197,6 +219,19 @@ impl Card {
             self.events.pop_front();
         }
         self.events.push_back(e);
+        self.events_total += 1;
+    }
+
+    /// How many events it has ever had.
+    pub fn events_total(&self) -> u64 {
+        self.events_total
+    }
+
+    /// The events added since it had `total`, oldest first (as many as it still keeps).
+    pub fn events_since(&self, total: u64) -> Vec<String> {
+        let new = usize::try_from(self.events_total.saturating_sub(total)).unwrap_or(usize::MAX);
+        let skip = self.events.len().saturating_sub(new);
+        self.events.iter().skip(skip).cloned().collect()
     }
 
     /// One report from the bot. `room_name` looks a room up in the game data.
@@ -239,6 +274,17 @@ impl Card {
                 self.event(if *on { "resting" } else { "rested" }.into());
             }
             Report::Automation(a) => self.automation = a.clone().into(),
+            Report::Exp(x) => {
+                self.sheet.exp = Some(CardExp {
+                    exp: x.exp,
+                    level: x.level,
+                    left: x.left,
+                    need: x.need,
+                    pct: x.pct(),
+                });
+            }
+            // For the page that asked, and the text history: not the card.
+            Report::Captured(_) | Report::History(_) => {}
             Report::Sheet(SheetPart::Status(s)) => self.sheet.status = Some((**s).clone()),
             Report::Sheet(SheetPart::Inventory(i)) => {
                 self.sheet.coins_room = i.coins_room();
@@ -282,6 +328,7 @@ impl Card {
                     map: *map,
                     room: *room,
                     name: room_name(*map, *room),
+                    shop: None,
                 });
             }
         }

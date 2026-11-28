@@ -134,6 +134,18 @@ async fn a_bot_reads_its_sheet_and_reads_it_again_on_refresh() {
     assert!(enc.max > 0, "{enc:?}");
     assert_eq!(inv.coins_room(), Some((enc.max - enc.cur) * 3));
 
+    // And its experience, for the card's XP bar: a new character, at level 1.
+    let Report::Exp(x) = until(&sm, &mut rx, "the experience", |r| {
+        matches!(r, Report::Exp(_))
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(x.level, 1);
+    assert!(x.need > 0 && x.left > 0, "{x:?}");
+    assert_eq!(x.exp + x.left, x.need);
+
     // The card carries both.
     let card = server
         .party()
@@ -143,6 +155,8 @@ async fn a_bot_reads_its_sheet_and_reads_it_again_on_refresh() {
     assert_eq!(card.sheet.status.as_ref(), Some(&*st));
     assert_eq!(card.sheet.inventory.as_ref(), Some(&*inv));
     assert_eq!(card.sheet.coins_value, Some(inv.coins.copper_value()));
+    let exp = card.sheet.exp.expect("the XP bar's figures");
+    assert_eq!((exp.level, exp.left, exp.need), (x.level, x.left, x.need));
 
     // More silver in its purse; the page's Refresh reads the inventory again.
     sm.on_world(|w| {
