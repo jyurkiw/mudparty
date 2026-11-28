@@ -24,7 +24,7 @@ use history::{History, Position};
 use mp_config::Loaded;
 use mp_config::{
     CharacterConfig, CircuitRule, Logging, LoginSteps, PartyRole, Place, RuleSpec, Secrets,
-    ServerConfig, load_character, load_routine, load_server, parse_duration,
+    ServerConfig, character_from_text, load_character, load_routine, load_server, parse_duration,
 };
 use mp_data::places::Places;
 use mp_data::{GameData, ShowsAs};
@@ -155,6 +155,8 @@ pub enum Order {
     /// Send `line` and give the page its output, under the page's `id` (`help strength`,
     /// `look club`). Played in MudPlay, the line is injected.
     Capture { id: String, line: String },
+    /// Read its file again (#94), restarting it on the file if it's running.
+    Reload,
 }
 
 /// Who a `wait` or `ok` from the web page is from, in `held_by`.
@@ -468,6 +470,7 @@ impl Server {
             json!({"character": name, "order": format!("{order:?}")}),
         );
         let cmd = match order {
+            Order::Reload => return self.reload_order(name),
             Order::Start => {
                 return self
                     .start_bot(name)
@@ -568,10 +571,22 @@ impl Server {
         let c = loaded.value;
         // The routine's places and avoid lists name rooms in the compiled room files.
         self.routine_for(&c).map_err(StartError::Config)?;
+        let login = self.login_for(&c)?;
+        let spec = self.spec_for(&c, &loaded.rev, login);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = spawn(spec, tx);
+        self.attach(&mut bots, &c, loaded.rev, handle, rx, false);
+        drop(bots);
+        self.record("bot_start", json!({"character": name}));
+        Ok(())
+    }
+
+    /// How `c` logs in: its file's login, with its account's password from secrets.yaml.
+    fn login_for(&self, c: &CharacterConfig) -> Result<LoginSettings, StartError> {
         let login = c
             .login
             .clone()
-            .ok_or_else(|| StartError::NoLogin(name.to_owned()))?;
+            .ok_or_else(|| StartError::NoLogin(c.name.clone()))?;
         let password = self
             .secrets
             .lock()
@@ -579,7 +594,7 @@ impl Server {
             .password(&login.account)
             .map(str::to_owned)
             .ok_or_else(|| StartError::NoPassword(login.account.clone()))?;
-        let login = LoginSettings {
+        Ok(LoginSettings {
             account: login.account.clone(),
             password,
             takeover: login.takeover,
@@ -597,14 +612,55 @@ impl Server {
                         .collect(),
                 ),
             },
-        };
-        let spec = self.spec_for(&c, &loaded.rev, login);
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handle = spawn(spec, tx);
-        self.attach(&mut bots, &c, loaded.rev, handle, rx, false);
-        drop(bots);
-        self.record("bot_start", json!({"character": name}));
-        Ok(())
+        })
+    }
+
+    /// Reads `name`'s file again, from its card (#94). The file is checked as `check` does,
+    /// and a running bot is restarted on it: it logs off and on, and re-joins a party only
+    /// if its leader is still in the room. Anything wrong refuses the reload, and a running
+    /// bot runs on as it was: a file that doesn't read or has a problem, a character played
+    /// in MudPlay, or a bot that couldn't log in again.
+    fn reload_order(self: &Arc<Self>, name: &str) -> Result<String, String> {
+        let refused = |why: String| format!("not reloaded: {why}");
+        let path = self.file(name);
+        let text = std::fs::read_to_string(&path).map_err(|_| format!("{name} has no file"))?;
+        let checked =
+            check_text(&self.root, &path, &text, None).map_err(|e| refused(e.to_string()))?;
+        if !checked.problems.is_empty() {
+            return Err(refused(checked.problems.join("; ")));
+        }
+        let c = character_from_text(&path, &text).map_err(|e| refused(e.to_string()))?;
+        let seated = self
+            .bots
+            .lock()
+            .expect("bots lock")
+            .get(name)
+            .map(|b| b.seated);
+        if seated == Some(true) {
+            return Err(refused(format!("{name} is played in MudPlay")));
+        }
+        let restart = seated.is_some();
+        if restart {
+            self.routine_for(&c).map_err(refused)?;
+            self.login_for(&c).map_err(|e| refused(e.to_string()))?;
+        }
+        self.card_for(&c);
+        self.record("reload", json!({"character": name, "restart": restart}));
+        if !restart {
+            return Ok(format!("{name}'s file reloaded"));
+        }
+        let me = Arc::clone(self);
+        let who = name.to_owned();
+        tokio::spawn(async move {
+            me.stop_bot(&who).await;
+            if let Err(e) = me.start_bot(&who) {
+                let message = format!("not restarted after its reload: {e}");
+                me.record("reload_failed", json!({"character": who, "error": message}));
+                me.card(&who, |c| c.config_error = Some(message.clone()));
+                let _ = me.events.send(BotEvent::ConfigError { name: who, message });
+            }
+        });
+        Ok(format!("{name} restarting on its file"))
     }
 
     /// Sends `text` as a seated character (design §2): it waits until the user has no

@@ -421,7 +421,13 @@ created with none spent is too weak for the bear.
 [The wiki's Character Files page](https://github.com/jyurkiw/mudparty/wiki/Character-Files)
 lists every setting. The server watches `characters/`: an edited file shows on the
 character's card at once, with its error if it doesn't read. A running bot takes a new
-`statline` straight away; for any other change, stop and start the bot.
+`statline` straight away. For any other change, press the card's reload button (↻, right
+of its activity pill): the file is checked as `check` does, and a running bot is restarted
+on it, logging off and on (it re-joins a party only if its leader is still in its room).
+Anything wrong refuses the reload and shows why on the card, and the bot runs on as it
+was: a file that doesn't read or has a problem, a character played in MudPlay, or a bot
+that couldn't log in again (no `login`, or no password in `secrets.yaml`). Applying a file
+to a running bot without a logoff is [#94](https://github.com/jyurkiw/mudparty/issues/94).
 
 ## Places
 
@@ -572,7 +578,8 @@ shows elsewhere: chat, fight lines, monsters coming and going, other text the pa
 read, and, greyed, the lines sent and the card's notes (in the game, resting, the party).
 Room displays, the sheets, `par`, and the output of commands such as `look`, `help`,
 `list` and `who` are left out. Each kind can be hidden; the last 500 lines are kept, until
-the server stops. A bot's card has Start and Stop, Wait and Ok, the
+the server stops. A bot's card has Start and Stop, a reload button (see
+[Character files](#character-files)), Wait and Ok, the
 combat, nuke, rest and all switches, a kill box, a command line to the game, and a "Go"
 box that walks the bot to a room: a key like `1/2141`, or a place from the compiled room
 files (`weapons-shop`; see [Places](#places)). The bot plans its route from the game data,
